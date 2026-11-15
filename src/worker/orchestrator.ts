@@ -1,0 +1,285 @@
+/**
+ * Orchestrator: decides when to wake agents, dispatches webhook calls through a queue,
+ * tracks agent runs, and flags runs that fail or go quiet.
+ */
+import type { MemberRow, TaskRow } from "./domain";
+import { addSystemEntry, getMember, getWorkspace, notify, taskKey } from "./domain";
+import { type AppEnv, decryptSecret, newId, nowIso } from "./util";
+
+export type TriggerKind = "assigned" | "answered" | "mentioned" | "manual" | "followup";
+
+export interface RunRow {
+  id: string;
+  task_id: string;
+  agent_id: string;
+  trigger: TriggerKind;
+  trigger_entry_id: string | null;
+  triggered_by: string | null;
+  status: "queued" | "dispatched" | "active" | "ended" | "failed" | "stale";
+  pending_trigger: number;
+  attempts: number;
+  last_error: string | null;
+  dismissed: number;
+  created_at: string;
+  dispatched_at: string | null;
+  last_activity_at: string | null;
+  ended_at: string | null;
+}
+
+export interface DispatchMessage {
+  runId: string;
+}
+
+const OPEN_STATUSES = "('queued','dispatched','active')";
+const MAX_ATTEMPTS = 3;
+export const STALE_DISPATCHED_MINUTES = 15;
+export const STALE_ACTIVE_MINUTES = 60;
+
+export async function onAgentTrigger(
+  env: AppEnv,
+  opts: { task: TaskRow; agent: MemberRow; trigger: TriggerKind; triggerEntryId?: string; triggeredBy?: string | null },
+): Promise<RunRow | null> {
+  const { task, agent } = opts;
+  if (agent.kind !== "agent" || !agent.active) return null;
+  if (!agent.webhook_url || !agent.webhook_key_encrypted) {
+    await addSystemEntry(env, task, agent, "agent_not_configured", { agent_name: agent.name });
+    return null;
+  }
+
+  // Coalesce: one open run per (task, agent). Further triggers are flagged for a follow-up run.
+  const open = await env.DB.prepare(
+    `SELECT * FROM agent_runs WHERE task_id = ? AND agent_id = ? AND status IN ${OPEN_STATUSES} LIMIT 1`,
+  )
+    .bind(task.id, agent.id)
+    .first<RunRow>();
+  if (open) {
+    await env.DB.prepare("UPDATE agent_runs SET pending_trigger = 1 WHERE id = ?").bind(open.id).run();
+    return open;
+  }
+
+  const run: RunRow = {
+    id: newId(),
+    task_id: task.id,
+    agent_id: agent.id,
+    trigger: opts.trigger,
+    trigger_entry_id: opts.triggerEntryId ?? null,
+    triggered_by: opts.triggeredBy ?? null,
+    status: "queued",
+    pending_trigger: 0,
+    attempts: 0,
+    last_error: null,
+    dismissed: 0,
+    created_at: nowIso(),
+    dispatched_at: null,
+    last_activity_at: null,
+    ended_at: null,
+  };
+  await env.DB.prepare(
+    `INSERT INTO agent_runs (id, task_id, agent_id, trigger, trigger_entry_id, triggered_by, status, created_at)
+     VALUES (?,?,?,?,?,?,?,?)`,
+  )
+    .bind(run.id, run.task_id, run.agent_id, run.trigger, run.trigger_entry_id, run.triggered_by, run.status, run.created_at)
+    .run();
+  await addSystemEntry(env, task, agent, "agent_woken", { trigger: opts.trigger, run_id: run.id });
+  await env.DISPATCH_QUEUE.send({ runId: run.id } satisfies DispatchMessage);
+  await notify(env, task.workspace_id, { type: "thread", task_id: task.id });
+  return run;
+}
+
+export function buildPayload(publicUrl: string, run: RunRow, task: TaskRow, key: string) {
+  const event = run.trigger === "followup" ? "followup" : run.trigger;
+  const why: Record<string, string> = {
+    assigned: "This task was assigned to you.",
+    answered: "A human answered your question on this task.",
+    mentioned: "A human mentioned you on this task.",
+    manual: "A human asked you to pick this task up.",
+    followup: "There is new activity on this task since your last run.",
+  };
+  return {
+    event,
+    run_id: run.id,
+    task: { id: task.id, key, title: task.title, url: `${publicUrl.replace(/\/$/, "")}/t/${key}` },
+    trigger_entry_id: run.trigger_entry_id,
+    instruction:
+      `${why[event]} You are working task ${key} in Agentic PM. Use the Agentic PM MCP tools: ` +
+      `call get_task("${key}") first to read the task and its thread (new activity is listed under "unread"). ` +
+      `Post progress with post_update as you work. If you need a decision or information from a human, ` +
+      `use ask_question and stop: you will be woken again when they answer. ` +
+      `When the work is finished, call complete_task with a short summary. ` +
+      `If you stop without finishing, call end_run with the reason.`,
+  };
+}
+
+async function postWebhook(env: AppEnv, agent: MemberRow, payload: unknown) {
+  const key = await decryptSecret(env, agent.webhook_key_encrypted!);
+  const res = await fetch(agent.webhook_url!, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, "User-Agent": "AgenticPM/1.0" },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(15_000),
+  });
+  const text = await res.text().catch(() => "");
+  return { ok: res.status === 200, status: res.status, body: text.slice(0, 500) };
+}
+
+export async function handleDispatch(env: AppEnv, msg: Message<DispatchMessage>) {
+  const run = await env.DB.prepare("SELECT * FROM agent_runs WHERE id = ?").bind(msg.body.runId).first<RunRow>();
+  if (!run || run.status !== "queued") {
+    msg.ack();
+    return;
+  }
+  const agent = await getMember(env, run.agent_id);
+  const task = await env.DB.prepare("SELECT * FROM tasks WHERE id = ?").bind(run.task_id).first<TaskRow>();
+  if (!task || !agent.active || !agent.webhook_url) {
+    await env.DB.prepare("UPDATE agent_runs SET status = 'ended', ended_at = ?, last_error = ? WHERE id = ?")
+      .bind(nowIso(), "agent or task no longer available", run.id)
+      .run();
+    msg.ack();
+    return;
+  }
+
+  // Rate limit per agent.
+  const hourAgo = new Date(Date.now() - 3600_000).toISOString();
+  const recent = await env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM agent_runs WHERE agent_id = ? AND dispatched_at IS NOT NULL AND dispatched_at > ?",
+  )
+    .bind(agent.id, hourAgo)
+    .first<{ n: number }>();
+  if ((recent?.n ?? 0) >= agent.max_runs_per_hour) {
+    msg.retry({ delaySeconds: 300 });
+    return;
+  }
+
+  const ws = await getWorkspace(env, task.workspace_id);
+  const payload = buildPayload(env.PUBLIC_URL, run, task, taskKey(ws, task));
+  const attempts = run.attempts + 1;
+  let result: { ok: boolean; status: number; body: string };
+  try {
+    result = await postWebhook(env, agent, payload);
+  } catch (err) {
+    result = { ok: false, status: 0, body: err instanceof Error ? err.message : String(err) };
+  }
+
+  if (result.ok) {
+    await env.DB.prepare("UPDATE agent_runs SET status = 'dispatched', dispatched_at = ?, attempts = ?, last_error = NULL WHERE id = ?")
+      .bind(nowIso(), attempts, run.id)
+      .run();
+    msg.ack();
+    await notify(env, ws.id, { type: "thread", task_id: task.id });
+    return;
+  }
+
+  const error = result.status ? `HTTP ${result.status}: ${result.body}` : result.body;
+  if (attempts >= MAX_ATTEMPTS) {
+    await env.DB.prepare("UPDATE agent_runs SET status = 'failed', attempts = ?, last_error = ? WHERE id = ?")
+      .bind(attempts, error, run.id)
+      .run();
+    await addSystemEntry(env, task, agent, "run_failed", { run_id: run.id, agent_name: agent.name, error });
+    await notify(env, ws.id, { type: "thread", task_id: task.id });
+    msg.ack();
+  } else {
+    await env.DB.prepare("UPDATE agent_runs SET attempts = ?, last_error = ? WHERE id = ?").bind(attempts, error, run.id).run();
+    msg.retry({ delaySeconds: 30 * attempts });
+  }
+}
+
+/** Record agent activity on a task: marks its open (or stale) run active. */
+export async function touchRun(env: AppEnv, taskId: string, agentId: string) {
+  const run = await env.DB.prepare(
+    `SELECT * FROM agent_runs WHERE task_id = ? AND agent_id = ? AND status IN ('queued','dispatched','active','stale')
+     ORDER BY created_at DESC LIMIT 1`,
+  )
+    .bind(taskId, agentId)
+    .first<RunRow>();
+  if (!run) return null;
+  const now = nowIso();
+  await env.DB.prepare("UPDATE agent_runs SET status = 'active', last_activity_at = ?, dismissed = 0 WHERE id = ?")
+    .bind(now, run.id)
+    .run();
+  if (run.status !== "active") {
+    const task = await env.DB.prepare("SELECT * FROM tasks WHERE id = ?").bind(taskId).first<TaskRow>();
+    if (task && task.assignee_id === agentId && (task.status === "backlog" || task.status === "todo")) {
+      await env.DB.prepare("UPDATE tasks SET status = 'in_progress', updated_at = ? WHERE id = ?").bind(now, taskId).run();
+      const agent = await getMember(env, agentId);
+      await addSystemEntry(env, task, agent, "status_changed", { from: task.status, to: "in_progress" });
+      await notify(env, task.workspace_id, { type: "task", task_id: taskId });
+    }
+  }
+  return run;
+}
+
+/** End the agent's open runs on a task; dispatch a follow-up if triggers arrived mid-run. */
+export async function endRunsFor(env: AppEnv, taskId: string, agentId: string, reason: string) {
+  const runs = await env.DB.prepare(
+    `SELECT * FROM agent_runs WHERE task_id = ? AND agent_id = ? AND status IN ('queued','dispatched','active','stale')`,
+  )
+    .bind(taskId, agentId)
+    .all<RunRow>();
+  if (!runs.results.length) return;
+  const now = nowIso();
+  await env.DB.prepare(
+    `UPDATE agent_runs SET status = 'ended', ended_at = ?
+     WHERE task_id = ? AND agent_id = ? AND status IN ('queued','dispatched','active','stale')`,
+  )
+    .bind(now, taskId, agentId)
+    .run();
+  const hadPending = runs.results.some((r) => r.pending_trigger);
+  if (hadPending && reason !== "unassigned" && reason !== "completed") {
+    const task = await env.DB.prepare("SELECT * FROM tasks WHERE id = ?").bind(taskId).first<TaskRow>();
+    const agent = await getMember(env, agentId);
+    const last = runs.results[0];
+    if (task) await onAgentTrigger(env, { task, agent, trigger: "followup", triggeredBy: last.triggered_by });
+  }
+}
+
+/** Cron: flag runs that never started working or went quiet. */
+export async function sweepStaleRuns(env: AppEnv) {
+  const dispatchedCutoff = new Date(Date.now() - STALE_DISPATCHED_MINUTES * 60_000).toISOString();
+  const activeCutoff = new Date(Date.now() - STALE_ACTIVE_MINUTES * 60_000).toISOString();
+  const stale = await env.DB.prepare(
+    `SELECT * FROM agent_runs WHERE
+       (status = 'dispatched' AND last_activity_at IS NULL AND dispatched_at < ?)
+       OR (status = 'active' AND last_activity_at < ?)`,
+  )
+    .bind(dispatchedCutoff, activeCutoff)
+    .all<RunRow>();
+  for (const run of stale.results) {
+    await env.DB.prepare("UPDATE agent_runs SET status = 'stale' WHERE id = ?").bind(run.id).run();
+    const task = await env.DB.prepare("SELECT * FROM tasks WHERE id = ?").bind(run.task_id).first<TaskRow>();
+    const agent = await getMember(env, run.agent_id);
+    if (task) {
+      await addSystemEntry(env, task, agent, "run_stale", {
+        run_id: run.id,
+        agent_name: agent.name,
+        reason: run.last_activity_at ? "no activity for 60 minutes" : "agent never started after being woken",
+      });
+      await notify(env, task.workspace_id, { type: "thread", task_id: task.id });
+    }
+  }
+  return stale.results.length;
+}
+
+export async function retryRun(env: AppEnv, runId: string, triggeredBy: string) {
+  const run = await env.DB.prepare("SELECT * FROM agent_runs WHERE id = ?").bind(runId).first<RunRow>();
+  if (!run) return null;
+  await env.DB.prepare("UPDATE agent_runs SET dismissed = 1, status = CASE WHEN status IN ('failed','stale') THEN 'ended' ELSE status END WHERE id = ?")
+    .bind(runId)
+    .run();
+  const task = await env.DB.prepare("SELECT * FROM tasks WHERE id = ?").bind(run.task_id).first<TaskRow>();
+  const agent = await getMember(env, run.agent_id);
+  if (!task) return null;
+  return onAgentTrigger(env, { task, agent, trigger: "manual", triggeredBy });
+}
+
+export async function testPing(env: AppEnv, agent: MemberRow) {
+  if (!agent.webhook_url || !agent.webhook_key_encrypted) return { ok: false, status: 0, body: "No webhook configured" };
+  try {
+    return await postWebhook(env, agent, {
+      event: "test",
+      instruction:
+        "This is a connection test from Agentic PM. If you have the Agentic PM MCP tools, call list_my_tasks to confirm access. No other action is needed.",
+    });
+  } catch (err) {
+    return { ok: false, status: 0, body: err instanceof Error ? err.message : String(err) };
+  }
+}

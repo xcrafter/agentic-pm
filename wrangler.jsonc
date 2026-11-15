@@ -1,0 +1,32 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "agentic-pm",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "observability": { "enabled": true },
+  "assets": {
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/auth/*", "/mcp", "/mcp/*", "/authorize", "/oauth/*", "/.well-known/*", "/ws", "/files/*"]
+  },
+  "vars": {
+    "PUBLIC_URL": "http://localhost:5173",
+    "WORKSPACE_NAME": "Impulze",
+    "WORKSPACE_KEY": "IMP",
+    "ALLOWED_EMAIL_DOMAINS": "impulze.ai",
+    "DEV_LOGIN": "true"
+  },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "agentic-pm", "database_id": "local", "migrations_dir": "migrations" }
+  ],
+  "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "local" }],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "agentic-pm-files" }],
+  "queues": {
+    "producers": [{ "binding": "DISPATCH_QUEUE", "queue": "agentic-pm-dispatch" }],
+    "consumers": [{ "queue": "agentic-pm-dispatch", "max_batch_size": 10, "max_batch_timeout": 1, "max_retries": 5 }]
+  },
+  "durable_objects": { "bindings": [{ "name": "REALTIME", "class_name": "Realtime" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Realtime"] }],
+  "triggers": { "crons": ["*/5 * * * *"] }
+}
