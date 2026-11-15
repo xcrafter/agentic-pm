@@ -29,7 +29,10 @@ npm run db:migrate:local
 npm run dev                            # http://localhost:5173
 ```
 
-With `DEV_LOGIN=true` (the default in `wrangler.jsonc`) you can sign in at `/auth/dev` with any `@impulze.ai` address. The first person to sign in becomes admin.
+## Who can get in
+
+- **People** sign in with email + password. On a fresh install the first visitor sees **Set up Agentic PM** and creates the admin account. After that, setup is closed: admins add people with **Members & agents → Invite person**, which gives a one-time sign-up link (7 days) to send them. **Reset password** gives a one-time link (24 h) that also signs out their other devices. Only `ALLOWED_EMAIL_DOMAINS` addresses can join. After 10 wrong passwords an address is locked out for 15 minutes. Google sign-in is optional and appears when `GOOGLE_CLIENT_ID` is set.
+- **Agents** have no password. An agent only gets in through an MCP connection that a signed-in person approves. On that consent screen the person can create **A new agent** profile on the spot, or connect as an existing agent (admins, or whoever created that agent). The agent can then fill in its own description and wake-up webhook with the `update_my_profile` tool.
 
 End-to-end test of the whole human ⇄ agent loop (mock webhook, real OAuth, MCP), run against a **fresh** local database:
 
@@ -40,16 +43,15 @@ npm run e2e                                                          # terminal 
 
 ## Connecting Grok Bot
 
-1. **Members & agents → Add agent.** Give it a name, handle and description.
-2. In Grok Bot, create a **routine** with a **Webhook** trigger and an instruction like *"Work the Agentic PM task in the request using the Agentic PM tools."* Copy its **POST URL** and **key** into the agent's webhook settings, then **Send test ping**.
-3. In Grok Bot, add a **custom MCP server** with URL `https://<your-domain>/mcp` and sign in. On the consent screen choose **Act as: <the agent>** (admins only).
-4. Assign a task to the agent. It will be woken, read the task with `get_task`, and post back to the thread.
+1. In Grok Bot, add a **custom MCP server** with URL `https://<your-domain>/mcp` and sign in. On the consent screen choose **A new agent** and name it (or pick an existing agent).
+2. In Grok Bot, create a **routine** with a **Webhook** trigger and an instruction like *"Work the Agentic PM task in the request using the Agentic PM tools."* Give its **POST URL** and **key** to the agent: paste them under **Members & agents → Configure**, or ask Grok to call `update_my_profile` with them. Then **Send test ping**.
+3. Assign a task to the agent. It will be woken, read the task with `get_task`, and post back to the thread.
 
 One Grok Bot = one agent member. Any other assistant that can be woken by a webhook and speaks MCP (e.g. a Claude routine) works the same way. People can also connect their own assistant over MCP choosing **Act as: Myself**.
 
 ### MCP tools
 
-`list_my_tasks`, `get_task`, `search_tasks`, `create_task`, `update_task`, `post_update`, `add_comment`, `ask_question`, `write_note`, `create_checklist`, `set_checklist_item`, `add_checklist_item`, `attach_file`, `get_attachment`, `complete_task`, `end_run`, `list_projects`, `list_members`.
+`list_my_tasks`, `get_task`, `search_tasks`, `create_task`, `update_task`, `post_update`, `add_comment`, `ask_question`, `write_note`, `create_checklist`, `set_checklist_item`, `add_checklist_item`, `attach_file`, `get_attachment`, `complete_task`, `end_run`, `update_my_profile` (agents only), `list_projects`, `list_members`.
 
 ### Webhook payload
 
@@ -74,11 +76,11 @@ npx wrangler r2 bucket create agentic-pm-files
 npx wrangler queues create agentic-pm-dispatch
 npx wrangler secret put SESSION_SECRET
 npx wrangler secret put WEBHOOK_KEY_ENCRYPTION_KEY   # openssl rand -base64 32
-npx wrangler secret put GOOGLE_CLIENT_ID
-npx wrangler secret put GOOGLE_CLIENT_SECRET
+npx wrangler secret put GOOGLE_CLIENT_ID       # optional
+npx wrangler secret put GOOGLE_CLIENT_SECRET   # optional
 ```
 
-In `wrangler.jsonc` set `PUBLIC_URL` to the deployed origin and `DEV_LOGIN` to `"false"`. In Google Cloud, add `https://<domain>/auth/google/callback` as an authorized redirect URI. Then:
+In `wrangler.jsonc` set `PUBLIC_URL` to the deployed origin. Google sign-in is optional: skip the two Google secrets to use email + password only, or add `https://<domain>/auth/google/callback` as an authorized redirect URI in Google Cloud. Then:
 
 ```bash
 npm run db:migrate:remote

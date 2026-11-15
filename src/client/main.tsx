@@ -9,6 +9,7 @@ import { TaskPage } from "./pages/Task";
 import { InboxPage } from "./pages/Inbox";
 import { ProjectsPage } from "./pages/Projects";
 import { MembersPage } from "./pages/Members";
+import { InvitePage } from "./pages/Invite";
 
 const qc = new QueryClient({
   defaultOptions: { queries: { staleTime: 10_000, refetchOnWindowFocus: true, retry: 1 } },
@@ -19,6 +20,7 @@ createRoot(document.getElementById("root")!).render(
     <QueryClientProvider client={qc}>
       <BrowserRouter>
         <Routes>
+          <Route path="invite/:token" element={<InvitePage />} />
           <Route element={<Layout />}>
             <Route index element={<BoardPage />} />
             <Route path="my" element={<BoardPage mine />} />

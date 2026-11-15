@@ -14,8 +14,7 @@
     "PUBLIC_URL": "http://localhost:5173",
     "WORKSPACE_NAME": "Impulze",
     "WORKSPACE_KEY": "IMP",
-    "ALLOWED_EMAIL_DOMAINS": "impulze.ai",
-    "DEV_LOGIN": "true"
+    "ALLOWED_EMAIL_DOMAINS": "impulze.ai"
   },
   "d1_databases": [
     { "binding": "DB", "database_name": "agentic-pm", "database_id": "local", "migrations_dir": "migrations" }

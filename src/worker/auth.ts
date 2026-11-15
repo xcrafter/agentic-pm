@@ -1,7 +1,7 @@
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
-import { type MemberRow, ensureWorkspace, logActivity } from "./domain";
-import { type AppEnv, HttpError, escapeHtml, newId, nowIso, randomToken, sha256Hex } from "./util";
+import { type MemberRow, ensureWorkspace, logActivity, notify } from "./domain";
+import { type AppEnv, HttpError, newId, nowIso, randomToken, sha256Hex } from "./util";
 
 const SESSION_COOKIE = "apm_session";
 const STATE_COOKIE = "apm_oauth_state";
@@ -157,30 +157,219 @@ authRoutes.get("/auth/google/callback", async (c) => {
   }
 });
 
-// Development-only sign-in (DEV_LOGIN=true). Never enable in production.
-authRoutes.get("/auth/dev", (c) => {
-  if (c.env.DEV_LOGIN !== "true") return c.notFound();
-  const next = escapeHtml(safeNext(c.req.query("next")));
-  return c.html(`<!doctype html><meta charset="utf-8"><title>Dev sign-in</title>
-<style>body{font-family:system-ui;max-width:360px;margin:80px auto}input,button{display:block;width:100%;margin:8px 0;padding:8px}</style>
-<h2>Developer sign-in</h2><p>Local development only.</p>
-<form method="post"><input name="email" placeholder="you@${escapeHtml(allowedDomains(c.env)[0] ?? "example.com")}" required>
-<input name="name" placeholder="Your name"><input type="hidden" name="next" value="${next}"><button>Sign in</button></form>`);
+// ---------- Email + password ----------
+
+const PBKDF2_ITERATIONS = 100_000;
+const MIN_PASSWORD = 8;
+const MAX_FAILED_LOGINS = 10;
+const INVITE_DAYS = 7;
+const RESET_HOURS = 24;
+
+const toB64 = (b: Uint8Array) => btoa(String.fromCharCode(...b));
+const fromB64 = (s: string) => Uint8Array.from(atob(s), (ch) => ch.charCodeAt(0));
+
+async function pbkdf2(password: string, salt: Uint8Array<ArrayBuffer>, iterations: number) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
+  return new Uint8Array(await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations }, key, 256));
+}
+
+export async function hashPassword(password: string): Promise<string> {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  return `pbkdf2$${PBKDF2_ITERATIONS}$${toB64(salt)}$${toB64(await pbkdf2(password, salt, PBKDF2_ITERATIONS))}`;
+}
+
+export async function verifyPassword(password: string, stored: string | null): Promise<boolean> {
+  const [scheme, iter, salt, hash] = (stored ?? "").split("$");
+  if (scheme !== "pbkdf2" || !salt || !hash) {
+    // Spend the same time as a real check so unknown emails aren't distinguishable.
+    await pbkdf2(password, new Uint8Array(16), PBKDF2_ITERATIONS);
+    return false;
+  }
+  const actual = await pbkdf2(password, fromB64(salt) as Uint8Array<ArrayBuffer>, Number(iter));
+  const expected = fromB64(hash);
+  if (actual.length !== expected.length) return false;
+  let diff = 0;
+  for (let i = 0; i < actual.length; i++) diff |= actual[i] ^ expected[i];
+  return diff === 0;
+}
+
+function checkPassword(password: unknown): string {
+  if (typeof password !== "string" || password.length < MIN_PASSWORD) {
+    throw new HttpError(400, `Password must be at least ${MIN_PASSWORD} characters`);
+  }
+  if (password.length > 200) throw new HttpError(400, "Password is too long");
+  return password;
+}
+
+function checkEmail(env: AppEnv, raw: unknown): string {
+  const email = String(raw ?? "").trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new HttpError(400, "Enter a valid email address");
+  const domains = allowedDomains(env);
+  if (domains.length && !domains.includes(email.split("@")[1])) {
+    throw new HttpError(403, `Only ${domains.map((d) => "@" + d).join(", ")} addresses can join`);
+  }
+  return email;
+}
+
+async function humanCount(env: AppEnv, workspaceId: string) {
+  const r = await env.DB.prepare("SELECT COUNT(*) AS n FROM members WHERE workspace_id = ? AND kind = 'human'")
+    .bind(workspaceId)
+    .first<{ n: number }>();
+  return r?.n ?? 0;
+}
+
+export async function needsSetup(env: AppEnv) {
+  const ws = await ensureWorkspace(env);
+  return (await humanCount(env, ws.id)) === 0;
+}
+
+async function insertHuman(env: AppEnv, workspaceId: string, p: { email: string; name: string; role: "admin" | "member"; passwordHash: string; createdBy?: string | null }) {
+  const id = newId();
+  const handle = await uniqueHandle(env, workspaceId, p.email.split("@")[0]);
+  await env.DB.prepare(
+    `INSERT INTO members (id, workspace_id, kind, name, handle, role, email, password_hash, created_by, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`,
+  )
+    .bind(id, workspaceId, "human", p.name || p.email.split("@")[0], handle, p.role, p.email, p.passwordHash, p.createdBy ?? null, nowIso())
+    .run();
+  return (await env.DB.prepare("SELECT * FROM members WHERE id = ?").bind(id).first<MemberRow>())!;
+}
+
+async function startSession(c: Context<{ Bindings: AppEnv }>, memberId: string) {
+  const token = await createSession(c.env, memberId);
+  setCookie(c, SESSION_COOKIE, token, { httpOnly: true, secure: isSecure(c.env), sameSite: "Lax", path: "/", maxAge: SESSION_DAYS * 86400 });
+}
+
+// JSON-only bodies: a cross-site HTML form can't send application/json without a CORS preflight.
+async function jsonBody<T>(c: Context<{ Bindings: AppEnv }>): Promise<T> {
+  if (!(c.req.header("Content-Type") ?? "").includes("application/json")) throw new HttpError(415, "Expected JSON");
+  return c.req.json<T>();
+}
+
+authRoutes.onError((err, c) => {
+  if (err instanceof HttpError) return c.json({ error: err.message }, err.status as 400);
+  console.error(err);
+  return c.json({ error: "Internal error" }, 500);
 });
 
-authRoutes.post("/auth/dev", async (c) => {
-  if (c.env.DEV_LOGIN !== "true") return c.notFound();
-  const form = await c.req.formData();
-  const email = String(form.get("email") ?? "");
-  try {
-    const member = await loginHuman(c.env, { email, name: String(form.get("name") || email.split("@")[0]) });
-    const token = await createSession(c.env, member.id);
-    setCookie(c, SESSION_COOKIE, token, { httpOnly: true, secure: isSecure(c.env), sameSite: "Lax", path: "/", maxAge: SESSION_DAYS * 86400 });
-    return c.redirect(safeNext(String(form.get("next") ?? "/")));
-  } catch (err) {
-    if (err instanceof HttpError) return c.text(err.message, err.status as 403);
-    throw err;
+// First run only: the first person creates the workspace admin account.
+authRoutes.post("/auth/setup", async (c) => {
+  const body = await jsonBody<{ name?: string; email?: string; password?: string }>(c);
+  const ws = await ensureWorkspace(c.env);
+  if ((await humanCount(c.env, ws.id)) > 0) throw new HttpError(403, "This workspace is already set up. Ask an admin for an invite.");
+  const email = checkEmail(c.env, body.email);
+  const member = await insertHuman(c.env, ws.id, {
+    email,
+    name: String(body.name ?? "").trim(),
+    role: "admin",
+    passwordHash: await hashPassword(checkPassword(body.password)),
+  });
+  await logActivity(c.env, ws.id, { member, via: "web" }, "member", member.id, "joined", undefined, { setup: true });
+  await startSession(c, member.id);
+  return c.json({ ok: true });
+});
+
+authRoutes.post("/auth/login", async (c) => {
+  const body = await jsonBody<{ email?: string; password?: string }>(c);
+  const email = String(body.email ?? "").trim().toLowerCase();
+  const password = String(body.password ?? "");
+  const throttleKey = `login-fail:${await sha256Hex(email)}`;
+  const failures = Number((await c.env.OAUTH_KV.get(throttleKey)) ?? 0);
+  if (failures >= MAX_FAILED_LOGINS) throw new HttpError(429, "Too many failed attempts. Try again in 15 minutes.");
+  const ws = await ensureWorkspace(c.env);
+  const member = await c.env.DB.prepare("SELECT * FROM members WHERE workspace_id = ? AND kind = 'human' AND email = ?")
+    .bind(ws.id, email)
+    .first<MemberRow>();
+  const valid = await verifyPassword(password, member?.password_hash ?? null);
+  if (!member || !valid) {
+    await c.env.OAUTH_KV.put(throttleKey, String(failures + 1), { expirationTtl: 900 });
+    throw new HttpError(401, "Wrong email or password");
   }
+  if (!member.active) throw new HttpError(403, "Your account has been deactivated");
+  await c.env.OAUTH_KV.delete(throttleKey);
+  await startSession(c, member.id);
+  return c.json({ ok: true });
+});
+
+export interface InviteRow {
+  id: string;
+  workspace_id: string;
+  email: string;
+  name: string | null;
+  role: "admin" | "member";
+  member_id: string | null;
+  created_by: string;
+  created_at: string;
+  expires_at: string;
+  used_at: string | null;
+}
+
+/** Creates a one-time link: an invite for a new person, or a password reset when memberId is set. */
+export async function createInvite(
+  env: AppEnv,
+  by: MemberRow,
+  p: { email: string; name?: string | null; role?: "admin" | "member"; memberId?: string | null },
+) {
+  const email = p.memberId ? p.email : checkEmail(env, p.email);
+  if (!p.memberId) {
+    const exists = await env.DB.prepare("SELECT 1 FROM members WHERE workspace_id = ? AND email = ?").bind(by.workspace_id, email).first();
+    if (exists) throw new HttpError(409, "That person is already a member. Use “Reset password” instead.");
+  }
+  // A new link replaces any unused one for the same address.
+  await env.DB.prepare("DELETE FROM invites WHERE workspace_id = ? AND email = ? AND used_at IS NULL").bind(by.workspace_id, email).run();
+  const token = randomToken();
+  const ms = p.memberId ? RESET_HOURS * 3600_000 : INVITE_DAYS * 86400_000;
+  const id = newId();
+  await env.DB.prepare(
+    `INSERT INTO invites (id, workspace_id, token_hash, email, name, role, member_id, created_by, created_at, expires_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`,
+  )
+    .bind(id, by.workspace_id, await sha256Hex(token), email, p.name ?? null, p.role ?? "member", p.memberId ?? null, by.id, nowIso(), new Date(Date.now() + ms).toISOString())
+    .run();
+  return { id, url: `${env.PUBLIC_URL}/invite/${token}`, expires_at: new Date(Date.now() + ms).toISOString() };
+}
+
+async function findInvite(env: AppEnv, token: string) {
+  const row = await env.DB.prepare("SELECT * FROM invites WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?")
+    .bind(await sha256Hex(token), nowIso())
+    .first<InviteRow>();
+  if (!row) throw new HttpError(404, "This link is invalid or has expired. Ask an admin for a new one.");
+  return row;
+}
+
+authRoutes.get("/auth/invite/:token", async (c) => {
+  const inv = await findInvite(c.env, c.req.param("token"));
+  const ws = await ensureWorkspace(c.env);
+  return c.json({ email: inv.email, name: inv.name, reset: !!inv.member_id, workspace: ws.name });
+});
+
+authRoutes.post("/auth/invite/:token", async (c) => {
+  const body = await jsonBody<{ name?: string; password?: string }>(c);
+  const inv = await findInvite(c.env, c.req.param("token"));
+  const passwordHash = await hashPassword(checkPassword(body.password));
+  const claimed = await c.env.DB.prepare("UPDATE invites SET used_at = ? WHERE id = ? AND used_at IS NULL").bind(nowIso(), inv.id).run();
+  if (!claimed.meta.changes) throw new HttpError(409, "This link was already used");
+  let member: MemberRow;
+  if (inv.member_id) {
+    member = (await c.env.DB.prepare("SELECT * FROM members WHERE id = ?").bind(inv.member_id).first<MemberRow>())!;
+    if (!member?.active) throw new HttpError(403, "Your account has been deactivated");
+    await c.env.DB.prepare("UPDATE members SET password_hash = ? WHERE id = ?").bind(passwordHash, member.id).run();
+    // A reset signs out every other session.
+    await c.env.DB.prepare("DELETE FROM sessions WHERE member_id = ?").bind(member.id).run();
+    await logActivity(c.env, inv.workspace_id, { member, via: "web" }, "member", member.id, "password_reset");
+  } else {
+    member = await insertHuman(c.env, inv.workspace_id, {
+      email: inv.email,
+      name: String(body.name ?? inv.name ?? "").trim(),
+      role: inv.role,
+      passwordHash,
+      createdBy: inv.created_by,
+    });
+    await logActivity(c.env, inv.workspace_id, { member, via: "web" }, "member", member.id, "joined", undefined, { invited_by: inv.created_by });
+    await notify(c.env, inv.workspace_id, { type: "members" });
+  }
+  await startSession(c, member.id);
+  return c.json({ ok: true });
 });
 
 authRoutes.post("/auth/logout", async (c) => {

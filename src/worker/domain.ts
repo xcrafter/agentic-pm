@@ -25,6 +25,8 @@ export interface MemberRow {
   webhook_key_encrypted: string | null;
   wake_on_mention: number;
   max_runs_per_hour: number;
+  password_hash: string | null;
+  created_by: string | null;
   created_at: string;
 }
 
@@ -152,6 +154,7 @@ export function publicMember(m: MemberRow) {
     webhook_url: m.webhook_url,
     wake_on_mention: !!m.wake_on_mention,
     max_runs_per_hour: m.max_runs_per_hour,
+    created_by: m.created_by ?? null,
   };
 }
 export type PublicMember = ReturnType<typeof publicMember>;

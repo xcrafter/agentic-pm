@@ -1,13 +1,14 @@
 /**
  * OAuth consent for MCP clients (e.g. Grok Bot). A signed-in human chooses who the
- * connection acts as: themselves, or (admins only) one of the agent members.
+ * connection acts as: themselves, a brand-new agent profile created right here, or an
+ * existing agent (admins, or the person who created that agent).
  */
 import { AuthorizationError, CimdFetchError, type ConsentDescription } from "@cloudflare/workers-oauth-provider";
 import { getCookie } from "hono/cookie";
 import type { Context } from "hono";
-import { type MemberRow, ensureWorkspace, logActivity } from "./domain";
-import { SESSION_COOKIE, getSessionMember } from "./auth";
-import { type AppEnv, escapeHtml } from "./util";
+import { type MemberRow, ensureWorkspace, logActivity, notify } from "./domain";
+import { SESSION_COOKIE, getSessionMember, uniqueHandle } from "./auth";
+import { type AppEnv, escapeHtml, newId, nowIso } from "./util";
 
 export interface McpProps {
   memberId: string;
@@ -27,6 +28,7 @@ h1{font-size:18px;margin:0 0 8px}p{color:var(--muted);font-size:14px;line-height
 label.opt{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--border);border-radius:8px;margin:8px 0;cursor:pointer;font-size:14px}
 label.opt small{display:block;color:var(--muted)}
 .warn{background:#fef3c7;color:#92400e;padding:10px;border-radius:8px;font-size:13px}
+input.text{width:100%;box-sizing:border-box;margin-top:6px;padding:7px 9px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--fg);font-size:14px}
 .row{display:flex;gap:8px;margin-top:20px}button{flex:1;padding:10px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--fg);font-size:14px;cursor:pointer}
 button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 </style></head><body><div class="card">${body}</div></body></html>`;
@@ -38,12 +40,15 @@ function consentHtml(details: ConsentDescription, handle: string, me: MemberRow,
     ? `Published by <strong>${escapeHtml(details.clientDomain)}</strong>.`
     : "This app registered itself; its name is not verified.";
   const options = [
-    `<label class="opt"><input type="radio" name="act_as" value="${escapeHtml(me.id)}" ${agents.length ? "" : "checked"}>
-      <span>Myself — ${escapeHtml(me.name)}<small>The assistant acts as you.</small></span></label>`,
+    `<label class="opt"><input type="radio" name="act_as" value="__new__" ${agents.length ? "" : "checked"}>
+      <span>A new agent<small>Creates an agent member for this assistant, e.g. “Grok Bot”.</small>
+      <input class="text" name="agent_name" placeholder="Agent name" value="${escapeHtml(details.clientName)}" maxlength="60"></span></label>`,
     ...agents.map(
       (a, i) => `<label class="opt"><input type="radio" name="act_as" value="${escapeHtml(a.id)}" ${i === 0 ? "checked" : ""}>
       <span>Agent — ${escapeHtml(a.name)} <small>@${escapeHtml(a.handle)}${a.description ? " · " + escapeHtml(a.description) : ""}</small></span></label>`,
     ),
+    `<label class="opt"><input type="radio" name="act_as" value="${escapeHtml(me.id)}">
+      <span>Myself — ${escapeHtml(me.name)}<small>The assistant acts as you, not as an agent.</small></span></label>`,
   ].join("");
   return page(
     `Connect ${details.clientName}`,
@@ -54,11 +59,25 @@ ${details.redirectIsLoopback ? '<p class="warn">This sends access to an app on y
 <input type="hidden" name="handle" value="${escapeHtml(handle)}">
 <p style="margin-top:16px"><strong style="color:var(--fg)">Who should this connection act as?</strong></p>
 ${options}
-${me.role !== "admin" ? "<p><small>Only admins can connect an assistant as an agent member.</small></p>" : ""}
 <p>It will be able to read and update tasks, post to task threads, ask questions, and upload attachments.</p>
 <div class="row"><button name="decision" value="deny">Deny</button><button class="primary" name="decision" value="approve">Allow</button></div>
 </form>`,
   );
+}
+
+async function createAgentProfile(env: AppEnv, me: MemberRow, name: string): Promise<MemberRow> {
+  const id = newId();
+  const handle = await uniqueHandle(env, me.workspace_id, name);
+  await env.DB.prepare(
+    `INSERT INTO members (id, workspace_id, kind, name, handle, role, description, created_by, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
+  )
+    .bind(id, me.workspace_id, "agent", name, handle, "member", "", me.id, nowIso())
+    .run();
+  const agent = (await env.DB.prepare("SELECT * FROM members WHERE id = ?").bind(id).first<MemberRow>())!;
+  await logActivity(env, me.workspace_id, { member: me, via: "web" }, "member", id, "agent_created", undefined, { name, handle, via_connect: true });
+  await notify(env, me.workspace_id, { type: "members" });
+  return agent;
 }
 
 export async function handleAuthorize(c: Context<{ Bindings: AppEnv }>) {
@@ -70,20 +89,18 @@ export async function handleAuthorize(c: Context<{ Bindings: AppEnv }>) {
       if (!me) {
         const url = new URL(c.req.url);
         const next = url.pathname + url.search;
-        const loginPath = env.GOOGLE_CLIENT_ID ? "/auth/google" : "/auth/dev";
-        return c.redirect(`${loginPath}?next=${encodeURIComponent(next)}`);
+        return c.redirect(`/?next=${encodeURIComponent(next)}`);
       }
       const request = await oauth.parseAuthRequest(c.req.raw);
       const details = await oauth.describeConsent(request);
       const consent = await oauth.beginConsent(request);
-      const agents =
-        me.role === "admin"
-          ? (
-              await env.DB.prepare("SELECT * FROM members WHERE workspace_id = ? AND kind = 'agent' AND active = 1 ORDER BY name")
-                .bind(me.workspace_id)
-                .all<MemberRow>()
-            ).results
-          : [];
+      const agents = (
+        await env.DB.prepare(
+          "SELECT * FROM members WHERE workspace_id = ? AND kind = 'agent' AND active = 1 AND (? = 'admin' OR created_by = ?) ORDER BY name",
+        )
+          .bind(me.workspace_id, me.role, me.id)
+          .all<MemberRow>()
+      ).results;
       consent.headers.set("Content-Type", "text/html; charset=utf-8");
       return new Response(consentHtml(details, consent.handle, me, agents), { headers: consent.headers });
     }
@@ -98,14 +115,18 @@ export async function handleAuthorize(c: Context<{ Bindings: AppEnv }>) {
     }
     const actAs = String(form.get("act_as") ?? me.id);
     let target: MemberRow = me;
-    if (actAs !== me.id) {
-      if (me.role !== "admin") return c.text("Only admins can connect as an agent", 403);
+    if (actAs === "__new__") {
+      const name = String(form.get("agent_name") ?? "").trim().slice(0, 60);
+      if (!name) return c.text("Give the new agent a name", 400);
+      target = await createAgentProfile(env, me, name);
+    } else if (actAs !== me.id) {
       const agent = await env.DB.prepare(
         "SELECT * FROM members WHERE id = ? AND workspace_id = ? AND kind = 'agent' AND active = 1",
       )
         .bind(actAs, me.workspace_id)
         .first<MemberRow>();
       if (!agent) return c.text("Unknown agent", 400);
+      if (me.role !== "admin" && agent.created_by !== me.id) return c.text("Only admins or the agent's creator can connect as it", 403);
       target = agent;
     }
     const approved = await oauth.approveConsent(c.req.raw, handle);

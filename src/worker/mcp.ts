@@ -21,6 +21,8 @@ import {
   getWorkspace,
   listProjects,
   listTasks,
+  logActivity,
+  notify,
   markRead,
   postEntry,
   publicMember,
@@ -32,7 +34,7 @@ import {
 } from "./domain";
 import { endRunsFor, touchRun } from "./orchestrator";
 import type { McpProps } from "./authorize";
-import { type AppEnv, HttpError, signValue } from "./util";
+import { type AppEnv, HttpError, encryptSecret, signValue } from "./util";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 
@@ -438,6 +440,49 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow) {
         return { ended: true };
       }),
   );
+
+  if (me.kind === "agent") {
+    server.registerTool(
+      "update_my_profile",
+      {
+        description:
+          "Set up your own agent profile: display name, a description of what you're good at (shown to humans when they pick an assignee), " +
+          "and the webhook the platform should POST to when it needs to wake you (e.g. your Grok Bot routine's webhook URL and key). " +
+          "Only the fields you pass are changed.",
+        inputSchema: {
+          name: z.string().min(1).max(60).optional(),
+          description: z.string().max(500).optional(),
+          webhook_url: z.string().url().optional().describe("https URL to wake you; empty string clears it"),
+          webhook_key: z.string().min(8).optional().describe("Sent as Authorization: Bearer <key>"),
+          wake_on_mention: z.boolean().optional(),
+        },
+      },
+      (input) =>
+        guard(async () => {
+          const sets: string[] = [];
+          const binds: unknown[] = [];
+          const set = (col: string, v: unknown) => (sets.push(`${col} = ?`), binds.push(v));
+          if (input.name) set("name", input.name.trim());
+          if (input.description !== undefined) set("description", input.description);
+          if (input.webhook_url !== undefined) {
+            if (input.webhook_url && !/^https?:\/\//.test(input.webhook_url)) throw new HttpError(400, "Webhook URL must be http(s)");
+            set("webhook_url", input.webhook_url || null);
+          }
+          if (input.webhook_key) set("webhook_key_encrypted", await encryptSecret(env, input.webhook_key));
+          if (input.wake_on_mention !== undefined) set("wake_on_mention", input.wake_on_mention ? 1 : 0);
+          if (sets.length) {
+            await env.DB.prepare(`UPDATE members SET ${sets.join(", ")} WHERE id = ?`).bind(...binds, me.id).run();
+            await logActivity(env, props.workspaceId, actor, "member", me.id, "updated", undefined, {
+              ...input,
+              webhook_key: input.webhook_key ? "***" : undefined,
+            });
+            await notify(env, props.workspaceId, { type: "members" });
+          }
+          const fresh = publicMember((await env.DB.prepare("SELECT * FROM members WHERE id = ?").bind(me.id).first<MemberRow>())!);
+          return { name: fresh.name, handle: fresh.handle, description: fresh.description, webhook_set: fresh.has_webhook, wake_on_mention: fresh.wake_on_mention };
+        }),
+    );
+  }
 
   server.registerTool(
     "list_projects",

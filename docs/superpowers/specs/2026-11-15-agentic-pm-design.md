@@ -221,6 +221,14 @@ The builder review raised five open points. The user asked to build without wait
 Other calls:
 - Triggers that arrive while a run is open set `pending_trigger`; when the run ends (question, `end_run`) a single `followup` run is dispatched. Completing a task discards pending triggers.
 - Webhook dispatch: 3 attempts (30s, 60s backoff), 15s timeout; rate limit defers to 5 minutes.
-- A dev-only email sign-in (`DEV_LOGIN=true`) exists for local testing; must be `false` in production.
+- ~~A dev-only email sign-in~~ removed on 2026-11-16 (see section 15).
 - Realtime: one Durable Object per workspace (not per task) broadcasting small change events; clients refetch.
 - MCP server is stateless Streamable HTTP with JSON responses (no SSE stream).
+
+## 15. Authentication change (2026-11-16)
+
+Requested: people must authenticate with simple auth; agents' profiles can be created by the agent connection itself.
+
+- **People:** email + password (PBKDF2-SHA256, 100k iterations). First visitor on an empty workspace creates the admin account; after that, admins create one-time invite links (7 days) and password-reset links (24 h; a reset ends all of that person's sessions). Sign-up is limited to `ALLOWED_EMAIL_DOMAINS`. 10 failed logins per address → 15-minute lockout (KV). Auth endpoints accept JSON only (blocks cross-site form posts). Passwordless dev login removed. Google sign-in stays optional.
+- **Agents:** never have passwords. They authenticate only via an MCP OAuth grant approved by a signed-in person. The consent screen offers *A new agent* (any person can create one; `created_by` records who), an existing agent (admins, or that agent's creator), or *Myself*. Agents can set their own name, description, webhook URL/key and wake-on-mention via the `update_my_profile` MCP tool. An agent's creator can configure, test-ping and see connections for it; deactivating stays admin-only.
+- Not done: no email delivery (admins copy links by hand), no self-service "forgot password", no 2FA.

@@ -15,6 +15,7 @@ export function MembersPage() {
   const me = useMe().data!.member!;
   const members = useMembers();
   const [editing, setEditing] = useState<Member | "new" | null>(null);
+  const [inviting, setInviting] = useState(false);
   const isAdmin = me.role === "admin";
   const agents = (members.data ?? []).filter((m) => m.kind === "agent");
   const humans = (members.data ?? []).filter((m) => m.kind === "human");
@@ -24,9 +25,12 @@ export function MembersPage() {
       <header className="flex items-center border-b border-zinc-200 px-4 py-2.5 md:px-6 dark:border-zinc-800">
         <h1 className="text-[15px] font-semibold">Members & agents</h1>
         {isAdmin && (
-          <Button variant="primary" className="ml-auto" onClick={() => setEditing("new")}>
-            Add agent
-          </Button>
+          <div className="ml-auto flex gap-2">
+            <Button onClick={() => setInviting(true)}>Invite person</Button>
+            <Button variant="primary" onClick={() => setEditing("new")}>
+              Add agent
+            </Button>
+          </div>
         )}
       </header>
       <div className="mx-auto max-w-4xl space-y-8 px-4 py-6 md:px-6">
@@ -47,7 +51,7 @@ export function MembersPage() {
                 <span className={cx("text-xs", a.has_webhook ? "text-emerald-600" : "text-amber-600")}>
                   {a.has_webhook ? "Webhook set" : "No webhook"}
                 </span>
-                {isAdmin && (
+                {(isAdmin || a.created_by === me.id) && (
                   <Button variant="ghost" className="text-xs" onClick={() => setEditing(a)}>
                     Configure
                   </Button>
@@ -56,7 +60,7 @@ export function MembersPage() {
             ))}
             {!agents.length && (
               <li className="px-4 py-8 text-center text-sm text-zinc-400">
-                No agents yet. {isAdmin ? "Add one to start assigning work to it." : "Ask an admin to add one."}
+                No agents yet. Connect an assistant over MCP and choose “A new agent”, or add one here.
               </li>
             )}
           </ul>
@@ -69,8 +73,10 @@ export function MembersPage() {
             ))}
           </ul>
         </section>
+        {isAdmin && <PendingInvites />}
       </div>
       {editing && <AgentModal agent={editing === "new" ? null : editing} onClose={() => setEditing(null)} />}
+      {inviting && <InviteModal onClose={() => setInviting(false)} />}
     </div>
   );
 }
@@ -82,9 +88,9 @@ function McpHelp() {
     <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 text-sm dark:border-zinc-800 dark:bg-zinc-900/50">
       <div className="font-medium">Connect an assistant (Grok Bot, Claude, …)</div>
       <ol className="mt-2 list-decimal space-y-1 pl-5 text-[13px] text-zinc-600 dark:text-zinc-400">
-        <li>Add the agent here, then paste its routine's webhook URL and key (Grok Bot: Routine → Trigger → Webhook).</li>
         <li>
-          In the assistant, add a custom MCP server with this URL and sign in. Choose which agent the connection acts as.
+          In the assistant, add a custom MCP server with this URL and sign in. Choose <strong>A new agent</strong> to create its profile, or
+          an existing agent.
           <div className="mt-1.5 flex items-center gap-2">
             <code className="rounded bg-white px-2 py-1 text-xs dark:bg-zinc-950">{url}</code>
             <button
@@ -99,7 +105,10 @@ function McpHelp() {
             </button>
           </div>
         </li>
-        <li>Use “Send test ping” to check the webhook. Assigning a task to the agent then wakes it.</li>
+        <li>
+          Give the agent its wake-up webhook (Grok Bot: Routine → Trigger → Webhook): paste the URL and key under Configure, or let the
+          agent set it itself with the <code>update_my_profile</code> tool. “Send test ping” checks it. Assigning a task then wakes the agent.
+        </li>
       </ol>
     </div>
   );
@@ -112,6 +121,11 @@ function HumanRow({ member, me }: { member: Member; me: Member }) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["members"] }),
   });
   const [showConn, setShowConn] = useState(false);
+  const [resetLink, setResetLink] = useState<string | null>(null);
+  const reset = useMutation({
+    mutationFn: () => api.post<{ url: string }>(`/api/members/${member.id}/reset-link`),
+    onSuccess: (r) => setResetLink(r.url),
+  });
   const canManage = me.role === "admin" && member.id !== me.id;
   return (
     <li className={cx("px-4 py-3", !member.active && "opacity-50")}>
@@ -139,9 +153,129 @@ function HumanRow({ member, me }: { member: Member; me: Member }) {
             </Button>
           </>
         )}
+        {me.role === "admin" && member.active && (
+          <Button variant="ghost" className="text-xs" onClick={() => reset.mutate()}>
+            Reset password
+          </Button>
+        )}
       </div>
+      {resetLink && (
+        <div className="mt-3">
+          <CopyLink url={resetLink} hint={`Send this to ${member.name}. It works once and expires in 24 hours.`} />
+        </div>
+      )}
       {showConn && <Connections memberId={member.id} />}
     </li>
+  );
+}
+
+function CopyLink({ url, hint }: { url: string; hint: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3 text-xs dark:border-zinc-800 dark:bg-zinc-900/50">
+      <div className="mb-1.5 text-zinc-500">{hint}</div>
+      <div className="flex items-center gap-2">
+        <code className="min-w-0 flex-1 truncate rounded bg-white px-2 py-1 dark:bg-zinc-950">{url}</code>
+        <button
+          className="text-accent"
+          onClick={() => {
+            navigator.clipboard.writeText(url);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          }}
+        >
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+interface PendingInvite {
+  id: string;
+  email: string;
+  name: string | null;
+  role: string;
+  created_at: string;
+  expires_at: string;
+}
+
+function PendingInvites() {
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ["invites"], queryFn: () => api.get<PendingInvite[]>("/api/invites") });
+  const revoke = useMutation({
+    mutationFn: (id: string) => api.del(`/api/invites/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["invites"] }),
+  });
+  if (!q.data?.length) return null;
+  return (
+    <section>
+      <h2 className="mb-2 text-xs font-medium tracking-wide text-zinc-500 uppercase">Pending invites</h2>
+      <ul className="divide-y divide-zinc-100 rounded-lg border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
+        {q.data.map((i) => (
+          <li key={i.id} className="flex items-center gap-3 px-4 py-2.5 text-sm">
+            <span className="font-medium">{i.email}</span>
+            <span className="text-xs text-zinc-400 capitalize">
+              {i.role} · invited {timeAgo(i.created_at)}
+            </span>
+            <button className="ml-auto text-xs text-red-600 hover:underline" onClick={() => revoke.mutate(i.id)}>
+              Revoke
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function InviteModal({ onClose }: { onClose: () => void }) {
+  const qc = useQueryClient();
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [role, setRole] = useState<"member" | "admin">("member");
+  const create = useMutation({
+    mutationFn: () => api.post<{ url: string }>("/api/invites", { email, name, role }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["invites"] }),
+  });
+  return (
+    <Modal open onClose={onClose}>
+      <div className="p-5">
+        <h2 className="mb-1 text-base font-semibold">Invite a person</h2>
+        <p className="mb-4 text-sm text-zinc-500">You'll get a sign-up link to send them. It works once and expires in 7 days.</p>
+        {create.data ? (
+          <CopyLink url={create.data.url} hint={`Send this link to ${email}. They'll choose a password.`} />
+        ) : (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              create.mutate();
+            }}
+            className="space-y-3"
+          >
+            <input className={inputClass} type="email" placeholder="name@impulze.ai" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
+            <input className={inputClass} placeholder="Name (optional)" value={name} onChange={(e) => setName(e.target.value)} />
+            <select className={inputClass} value={role} onChange={(e) => setRole(e.target.value as "member" | "admin")}>
+              <option value="member">Member</option>
+              <option value="admin">Admin</option>
+            </select>
+            {create.error && <p className="text-sm text-red-600">{(create.error as Error).message}</p>}
+            <div className="flex justify-end gap-2 pt-1">
+              <Button type="button" variant="ghost" onClick={onClose}>
+                Cancel
+              </Button>
+              <Button variant="primary" disabled={create.isPending}>
+                Create link
+              </Button>
+            </div>
+          </form>
+        )}
+        {create.data && (
+          <div className="mt-4 flex justify-end">
+            <Button onClick={onClose}>Done</Button>
+          </div>
+        )}
+      </div>
+    </Modal>
   );
 }
 
@@ -176,6 +310,7 @@ function Connections({ memberId }: { memberId: string }) {
 
 function AgentModal({ agent, onClose }: { agent: Member | null; onClose: () => void }) {
   const qc = useQueryClient();
+  const isAdmin = useMe().data?.member?.role === "admin";
   const [name, setName] = useState(agent?.name ?? "");
   const [handle, setHandle] = useState(agent?.handle ?? "");
   const [description, setDescription] = useState(agent?.description ?? "");
@@ -298,7 +433,7 @@ function AgentModal({ agent, onClose }: { agent: Member | null; onClose: () => v
         </div>
         {agent && <Connections memberId={agent.id} />}
         <div className="flex items-center gap-2 pt-2">
-          {agent && (
+          {agent && isAdmin && (
             <Button type="button" variant="danger" onClick={() => toggleActive.mutate()}>
               {agent.active ? "Deactivate" : "Reactivate"}
             </Button>

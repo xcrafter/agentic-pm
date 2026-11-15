@@ -59,14 +59,13 @@ function cookiesFrom(res, jar = {}) {
 }
 const cookieHeader = (jar) => Object.entries(jar).map(([k, v]) => `${k}=${v}`).join("; ");
 
-async function login(email, name) {
-  const res = await fetch(`${BASE}/auth/dev`, {
+async function authPost(path, body) {
+  const res = await fetch(`${BASE}${path}`, {
     method: "POST",
-    body: new URLSearchParams({ email, name, next: "/" }),
-    redirect: "manual",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
-  assert.equal(res.status, 302, `dev login failed: ${res.status} ${await res.text()}`);
-  return cookiesFrom(res);
+  return { res, jar: cookiesFrom(res), data: await res.json().catch(() => null) };
 }
 
 function webApi(jar) {
@@ -88,13 +87,63 @@ const pass = (s) => console.log(`  ✓ ${s}`);
 
 try {
   // ---------- human admin ----------
-  step("Human signs in");
-  const aliceJar = await login(`alice@impulze.ai`, "Alice");
-  const alice = webApi(aliceJar);
+  step("First person sets up the workspace with email + password");
+  const meBefore = await (await fetch(`${BASE}/api/me`)).json();
+  if (!meBefore.auth.setup) throw new Error("Run against a fresh database: the workspace is already set up");
+  const unauthApi = await fetch(`${BASE}/api/tasks`);
+  assert.equal(unauthApi.status, 401);
+  pass("API refuses requests without a session");
+  const PASSWORD = "correct horse battery";
+  const setup = await authPost("/auth/setup", { name: "Alice", email: "alice@impulze.ai", password: PASSWORD });
+  assert.equal(setup.res.status, 200, `setup: ${JSON.stringify(setup.data)}`);
+  const alice = webApi(setup.jar);
   const me = await alice("GET", "/api/me");
-  assert.ok(me.member, "signed in");
-  pass(`signed in as ${me.member.name} (${me.member.role})`);
-  if (me.member.role !== "admin") throw new Error("Run against a fresh database: first user must be admin");
+  assert.equal(me.member.role, "admin");
+  pass(`signed up as ${me.member.name} (${me.member.role})`);
+  const again = await authPost("/auth/setup", { name: "Mallory", email: "mallory@impulze.ai", password: "whatever123" });
+  assert.equal(again.res.status, 403);
+  pass("setup is closed once the first person exists");
+  const outsider = await authPost("/auth/setup", { email: "x@gmail.com", password: "whatever123" });
+  assert.notEqual(outsider.res.status, 200);
+  const devGone = await fetch(`${BASE}/auth/dev`, { method: "POST", body: new URLSearchParams({ email: "eve@impulze.ai" }), redirect: "manual" });
+  assert.notEqual(devGone.status, 302);
+  pass("passwordless developer sign-in no longer exists");
+
+  step("Password sign-in");
+  const wrong = await authPost("/auth/login", { email: "alice@impulze.ai", password: "nope-nope" });
+  assert.equal(wrong.res.status, 401);
+  const unknown = await authPost("/auth/login", { email: "nobody@impulze.ai", password: PASSWORD });
+  assert.equal(unknown.res.status, 401);
+  const formPost = await fetch(`${BASE}/auth/login`, { method: "POST", body: new URLSearchParams({ email: "alice@impulze.ai", password: PASSWORD }) });
+  assert.equal(formPost.status, 415);
+  pass("wrong password, unknown email and cross-site form posts are refused");
+  const good = await authPost("/auth/login", { email: "alice@impulze.ai", password: PASSWORD });
+  assert.equal(good.res.status, 200);
+  const aliceJar = good.jar;
+  pass("correct password signs in");
+
+  step("Admin invites a teammate; they set their own password");
+  const invite = await alice("POST", "/api/invites", { email: "bob@impulze.ai", name: "Bob" });
+  const token = invite.url.split("/invite/")[1];
+  const info = await (await fetch(`${BASE}/auth/invite/${token}`)).json();
+  assert.equal(info.email, "bob@impulze.ai");
+  const accept = await authPost(`/auth/invite/${token}`, { name: "Bob", password: "bobs-password" });
+  assert.equal(accept.res.status, 200, JSON.stringify(accept.data));
+  const bobJar = accept.jar;
+  const bob = webApi(bobJar);
+  assert.equal((await bob("GET", "/api/me")).member.role, "member");
+  const reuse = await authPost(`/auth/invite/${token}`, { name: "Eve", password: "eves-password" });
+  assert.equal(reuse.res.status, 404);
+  pass("invite link signs Bob up as a member and can't be reused");
+  const bobMember = (await alice("GET", "/api/members")).find((m) => m.email === "bob@impulze.ai");
+  const resetLink = await alice("POST", `/api/members/${bobMember.id}/reset-link`);
+  const reset = await authPost(`/auth/invite/${resetLink.url.split("/invite/")[1]}`, { password: "bobs-new-password" });
+  assert.equal(reset.res.status, 200);
+  assert.equal((await fetch(`${BASE}/api/me`, { headers: { Cookie: cookieHeader(bobJar) } }).then((r) => r.json())).member, null);
+  assert.equal((await authPost("/auth/login", { email: "bob@impulze.ai", password: "bobs-new-password" })).res.status, 200);
+  pass("admin reset link sets a new password and signs out old sessions");
+  const bobJar2 = reset.jar;
+  const bob2 = webApi(bobJar2);
 
   step("Admin adds a Grok Bot agent with a webhook");
   const agent = await alice("POST", "/api/members/agents", {
@@ -136,61 +185,87 @@ try {
   assert.ok(reg.client_id, `registration: ${JSON.stringify(reg)}`);
   pass(`registered client ${reg.client_id.slice(0, 12)}…`);
 
-  step("Admin approves the connection, acting as the agent");
-  const verifier = crypto.randomBytes(32).toString("base64url");
-  const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
-  const state = crypto.randomBytes(8).toString("hex");
-  const authUrl = new URL(asMeta.authorization_endpoint);
-  Object.entries({
-    response_type: "code",
-    client_id: reg.client_id,
-    redirect_uri: redirectUri,
-    code_challenge: challenge,
-    code_challenge_method: "S256",
-    state,
-    resource: prm.resource,
-    scope: "tasks",
-  }).forEach(([k, v]) => authUrl.searchParams.set(k, v));
-  const consentJar = { ...aliceJar };
-  const consentRes = await fetch(authUrl, { headers: { Cookie: cookieHeader(consentJar) }, redirect: "manual" });
-  assert.equal(consentRes.status, 200, `consent page: ${consentRes.status} ${await consentRes.clone().text()}`);
-  cookiesFrom(consentRes, consentJar);
-  const html = await consentRes.text();
-  assert.match(html, new RegExp(agent.name));
-  const handle = /name="handle" value="([^"]+)"/.exec(html)[1];
-  pass("consent page lists the agent as an 'act as' option");
-  const approve = await fetch(authUrl, {
-    method: "POST",
-    headers: { Cookie: cookieHeader(consentJar), "Content-Type": "application/x-www-form-urlencoded", Origin: new URL(BASE).origin },
-    body: new URLSearchParams({ handle, act_as: agent.id, decision: "approve" }),
-    redirect: "manual",
-  });
-  assert.equal(approve.status, 302, `approve: ${approve.status} ${await approve.text()}`);
-  const cb = new URL(approve.headers.get("location"));
-  assert.equal(cb.searchParams.get("state"), state);
-  const tokenRes = await fetch(asMeta.token_endpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      code: cb.searchParams.get("code"),
-      redirect_uri: redirectUri,
+  async function connect(jar, fields, checkHtml) {
+    const verifier = crypto.randomBytes(32).toString("base64url");
+    const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
+    const state = crypto.randomBytes(8).toString("hex");
+    const authUrl = new URL(asMeta.authorization_endpoint);
+    Object.entries({
+      response_type: "code",
       client_id: reg.client_id,
-      code_verifier: verifier,
+      redirect_uri: redirectUri,
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+      state,
       resource: prm.resource,
-    }),
+      scope: "tasks",
+    }).forEach(([k, v]) => authUrl.searchParams.set(k, v));
+    const consentJar = { ...jar };
+    const consentRes = await fetch(authUrl, { headers: { Cookie: cookieHeader(consentJar) }, redirect: "manual" });
+    assert.equal(consentRes.status, 200, `consent page: ${consentRes.status} ${await consentRes.clone().text()}`);
+    cookiesFrom(consentRes, consentJar);
+    const html = await consentRes.text();
+    checkHtml?.(html);
+    const handle = /name="handle" value="([^"]+)"/.exec(html)[1];
+    const approve = await fetch(authUrl, {
+      method: "POST",
+      headers: { Cookie: cookieHeader(consentJar), "Content-Type": "application/x-www-form-urlencoded", Origin: new URL(BASE).origin },
+      body: new URLSearchParams({ handle, decision: "approve", ...fields }),
+      redirect: "manual",
+    });
+    if (approve.status !== 302) return { status: approve.status };
+    const cb = new URL(approve.headers.get("location"));
+    assert.equal(cb.searchParams.get("state"), state);
+    const tokenRes = await fetch(asMeta.token_endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code: cb.searchParams.get("code"),
+        redirect_uri: redirectUri,
+        client_id: reg.client_id,
+        code_verifier: verifier,
+        resource: prm.resource,
+      }),
+    });
+    const tokens = await tokenRes.json();
+    assert.ok(tokens.access_token, `token: ${JSON.stringify(tokens)}`);
+    return { status: 302, tokens };
+  }
+
+  step("Signing in from the MCP consent screen redirects to the sign-in page");
+  const anonAuthorize = await fetch(`${BASE}/authorize?client_id=${reg.client_id}`, { redirect: "manual" });
+  assert.equal(anonAuthorize.status, 302);
+  assert.match(anonAuthorize.headers.get("location"), /^\/\?next=%2Fauthorize/);
+  pass("signed-out visitor is sent to /?next=/authorize…");
+
+  step("Admin approves the connection, acting as the agent");
+  const { tokens } = await connect(aliceJar, { act_as: agent.id }, (html) => {
+    assert.match(html, new RegExp(agent.name));
+    assert.match(html, /A new agent/);
   });
-  const tokens = await tokenRes.json();
-  assert.ok(tokens.access_token, `token: ${JSON.stringify(tokens)}`);
+  pass("consent page lists the agent and a 'new agent' option");
   pass("access token issued");
+
+  step("A non-admin can't take over an agent they didn't create");
+  const hijack = await connect(bobJar2, { act_as: agent.id }, (html) => assert.doesNotMatch(html, new RegExp(agent.name)));
+  assert.equal(hijack.status, 403);
+  pass("Bob doesn't see Alice's agent and can't connect as it");
+
+  step("Bob connects his assistant and creates a new agent profile on the consent screen");
+  const bobConn = await connect(bobJar2, { act_as: "__new__", agent_name: `Bob's Grok ${runId}` });
+  assert.equal(bobConn.status, 302);
+  const bobsAgent = (await bob2("GET", "/api/members")).find((m) => m.name === `Bob's Grok ${runId}`);
+  assert.ok(bobsAgent && bobsAgent.kind === "agent", "new agent member exists");
+  pass(`agent @${bobsAgent.handle} created by Bob`);
 
   // ---------- MCP client ----------
   let rpcId = 0;
-  async function mcp(method, params) {
+  async function mcp(method, params, accessToken = tokens.access_token) {
     const res = await fetch(`${BASE}/mcp`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${tokens.access_token}`,
+        Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
         Accept: "application/json, text/event-stream",
         "MCP-Protocol-Version": "2025-06-18",
@@ -203,8 +278,8 @@ try {
     if (msg.error) throw new Error(`mcp ${method}: ${JSON.stringify(msg.error)}`);
     return msg.result;
   }
-  async function tool(name, args = {}) {
-    const r = await mcp("tools/call", { name, arguments: args });
+  async function tool(name, args = {}, accessToken) {
+    const r = await mcp("tools/call", { name, arguments: args }, accessToken);
     const text = r.content?.[0]?.text ?? "";
     if (r.isError) throw new Error(`tool ${name}: ${text}`);
     try {
@@ -225,6 +300,17 @@ try {
   pass(`${tools.tools.length} tools: ${tools.tools.map((t) => t.name).join(", ")}`);
   const myMembers = await tool("list_members");
   assert.ok(myMembers.some((m) => m.id === agent.id));
+
+  step("Bob's new agent sets up its own profile and webhook over MCP");
+  const profile = await tool(
+    "update_my_profile",
+    { description: "Bob's research helper", webhook_url: `http://localhost:${HOOK_PORT}/hook`, webhook_key: HOOK_KEY },
+    bobConn.tokens.access_token,
+  );
+  assert.equal(profile.webhook_set, true);
+  const bobPing = await bob2("POST", `/api/members/${bobsAgent.id}/test-ping`);
+  assert.equal(bobPing.ok, true, JSON.stringify(bobPing));
+  pass("agent configured itself; its creator's test ping reaches the webhook");
 
   // ---------- the loop ----------
   step("Human creates a task assigned to the agent → agent is woken");

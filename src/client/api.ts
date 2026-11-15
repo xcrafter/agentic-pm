@@ -13,6 +13,7 @@ export interface Member {
   webhook_url: string | null;
   wake_on_mention: boolean;
   max_runs_per_hour: number;
+  created_by: string | null;
 }
 export type MemberRef = Pick<Member, "id" | "name" | "handle" | "kind" | "avatar_url">;
 
@@ -128,7 +129,7 @@ export interface Project {
 export interface Me {
   member: Member | null;
   workspace: { id: string; name: string; key_prefix: string } | null;
-  auth: { google: boolean; dev: boolean };
+  auth: { google: boolean; setup: boolean };
 }
 export interface Inbox {
   questions: (Entry & { task_key: string; task_title: string })[];

@@ -30,7 +30,7 @@ import {
   writeNote,
 } from "./domain";
 import { onAgentTrigger, retryRun, testPing } from "./orchestrator";
-import { SESSION_COOKIE, getSessionMember, uniqueHandle } from "./auth";
+import { type InviteRow, SESSION_COOKIE, createInvite, getSessionMember, needsSetup, uniqueHandle } from "./auth";
 import { type AppEnv, HttpError, badRequest, encryptSecret, forbidden, newId, notFound, nowIso, verifySignedValue } from "./util";
 
 type Vars = { me: MemberRow; ws: WorkspaceRow; actor: Actor };
@@ -49,7 +49,7 @@ api.get("/api/me", async (c) => {
   return c.json({
     member: me ? publicMember(me) : null,
     workspace: ws ? { id: ws.id, name: ws.name, key_prefix: ws.key_prefix } : null,
-    auth: { google: !!c.env.GOOGLE_CLIENT_ID, dev: c.env.DEV_LOGIN === "true" },
+    auth: { google: !!c.env.GOOGLE_CLIENT_ID, setup: me ? false : await needsSetup(c.env) },
   });
 });
 
@@ -132,8 +132,8 @@ api.post("/api/members/agents", async (c) => {
   const handle = await uniqueHandle(c.env, ws.id, body.handle || body.name);
   const id = newId();
   await c.env.DB.prepare(
-    `INSERT INTO members (id, workspace_id, kind, name, handle, avatar_url, role, description, webhook_url, webhook_key_encrypted, created_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO members (id, workspace_id, kind, name, handle, avatar_url, role, description, webhook_url, webhook_key_encrypted, created_by, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
   )
     .bind(
       id,
@@ -146,6 +146,7 @@ api.post("/api/members/agents", async (c) => {
       body.description ?? "",
       body.webhook_url || null,
       body.webhook_key ? await encryptSecret(c.env, body.webhook_key) : null,
+      me.id,
       nowIso(),
     )
     .run();
@@ -159,7 +160,7 @@ api.patch("/api/members/:id", async (c) => {
   const ws = c.get("ws");
   const target = await getMember(c.env, c.req.param("id"));
   if (target.workspace_id !== ws.id) throw notFound("Member");
-  if (me.role !== "admin" && target.id !== me.id) throw forbidden();
+  if (me.role !== "admin" && target.id !== me.id && target.created_by !== me.id) throw forbidden();
   const body = await c.req.json<{
     name?: string;
     description?: string;
@@ -204,10 +205,46 @@ api.patch("/api/members/:id", async (c) => {
   return c.json(publicMember(await getMember(c.env, target.id)));
 });
 
-api.post("/api/members/:id/test-ping", async (c) => {
+// ----- Invites & password resets (admins) -----
+api.get("/api/invites", async (c) => {
   requireAdmin(c.get("me"));
+  const rows = await c.env.DB.prepare(
+    "SELECT * FROM invites WHERE workspace_id = ? AND used_at IS NULL AND member_id IS NULL AND expires_at > ? ORDER BY created_at DESC",
+  )
+    .bind(c.get("ws").id, nowIso())
+    .all<InviteRow>();
+  return c.json(rows.results.map(({ id, email, name, role, created_at, expires_at }) => ({ id, email, name, role, created_at, expires_at })));
+});
+
+api.post("/api/invites", async (c) => {
+  const me = c.get("me");
+  requireAdmin(me);
+  const body = await c.req.json<{ email: string; name?: string; role?: "admin" | "member" }>();
+  const invite = await createInvite(c.env, me, { email: body.email, name: body.name, role: body.role === "admin" ? "admin" : "member" });
+  await logActivity(c.env, c.get("ws").id, c.get("actor"), "member", invite.id, "invited", undefined, { email: body.email });
+  return c.json(invite, 201);
+});
+
+api.delete("/api/invites/:id", async (c) => {
+  requireAdmin(c.get("me"));
+  await c.env.DB.prepare("DELETE FROM invites WHERE id = ? AND workspace_id = ? AND used_at IS NULL").bind(c.req.param("id"), c.get("ws").id).run();
+  return c.json({ ok: true });
+});
+
+api.post("/api/members/:id/reset-link", async (c) => {
+  const me = c.get("me");
+  requireAdmin(me);
+  const target = await getMember(c.env, c.req.param("id"));
+  if (target.workspace_id !== c.get("ws").id || target.kind !== "human" || !target.email) throw notFound("Person");
+  const link = await createInvite(c.env, me, { email: target.email, memberId: target.id });
+  await logActivity(c.env, c.get("ws").id, c.get("actor"), "member", target.id, "reset_link_created");
+  return c.json(link, 201);
+});
+
+api.post("/api/members/:id/test-ping", async (c) => {
   const agent = await getMember(c.env, c.req.param("id"));
   if (agent.kind !== "agent" || agent.workspace_id !== c.get("ws").id) throw notFound("Agent");
+  if (c.get("me").role !== "admin" && agent.created_by !== c.get("me").id) throw forbidden();
   return c.json(await testPing(c.env, agent));
 });
 
@@ -215,7 +252,7 @@ api.get("/api/members/:id/connections", async (c) => {
   const me = c.get("me");
   const target = await getMember(c.env, c.req.param("id"));
   if (target.workspace_id !== c.get("ws").id) throw notFound("Member");
-  if (me.role !== "admin" && me.id !== target.id) throw forbidden();
+  if (me.role !== "admin" && me.id !== target.id && target.created_by !== me.id) throw forbidden();
   const grants = await c.env.OAUTH_PROVIDER.listUserGrants(target.id);
   const out = [];
   for (const g of grants.items) {
@@ -235,7 +272,7 @@ api.delete("/api/members/:id/connections/:grantId", async (c) => {
   const me = c.get("me");
   const target = await getMember(c.env, c.req.param("id"));
   if (target.workspace_id !== c.get("ws").id) throw notFound("Member");
-  if (me.role !== "admin" && me.id !== target.id) throw forbidden();
+  if (me.role !== "admin" && me.id !== target.id && target.created_by !== me.id) throw forbidden();
   await c.env.OAUTH_PROVIDER.revokeGrant(c.req.param("grantId"), target.id);
   await logActivity(c.env, c.get("ws").id, c.get("actor"), "member", target.id, "connection_revoked", undefined, {
     grant: c.req.param("grantId"),
