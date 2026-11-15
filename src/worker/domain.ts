@@ -155,6 +155,7 @@ export function publicMember(m: MemberRow) {
     wake_on_mention: !!m.wake_on_mention,
     max_runs_per_hour: m.max_runs_per_hour,
     created_by: m.created_by ?? null,
+    created_at: m.created_at,
   };
 }
 export type PublicMember = ReturnType<typeof publicMember>;

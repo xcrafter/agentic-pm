@@ -14,6 +14,7 @@ export interface Member {
   wake_on_mention: boolean;
   max_runs_per_hour: number;
   created_by: string | null;
+  created_at: string;
 }
 export type MemberRef = Pick<Member, "id" | "name" | "handle" | "kind" | "avatar_url">;
 
@@ -171,3 +172,34 @@ export const api = {
     return request<T>("POST", p, fd);
   },
 };
+
+export interface FeedEntry {
+  id: string;
+  task_id: string;
+  task_key: string;
+  task_title: string;
+  author_id: string;
+  type: Entry["type"];
+  body: string;
+  data: Record<string, any>;
+  created_at: string;
+}
+export interface Overview {
+  workspace: { id: string; name: string; key_prefix: string; created_at: string };
+  by_status: Partial<Record<Status, number>>;
+  by_member: { member_id: string; open: number; waiting: number; done_7d: number }[];
+  done_7d: number;
+  open_questions: number;
+  active_runs: { id: string; agent_id: string; status: Run["status"]; trigger: string; created_at: string; last_activity_at: string | null; task_key: string; task_title: string }[];
+  recent: FeedEntry[];
+}
+export interface MemberRecord {
+  member: Member;
+  created_by: MemberRef | null;
+  stats: { open: number; waiting: number; done: number; done_7d: number; created: number };
+  recent: FeedEntry[];
+  runs: (Pick<Run, "id" | "status" | "trigger" | "attempts" | "last_error" | "created_at" | "dispatched_at" | "last_activity_at" | "ended_at"> & {
+    task_key: string;
+    task_title: string;
+  })[];
+}

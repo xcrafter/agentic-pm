@@ -473,4 +473,101 @@ api.post("/api/runs/:id/dismiss", async (c) => {
 });
 
 // ----- Inbox -----
+// ----- Record pages: the workspace ("company") and one member ("person") -----
+
+const ENTRY_FEED_SQL = `SELECT e.id, e.task_id, e.author_id, e.type, e.body, e.data, e.created_at, t.number, t.title AS task_title
+  FROM thread_entries e JOIN tasks t ON t.id = e.task_id
+  WHERE t.workspace_id = ? AND e.type IN ('comment','update','question','answer','note_created','checklist_created','attachment_added')`;
+
+type FeedRow = { id: string; task_id: string; author_id: string; type: string; body: string; data: string; created_at: string; number: number; task_title: string };
+const feed = (ws: WorkspaceRow, rows: FeedRow[]) =>
+  rows.map((r) => ({ ...r, data: JSON.parse(r.data || "{}"), task_key: `${ws.key_prefix}-${r.number}` }));
+
+api.get("/api/overview", async (c) => {
+  const ws = c.get("ws");
+  const db = c.env.DB;
+  const [byStatus, byMember, recent, runs, weekDone, questions] = await Promise.all([
+    db.prepare("SELECT status, COUNT(*) AS n FROM tasks WHERE workspace_id = ? GROUP BY status").bind(ws.id).all<{ status: string; n: number }>(),
+    db
+      .prepare(
+        `SELECT assignee_id AS member_id,
+           SUM(CASE WHEN status IN ('backlog','todo','in_progress','waiting_on_human') THEN 1 ELSE 0 END) AS open,
+           SUM(CASE WHEN status = 'waiting_on_human' THEN 1 ELSE 0 END) AS waiting,
+           SUM(CASE WHEN status = 'done' AND completed_at > ? THEN 1 ELSE 0 END) AS done_7d
+         FROM tasks WHERE workspace_id = ? AND assignee_id IS NOT NULL GROUP BY assignee_id`,
+      )
+      .bind(new Date(Date.now() - 7 * 86400_000).toISOString(), ws.id)
+      .all<{ member_id: string; open: number; waiting: number; done_7d: number }>(),
+    db.prepare(`${ENTRY_FEED_SQL} ORDER BY e.created_at DESC LIMIT 25`).bind(ws.id).all<FeedRow>(),
+    db
+      .prepare(
+        `SELECT r.id, r.agent_id, r.status, r.trigger, r.created_at, r.last_activity_at, t.number, t.title AS task_title
+         FROM agent_runs r JOIN tasks t ON t.id = r.task_id
+         WHERE t.workspace_id = ? AND r.status IN ('queued','dispatched','active') ORDER BY r.created_at DESC LIMIT 20`,
+      )
+      .bind(ws.id)
+      .all<{ id: string; agent_id: string; status: string; trigger: string; created_at: string; last_activity_at: string | null; number: number; task_title: string }>(),
+    db
+      .prepare("SELECT COUNT(*) AS n FROM tasks WHERE workspace_id = ? AND status = 'done' AND completed_at > ?")
+      .bind(ws.id, new Date(Date.now() - 7 * 86400_000).toISOString())
+      .first<{ n: number }>(),
+    db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM thread_entries e JOIN tasks t ON t.id = e.task_id
+         WHERE t.workspace_id = ? AND e.type = 'question' AND json_extract(e.data, '$.state') = 'open'`,
+      )
+      .bind(ws.id)
+      .first<{ n: number }>(),
+  ]);
+  return c.json({
+    workspace: { id: ws.id, name: ws.name, key_prefix: ws.key_prefix, created_at: ws.created_at },
+    by_status: Object.fromEntries(byStatus.results.map((r) => [r.status, r.n])),
+    by_member: byMember.results,
+    done_7d: weekDone?.n ?? 0,
+    open_questions: questions?.n ?? 0,
+    active_runs: runs.results.map((r) => ({ ...r, task_key: `${ws.key_prefix}-${r.number}` })),
+    recent: feed(ws, recent.results),
+  });
+});
+
+api.get("/api/members/:id/record", async (c) => {
+  const ws = c.get("ws");
+  const ref = c.req.param("id");
+  const m = await c.env.DB.prepare("SELECT * FROM members WHERE workspace_id = ? AND (id = ? OR handle = ?)").bind(ws.id, ref, ref).first<MemberRow>();
+  if (!m) throw notFound("Member");
+  const db = c.env.DB;
+  const [counts, recent, runs, created] = await Promise.all([
+    db
+      .prepare(
+        `SELECT
+           SUM(CASE WHEN status IN ('backlog','todo','in_progress','waiting_on_human') THEN 1 ELSE 0 END) AS open,
+           SUM(CASE WHEN status = 'waiting_on_human' THEN 1 ELSE 0 END) AS waiting,
+           SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done,
+           SUM(CASE WHEN status = 'done' AND completed_at > ? THEN 1 ELSE 0 END) AS done_7d
+         FROM tasks WHERE workspace_id = ? AND assignee_id = ?`,
+      )
+      .bind(new Date(Date.now() - 7 * 86400_000).toISOString(), ws.id, m.id)
+      .first<{ open: number; waiting: number; done: number; done_7d: number }>(),
+    db.prepare(`${ENTRY_FEED_SQL} AND e.author_id = ? ORDER BY e.created_at DESC LIMIT 40`).bind(ws.id, m.id).all<FeedRow>(),
+    m.kind === "agent"
+      ? db
+          .prepare(
+            `SELECT r.id, r.status, r.trigger, r.attempts, r.last_error, r.created_at, r.dispatched_at, r.last_activity_at, r.ended_at, t.number, t.title AS task_title
+             FROM agent_runs r JOIN tasks t ON t.id = r.task_id WHERE r.agent_id = ? ORDER BY r.created_at DESC LIMIT 30`,
+          )
+          .bind(m.id)
+          .all<Record<string, unknown> & { number: number }>()
+      : Promise.resolve({ results: [] as (Record<string, unknown> & { number: number })[] }),
+    db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE workspace_id = ? AND created_by = ?").bind(ws.id, m.id).first<{ n: number }>(),
+  ]);
+  const creator = m.created_by ? await c.env.DB.prepare("SELECT id, name, handle, kind, avatar_url FROM members WHERE id = ?").bind(m.created_by).first() : null;
+  return c.json({
+    member: { ...publicMember(m), created_at: m.created_at },
+    created_by: creator,
+    stats: { open: counts?.open ?? 0, waiting: counts?.waiting ?? 0, done: counts?.done ?? 0, done_7d: counts?.done_7d ?? 0, created: created?.n ?? 0 },
+    recent: feed(ws, recent.results),
+    runs: runs.results.map((r) => ({ ...r, task_key: `${ws.key_prefix}-${r.number}` })),
+  });
+});
+
 api.get("/api/inbox", async (c) => c.json(await getInbox(c.env, c.get("ws"), c.get("me"))));

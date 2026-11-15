@@ -2,7 +2,9 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { type Priority, type Status, type Task, PRIORITIES, PRIORITY_LABEL, STATUSES, STATUS_LABEL, api } from "../api";
-import { Avatar, Button, Menu, Modal, PriorityIcon, StatusIcon, assigneeOptions, useMembers, useProjects } from "../components";
+import { Button, Chip, MemberChip, Menu, Modal, ModalFooter, PriorityIcon, StatusIcon, assigneeOptions, useMembers, useProjects } from "../components";
+import { FolderKanban } from "lucide-react";
+import { ProjectDot } from "./Layout";
 import { type EditorHandle, RichEditor } from "../editor";
 
 export function CreateTaskModal({
@@ -55,7 +57,6 @@ export function CreateTaskModal({
   });
 
   const selectedMember = members.data?.find((m) => m.id === assignee);
-  const chip = "flex items-center gap-1.5 rounded-md border border-zinc-200 px-2 py-1 text-xs dark:border-zinc-700";
 
   return (
     <Modal open={open} onClose={onClose} wide>
@@ -65,24 +66,26 @@ export function CreateTaskModal({
           if (title.trim()) create.mutate();
         }}
       >
-        <div className="px-5 pt-5">
+        <div className="px-4 pt-4">
+          <div className="mb-3 text-[12px] font-medium text-ink-3">New task</div>
           <input
             autoFocus
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="Task title"
-            className="w-full bg-transparent text-lg font-medium outline-none placeholder:text-zinc-400"
+            aria-label="Task title"
+            className="w-full bg-transparent text-[18px] font-semibold tracking-[-0.01em] outline-none placeholder:text-ink-3"
           />
-          <div className="mt-2 max-h-[40vh] overflow-auto">
+          <div className="mt-2 max-h-[40vh] overflow-auto text-[14px]">
             <RichEditor ref={editor} placeholder="Add a description… what needs to happen, and what does done look like?" onSubmit={() => title.trim() && create.mutate()} />
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2 px-5 py-3">
+        <div className="flex flex-wrap items-center gap-2 px-4 py-3">
           <Menu
             trigger={
-              <span className={chip}>
-                <StatusIcon status={status} /> {STATUS_LABEL[status]}
-              </span>
+              <Chip>
+                <StatusIcon status={status} size={13} /> {STATUS_LABEL[status]}
+              </Chip>
             }
             value={status}
             onChange={setStatus}
@@ -90,9 +93,9 @@ export function CreateTaskModal({
           />
           <Menu
             trigger={
-              <span className={chip}>
-                <PriorityIcon priority={priority} /> {PRIORITY_LABEL[priority]}
-              </span>
+              <Chip>
+                <PriorityIcon priority={priority} size={13} /> {PRIORITY_LABEL[priority]}
+              </Chip>
             }
             value={priority}
             onChange={setPriority}
@@ -101,9 +104,9 @@ export function CreateTaskModal({
           <Menu
             searchable
             trigger={
-              <span className={chip}>
-                <Avatar member={selectedMember} size={14} /> {selectedMember?.name ?? "Assignee"}
-              </span>
+              <Chip>
+                <MemberChip member={selectedMember} size={15} />
+              </Chip>
             }
             value={assignee}
             onChange={setAssignee}
@@ -111,29 +114,37 @@ export function CreateTaskModal({
           />
           <Menu
             searchable
-            trigger={<span className={chip}>{projects.data?.find((p) => p.id === project)?.name ?? "No project"}</span>}
+            trigger={
+              <Chip>
+                {project !== "none" ? <ProjectDot id={project} /> : <FolderKanban size={13} />}
+                {projects.data?.find((p) => p.id === project)?.name ?? "No project"}
+              </Chip>
+            }
             value={project}
             onChange={setProject}
             options={[
               { value: "none", label: "No project" },
-              ...(projects.data ?? []).filter((p) => p.status === "active").map((p) => ({ value: p.id, label: p.name })),
+              ...(projects.data ?? []).filter((p) => p.status === "active").map((p) => ({ value: p.id, label: p.name, icon: <ProjectDot id={p.id} /> })),
             ]}
           />
         </div>
-        <div className="flex items-center justify-between border-t border-zinc-200 px-5 py-3 dark:border-zinc-800">
-          <span className="text-xs text-zinc-400">
-            {selectedMember?.kind === "agent" ? `${selectedMember.name} will be woken when you create this.` : "⌘↵ to create"}
-          </span>
-          <div className="flex gap-2">
-            <Button type="button" variant="ghost" onClick={onClose}>
-              Cancel
-            </Button>
-            <Button type="submit" variant="primary" disabled={!title.trim() || create.isPending}>
-              Create task
-            </Button>
-          </div>
-        </div>
-        {create.error && <p className="px-5 pb-3 text-sm text-red-600">{(create.error as Error).message}</p>}
+        {create.error && <p className="px-4 pb-3 text-[13px] text-[#c4312b]">{(create.error as Error).message}</p>}
+        <ModalFooter
+          hint={
+            selectedMember?.kind === "agent" ? (
+              <span className="text-agent">{selectedMember.name} is woken as soon as you create this.</span>
+            ) : (
+              "⌘ Enter to create"
+            )
+          }
+        >
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button type="submit" variant="primary" disabled={!title.trim() || create.isPending}>
+            Create task
+          </Button>
+        </ModalFooter>
       </form>
     </Modal>
   );

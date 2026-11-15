@@ -1,54 +1,124 @@
 @import "tailwindcss";
 
-@theme {
+/*
+ * Design tokens (Attio-like): white canvas, quiet grey chrome, hairline borders,
+ * one blue accent for actions, violet reserved for agents.
+ */
+:root {
+  --c-canvas: #ffffff;
+  --c-panel: #fbfbfb;
+  --c-subtle: #f7f7f8;
+  --c-hover: #f4f5f6;
+  --c-active: #eeeff1;
+  --c-line: #eeeff1;
+  --c-line-strong: #e1e2e6;
+  --c-ink: #1c1d1f;
+  --c-ink-2: #5c5e63;
+  --c-ink-3: #8f9198;
+  --c-accent: #2b6feb;
+  --c-accent-hover: #1f5fd6;
+  --c-accent-soft: #edf3fe;
+  --c-agent: #7047eb;
+  --c-agent-soft: #f2eefe;
+  --c-focus: rgba(43, 111, 235, 0.28);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --c-canvas: #141516;
+    --c-panel: #18191b;
+    --c-subtle: #1c1d20;
+    --c-hover: #222327;
+    --c-active: #2a2b30;
+    --c-line: #26272b;
+    --c-line-strong: #323339;
+    --c-ink: #eeeff1;
+    --c-ink-2: #b0b2b8;
+    --c-ink-3: #7c7e85;
+    --c-accent: #4d86f0;
+    --c-accent-hover: #6597f2;
+    --c-accent-soft: rgba(77, 134, 240, 0.14);
+    --c-agent: #a08bf5;
+    --c-agent-soft: rgba(160, 139, 245, 0.14);
+    --c-focus: rgba(77, 134, 240, 0.4);
+    color-scheme: dark;
+  }
+}
+
+@theme inline {
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --color-accent: #5b5bd6;
-  --color-accent-hover: #4c4cc4;
+  --color-canvas: var(--c-canvas);
+  --color-panel: var(--c-panel);
+  --color-subtle: var(--c-subtle);
+  --color-hover: var(--c-hover);
+  --color-active: var(--c-active);
+  --color-line: var(--c-line);
+  --color-line-strong: var(--c-line-strong);
+  --color-ink: var(--c-ink);
+  --color-ink-2: var(--c-ink-2);
+  --color-ink-3: var(--c-ink-3);
+  --color-accent: var(--c-accent);
+  --color-accent-hover: var(--c-accent-hover);
+  --color-accent-soft: var(--c-accent-soft);
+  --color-agent: var(--c-agent);
+  --color-agent-soft: var(--c-agent-soft);
+  --shadow-btn: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --shadow-pop: 0 0 0 1px rgba(16, 24, 40, 0.06), 0 10px 28px -8px rgba(16, 24, 40, 0.2);
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04);
 }
 
 html, body, #root { height: 100%; }
 body {
-  @apply bg-white text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100;
+  background: var(--c-canvas);
+  color: var(--c-ink);
   font-size: 14px;
+  font-feature-settings: "cv11", "ss01", "ss03";
+  -webkit-font-smoothing: antialiased;
+}
+:focus-visible { outline: 2px solid var(--c-focus); outline-offset: 1px; border-radius: 4px; }
+::selection { background: var(--c-accent-soft); }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
 
 /* Rendered markdown */
 .md { line-height: 1.6; overflow-wrap: anywhere; }
 .md > * + * { margin-top: 0.5em; }
-.md h1 { font-size: 1.35em; font-weight: 600; }
-.md h2 { font-size: 1.2em; font-weight: 600; }
-.md h3 { font-size: 1.05em; font-weight: 600; }
+.md h1 { font-size: 1.3em; font-weight: 600; letter-spacing: -0.01em; }
+.md h2 { font-size: 1.15em; font-weight: 600; }
+.md h3 { font-size: 1.03em; font-weight: 600; }
 .md ul { list-style: disc; padding-left: 1.4em; }
 .md ol { list-style: decimal; padding-left: 1.4em; }
 .md ul:has(> li > input[type="checkbox"]) { list-style: none; padding-left: 0.2em; }
 .md li > input[type="checkbox"] { margin-right: 0.4em; }
-.md a { @apply text-accent underline underline-offset-2; }
-.md code { @apply rounded bg-zinc-100 px-1 py-0.5 text-[0.9em] dark:bg-zinc-800; }
-.md pre { @apply overflow-x-auto rounded-md bg-zinc-100 p-3 dark:bg-zinc-900; }
-.md pre code { background: none; padding: 0; }
-.md blockquote { @apply border-l-2 border-zinc-300 pl-3 text-zinc-600 dark:border-zinc-700 dark:text-zinc-400; }
+.md a { color: var(--c-accent); text-decoration: underline; text-underline-offset: 2px; }
+.md code { background: var(--c-hover); border: 1px solid var(--c-line); border-radius: 4px; padding: 0.05em 0.3em; font-size: 0.88em; }
+.md pre { overflow-x: auto; background: var(--c-subtle); border: 1px solid var(--c-line); border-radius: 8px; padding: 12px; }
+.md pre code { background: none; border: 0; padding: 0; }
+.md blockquote { border-left: 2px solid var(--c-line-strong); padding-left: 12px; color: var(--c-ink-2); }
 .md table { border-collapse: collapse; }
-.md th, .md td { @apply border border-zinc-200 px-2 py-1 dark:border-zinc-800; }
-.md img { max-width: 100%; border-radius: 6px; }
-.md .mention { @apply rounded bg-indigo-50 px-1 font-medium text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300; }
+.md th, .md td { border: 1px solid var(--c-line); padding: 4px 8px; }
+.md img { max-width: 100%; border-radius: 8px; border: 1px solid var(--c-line); }
+.md .mention { background: var(--c-accent-soft); color: var(--c-accent); border-radius: 4px; padding: 0 3px; font-weight: 500; }
 
 /* Tiptap editor */
 .tiptap { outline: none; min-height: 2.5em; line-height: 1.6; }
 .tiptap > * + * { margin-top: 0.5em; }
-.tiptap h1 { font-size: 1.35em; font-weight: 600; }
-.tiptap h2 { font-size: 1.2em; font-weight: 600; }
-.tiptap h3 { font-size: 1.05em; font-weight: 600; }
+.tiptap h1 { font-size: 1.3em; font-weight: 600; }
+.tiptap h2 { font-size: 1.15em; font-weight: 600; }
+.tiptap h3 { font-size: 1.03em; font-weight: 600; }
 .tiptap ul { list-style: disc; padding-left: 1.4em; }
 .tiptap ol { list-style: decimal; padding-left: 1.4em; }
 .tiptap ul[data-type="taskList"] { list-style: none; padding-left: 0.2em; }
 .tiptap ul[data-type="taskList"] li { display: flex; gap: 0.5em; align-items: flex-start; }
 .tiptap ul[data-type="taskList"] li > label { margin-top: 0.2em; }
 .tiptap ul[data-type="taskList"] li > div { flex: 1; }
-.tiptap code { @apply rounded bg-zinc-100 px-1 py-0.5 text-[0.9em] dark:bg-zinc-800; }
-.tiptap pre { @apply rounded-md bg-zinc-100 p-3 dark:bg-zinc-900; }
-.tiptap blockquote { @apply border-l-2 border-zinc-300 pl-3 dark:border-zinc-700; }
-.tiptap a { @apply text-accent underline; }
+.tiptap code { background: var(--c-hover); border-radius: 4px; padding: 0.05em 0.3em; font-size: 0.88em; }
+.tiptap pre { background: var(--c-subtle); border: 1px solid var(--c-line); border-radius: 8px; padding: 12px; }
+.tiptap blockquote { border-left: 2px solid var(--c-line-strong); padding-left: 12px; }
+.tiptap a { color: var(--c-accent); text-decoration: underline; }
 .tiptap p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
-  @apply pointer-events-none float-left h-0 text-zinc-400 dark:text-zinc-500;
+  float: left; height: 0; pointer-events: none; color: var(--c-ink-3);
 }
+input[type="checkbox"] { accent-color: var(--c-accent); }

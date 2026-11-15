@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useParams } from "react-router";
 import { api } from "../api";
 import { Button } from "../components";
-import { AuthCard, Field } from "./Layout";
+import { AuthCard, AuthField as Field } from "./Layout";
 
 interface InviteInfo {
   email: string;
@@ -22,11 +22,11 @@ export function InvitePage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  if (info.isLoading) return <div className="p-8 text-zinc-400">Loading…</div>;
+  if (info.isLoading) return <div className="p-8 text-ink-3">Loading…</div>;
   if (info.error || !info.data)
     return (
       <AuthCard title="Link not valid" subtitle={info.error instanceof Error ? info.error.message : "This link is invalid or has expired."}>
-        <a href="/" className="text-sm text-accent">
+        <a href="/" className="text-[13px] text-accent">
           Go to sign in
         </a>
       </AuthCard>
@@ -56,8 +56,8 @@ export function InvitePage() {
         {!inv.reset && <Field label="Your name" defaultValue={inv.name ?? ""} onChange={(e) => setName(e.target.value)} required autoFocus />}
         <Field label="Password" type="password" autoComplete="new-password" minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} required autoFocus={inv.reset} />
         <Field label="Confirm password" type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} required />
-        {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
-        <Button variant="primary" className="w-full justify-center py-2" disabled={busy}>
+        {error && <p className="mb-3 text-[13px] text-[#c4312b]">{error}</p>}
+        <Button variant="primary" className="h-9 w-full" disabled={busy}>
           {busy ? "…" : inv.reset ? "Save password" : "Join"}
         </Button>
       </form>

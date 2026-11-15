@@ -1,12 +1,15 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { CircleDot, FolderKanban, ListTodo, Plus, UserRound } from "lucide-react";
 import { useState } from "react";
-import { Link } from "react-router";
+import { useNavigate } from "react-router";
 import { api } from "../api";
-import { Avatar, Button, Menu, Modal, assigneeOptions, cx, inputClass, useMembers, useProjects } from "../components";
+import { Button, Chip, EmptyState, Field, MemberChip, Menu, Modal, ModalFooter, Tag, TopBar, assigneeOptions, cx, inputClass, textareaClass, useMembers, useProjects, ChevronDown } from "../components";
+import { ProjectDot } from "./Layout";
 
 export function ProjectsPage() {
   const projects = useProjects();
   const members = useMembers();
+  const nav = useNavigate();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -27,80 +30,137 @@ export function ProjectsPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
   });
   const byId = new Map((members.data ?? []).map((m) => [m.id, m]));
+  const cell = "h-11 border-r border-b border-line px-3 text-[13px] whitespace-nowrap";
+  const th = "h-9 border-r border-b border-line px-3 text-left text-[12px] font-medium text-ink-3";
 
   return (
-    <div>
-      <header className="flex items-center border-b border-zinc-200 px-4 py-2.5 md:px-6 dark:border-zinc-800">
-        <h1 className="text-[15px] font-semibold">Projects</h1>
-        <Button variant="primary" className="ml-auto" onClick={() => setOpen(true)}>
-          New project
-        </Button>
-      </header>
-      <div className="mx-auto max-w-4xl px-4 py-6 md:px-6">
-        <p className="mb-4 text-sm text-zinc-500">Projects group related tasks. Tasks don't need a project.</p>
-        <ul className="divide-y divide-zinc-100 rounded-lg border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
-          {projects.data?.map((p) => {
-            const pct = p.task_count ? Math.round((p.done_count / p.task_count) * 100) : 0;
-            return (
-              <li key={p.id} className={cx("flex items-center gap-4 px-4 py-3", p.status === "archived" && "opacity-50")}>
-                <div className="min-w-0 flex-1">
-                  <Link to={`/projects/${p.id}`} className="font-medium hover:underline">
-                    {p.name}
-                  </Link>
-                  {p.description && <p className="truncate text-xs text-zinc-500">{p.description}</p>}
-                </div>
-                <div className="hidden w-32 sm:block">
-                  <div className="h-1 overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800">
-                    <div className="h-full bg-accent" style={{ width: `${pct}%` }} />
-                  </div>
-                  <div className="mt-1 text-[11px] text-zinc-400">
-                    {p.done_count}/{p.task_count} done
-                  </div>
-                </div>
-                <Avatar member={p.lead_member_id ? byId.get(p.lead_member_id) : null} size={20} />
-                <Button variant="ghost" className="text-xs" onClick={() => archive.mutate({ id: p.id, status: p.status === "active" ? "archived" : "active" })}>
-                  {p.status === "active" ? "Archive" : "Restore"}
-                </Button>
-              </li>
-            );
-          })}
-          {!projects.data?.length && <li className="px-4 py-8 text-center text-sm text-zinc-400">No projects yet.</li>}
-        </ul>
-      </div>
-      <Modal open={open} onClose={() => setOpen(false)}>
+    <div className="flex h-full flex-col">
+      <TopBar
+        crumbs={[{ label: "Projects", icon: <FolderKanban size={15} className="text-ink-3" /> }]}
+        actions={
+          <Button variant="primary" onClick={() => setOpen(true)}>
+            <Plus size={15} /> New project
+          </Button>
+        }
+      />
+      {!projects.data?.length ? (
+        <EmptyState
+          icon={<FolderKanban size={18} />}
+          title="No projects yet"
+          action={
+            <Button variant="primary" onClick={() => setOpen(true)}>
+              <Plus size={15} /> New project
+            </Button>
+          }
+        >
+          Projects group related tasks, like a campaign or a launch. Tasks don't need one.
+        </EmptyState>
+      ) : (
+        <div className="min-h-0 flex-1 overflow-auto">
+          <table className="w-full min-w-[820px] border-separate border-spacing-0">
+            <thead className="sticky top-0 bg-canvas">
+              <tr>
+                <th className={cx(th, "w-[40%]")}>
+                  <span className="flex items-center gap-1.5"><FolderKanban size={13} /> Project</span>
+                </th>
+                <th className={cx(th, "w-[220px]")}>
+                  <span className="flex items-center gap-1.5"><ListTodo size={13} /> Progress</span>
+                </th>
+                <th className={cx(th, "w-[200px]")}>
+                  <span className="flex items-center gap-1.5"><UserRound size={13} /> Lead</span>
+                </th>
+                <th className={cx(th, "w-[120px]")}>
+                  <span className="flex items-center gap-1.5"><CircleDot size={13} /> State</span>
+                </th>
+                <th className="border-b border-line" />
+              </tr>
+            </thead>
+            <tbody>
+              {projects.data.map((p) => {
+                const pct = p.task_count ? Math.round((p.done_count / p.task_count) * 100) : 0;
+                return (
+                  <tr key={p.id} onClick={() => nav(`/projects/${p.id}`)} className={cx("group cursor-pointer", p.status === "archived" && "opacity-55")}>
+                    <td className={cx(cell, "max-w-0 group-hover:bg-hover")}>
+                      <span className="flex min-w-0 items-center gap-2">
+                        <ProjectDot id={p.id} />
+                        <span className="font-medium">{p.name}</span>
+                        {p.description && <span className="truncate text-ink-3">{p.description}</span>}
+                      </span>
+                    </td>
+                    <td className={cx(cell, "group-hover:bg-hover")}>
+                      <span className="flex items-center gap-2.5">
+                        <span className="h-1.5 w-24 overflow-hidden rounded-full bg-active">
+                          <span className="block h-full rounded-full bg-[#1f9d5c]" style={{ width: `${pct}%` }} />
+                        </span>
+                        <span className="text-[12px] text-ink-3 tabular-nums">
+                          {p.done_count} of {p.task_count}
+                        </span>
+                      </span>
+                    </td>
+                    <td className={cx(cell, "group-hover:bg-hover")}>
+                      {p.lead_member_id ? <MemberChip member={byId.get(p.lead_member_id)} /> : <span className="text-ink-3">—</span>}
+                    </td>
+                    <td className={cx(cell, "group-hover:bg-hover")}>
+                      <span className="flex items-center gap-2">
+                        <Tag tone={p.status === "active" ? "green" : "gray"}>{p.status === "active" ? "Active" : "Archived"}</Tag>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 opacity-0 group-hover:opacity-100 focus:opacity-100"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            archive.mutate({ id: p.id, status: p.status === "active" ? "archived" : "active" });
+                          }}
+                        >
+                          {p.status === "active" ? "Archive" : "Restore"}
+                        </Button>
+                      </span>
+                    </td>
+                    <td className="border-b border-line group-hover:bg-hover" />
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <Modal open={open} onClose={() => setOpen(false)} title="New project">
         <form
-          className="space-y-3 p-5"
           onSubmit={(e) => {
             e.preventDefault();
             if (name.trim()) create.mutate();
           }}
         >
-          <h2 className="font-semibold">New project</h2>
-          <input autoFocus className={inputClass} placeholder="Project name" value={name} onChange={(e) => setName(e.target.value)} />
-          <textarea className={inputClass} rows={3} placeholder="What is this project about?" value={description} onChange={(e) => setDescription(e.target.value)} />
-          <div className="flex items-center gap-2 text-sm">
-            <span className="text-zinc-500">Lead</span>
-            <Menu
-              searchable
-              trigger={
-                <span className="flex items-center gap-1.5 rounded-md border border-zinc-200 px-2 py-1 text-xs dark:border-zinc-700">
-                  <Avatar member={byId.get(lead)} size={14} /> {byId.get(lead)?.name ?? "No lead"}
-                </span>
-              }
-              value={lead}
-              onChange={setLead}
-              options={assigneeOptions(members.data)}
-            />
+          <div className="space-y-4 p-4">
+            <Field label="Name">
+              <input autoFocus className={inputClass} placeholder="Q1 outbound to SaaS founders" value={name} onChange={(e) => setName(e.target.value)} />
+            </Field>
+            <Field label="Description" hint="Optional.">
+              <textarea className={textareaClass} rows={3} placeholder="What is this project for?" value={description} onChange={(e) => setDescription(e.target.value)} />
+            </Field>
+            <Field label="Lead">
+              <Menu
+                searchable
+                trigger={
+                  <Chip>
+                    <MemberChip member={byId.get(lead)} size={16} /> <ChevronDown size={13} />
+                  </Chip>
+                }
+                value={lead}
+                onChange={setLead}
+                options={assigneeOptions(members.data)}
+              />
+            </Field>
+            {create.error && <p className="text-[13px] text-[#c4312b]">{(create.error as Error).message}</p>}
           </div>
-          <div className="flex justify-end gap-2 pt-2">
+          <ModalFooter>
             <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
               Cancel
             </Button>
             <Button type="submit" variant="primary" disabled={!name.trim() || create.isPending}>
               Create project
             </Button>
-          </div>
-          {create.error && <p className="text-sm text-red-600">{(create.error as Error).message}</p>}
+          </ModalFooter>
         </form>
       </Modal>
     </div>

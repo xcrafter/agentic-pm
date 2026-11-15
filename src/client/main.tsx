@@ -1,14 +1,15 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, Route, Routes } from "react-router";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router";
 import "./index.css";
 import { Layout } from "./pages/Layout";
 import { BoardPage } from "./pages/Board";
 import { TaskPage } from "./pages/Task";
 import { InboxPage } from "./pages/Inbox";
 import { ProjectsPage } from "./pages/Projects";
-import { MembersPage } from "./pages/Members";
+import { MemberPage, TeamPage } from "./pages/Team";
+import { WorkspacePage } from "./pages/Workspace";
 import { InvitePage } from "./pages/Invite";
 
 const qc = new QueryClient({
@@ -27,7 +28,10 @@ createRoot(document.getElementById("root")!).render(
             <Route path="inbox" element={<InboxPage />} />
             <Route path="projects" element={<ProjectsPage />} />
             <Route path="projects/:projectId" element={<BoardPage />} />
-            <Route path="members" element={<MembersPage />} />
+            <Route path="workspace" element={<WorkspacePage />} />
+            <Route path="team" element={<TeamPage />} />
+            <Route path="team/:handle" element={<MemberPage />} />
+            <Route path="members" element={<Navigate to="/team" replace />} />
             <Route path="t/:taskKey" element={<TaskPage />} />
           </Route>
         </Routes>

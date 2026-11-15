@@ -1,6 +1,23 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router";
+import {
+  Activity,
+  Bot,
+  CalendarDays,
+  CheckSquare,
+  CircleDot,
+  FileText,
+  FolderKanban,
+  ListTodo,
+  MessageSquare,
+  Paperclip,
+  Plus,
+  Signal,
+  UserRound,
+  X,
+  Zap,
+} from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Link, useParams, useSearchParams } from "react-router";
 import {
   type Checklist,
   type Entry,
@@ -18,21 +35,37 @@ import {
 } from "../api";
 import {
   AgentBadge,
+  AttrRow,
   Avatar,
   Button,
+  EmptyState,
+  IconButton,
   Markdown,
+  MemberChip,
   Menu,
   PriorityIcon,
+  SectionTitle,
   StatusIcon,
+  StatusTag,
+  Tabs,
+  Tag,
+  TopBar,
   assigneeOptions,
+  attrValue,
   cx,
   formatBytes,
+  inputClass,
+  projectTone,
+  textareaClass,
   timeAgo,
   useMe,
   useMembers,
   useProjects,
 } from "../components";
 import { type EditorHandle, RichEditor } from "../editor";
+import { ProjectDot } from "./Layout";
+
+type TabKey = "overview" | "activity" | "files";
 
 export function TaskPage() {
   const { taskKey } = useParams();
@@ -41,6 +74,9 @@ export function TaskPage() {
   const members = useMembers();
   const byId = new Map((members.data ?? []).map((m) => [m.id, m]));
   const [replyTo, setReplyTo] = useState<Entry | null>(null);
+  const [params, setParams] = useSearchParams();
+  const tab = (params.get("tab") as TabKey) || "overview";
+  const setTab = (t: TabKey) => setParams(t === "overview" ? {} : { tab: t }, { replace: true });
 
   const patch = useMutation({
     mutationFn: (body: Record<string, unknown>) => api.patch(`/api/tasks/${taskKey}`, body),
@@ -50,58 +86,89 @@ export function TaskPage() {
     },
   });
 
-  if (q.isLoading) return <div className="p-8 text-zinc-400">Loading…</div>;
-  if (q.error || !q.data) return <div className="p-8 text-red-600">{(q.error as Error)?.message ?? "Not found"}</div>;
+  if (q.isLoading) return <div className="p-8 text-[13px] text-ink-3">Loading…</div>;
+  if (q.error || !q.data) return <div className="p-8 text-[13px] text-[#c4312b]">{(q.error as Error)?.message ?? "Task not found"}</div>;
   const { task, entries, notes, checklists, attachments, runs } = q.data;
   const openQuestions = entries.filter((e) => e.type === "question" && e.data.state === "open");
+  const conversation = entries.filter((e) => e.type !== "system").length;
+  const answer = (e: Entry) => {
+    setReplyTo(e);
+    setTab("activity");
+  };
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center gap-2 border-b border-zinc-200 px-4 py-2.5 text-[13px] md:px-6 dark:border-zinc-800">
-        <Link to={task.project ? `/projects/${task.project.id}` : "/"} className="text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200">
-          {task.project?.name ?? "All tasks"}
-        </Link>
-        <span className="text-zinc-300">›</span>
-        <span className="font-medium">{task.key}</span>
-      </header>
-      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        <div className="min-w-0 flex-1 overflow-auto">
-          <div className="mx-auto max-w-3xl px-4 py-6 md:px-8">
-            <TitleEditor value={task.title} onSave={(title) => patch.mutate({ title })} />
-            <DescriptionEditor key={task.id} value={task.description} onSave={(description) => patch.mutate({ description })} />
-
-            {(notes.length > 0 || checklists.length > 0) && (
-              <div className="mt-6 space-y-3">
-                {checklists.map((c) => (
-                  <ChecklistCard key={c.id} checklist={c} taskKey={task.key} byId={byId} />
-                ))}
-                {notes.map((n) => (
-                  <NoteCard key={n.id} note={n} taskKey={task.key} byId={byId} />
-                ))}
-              </div>
-            )}
-
-            <h2 className="mt-10 mb-3 text-[13px] font-semibold text-zinc-500">Activity</h2>
-            <Thread entries={entries} byId={byId} onReply={setReplyTo} attachments={attachments} />
-
-            {openQuestions.length > 0 && !replyTo && (
-              <div className="mt-4 rounded-lg border border-orange-200 bg-orange-50 p-3 text-sm dark:border-orange-500/30 dark:bg-orange-500/10">
-                <div className="font-medium text-orange-800 dark:text-orange-200">
-                  {openQuestions.length === 1 ? "An agent is waiting for your answer" : `${openQuestions.length} open questions`}
-                </div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {openQuestions.map((qe) => (
-                    <Button key={qe.id} onClick={() => setReplyTo(qe)}>
-                      Answer {byId.get(qe.author_id)?.name ?? "agent"}
-                    </Button>
-                  ))}
+      <TopBar
+        crumbs={[
+          task.project
+            ? { label: task.project.name, to: `/projects/${task.project.id}`, icon: <ProjectDot id={task.project.id} /> }
+            : { label: "All tasks", to: "/", icon: <ListTodo size={15} className="text-ink-3" /> },
+          { label: task.key },
+        ]}
+      />
+      <div className="flex min-h-0 flex-1 flex-col overflow-auto lg:flex-row lg:overflow-hidden">
+        <div className="flex min-w-0 flex-1 flex-col lg:overflow-auto">
+          <div className="px-4 pt-6 md:px-6">
+            <div className="flex items-start gap-3">
+              <span className="mt-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-line bg-panel">
+                <StatusIcon status={task.status} size={18} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <TitleEditor value={task.title} onSave={(title) => patch.mutate({ title })} />
+                <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[12px] text-ink-3">
+                  <span className="tabular-nums">{task.key}</span>
+                  <span>·</span>
+                  <span>
+                    Created by {byId.get(task.created_by)?.name ?? "someone"} {timeAgo(task.created_at)}
+                  </span>
                 </div>
               </div>
+            </div>
+            {openQuestions.length > 0 && (
+              <div className="mt-5 flex flex-wrap items-center gap-3 rounded-[10px] border border-[#f5c99a] bg-[#fef6ee] px-3.5 py-2.5 dark:border-[#e5791d]/40 dark:bg-[#e5791d]/10">
+                <MessageSquare size={16} className="text-[#e5791d]" />
+                <span className="flex-1 text-[13px] font-medium text-[#8a4510] dark:text-[#f5ac6e]">
+                  {openQuestions.length === 1
+                    ? `${byId.get(openQuestions[0].author_id)?.name ?? "An agent"} is waiting for your answer`
+                    : `${openQuestions.length} questions are waiting for an answer`}
+                </span>
+                <Button size="sm" onClick={() => answer(openQuestions[0])}>
+                  Answer
+                </Button>
+              </div>
             )}
-            <Composer taskKey={task.key} replyTo={replyTo} onClearReply={() => setReplyTo(null)} byId={byId} />
+          </div>
+          <Tabs
+            className="mt-5"
+            value={tab}
+            onChange={setTab}
+            tabs={[
+              { value: "overview", label: "Overview", icon: <FileText size={14} /> },
+              { value: "activity", label: "Activity", icon: <Activity size={14} />, count: conversation },
+              { value: "files", label: "Files", icon: <Paperclip size={14} />, count: attachments.length },
+            ]}
+          />
+          <div className="px-4 py-6 md:px-6">
+            {tab === "overview" && (
+              <div className="max-w-3xl space-y-8">
+                <section>
+                  <SectionTitle>Description</SectionTitle>
+                  <DescriptionEditor key={task.id} value={task.description} onSave={(description) => patch.mutate({ description })} />
+                </section>
+                <ChecklistsSection taskKey={task.key} checklists={checklists} byId={byId} />
+                <NotesSection taskKey={task.key} notes={notes} byId={byId} />
+              </div>
+            )}
+            {tab === "activity" && (
+              <div className="max-w-3xl">
+                <Thread entries={entries} byId={byId} onReply={answer} attachments={attachments} />
+                <Composer taskKey={task.key} replyTo={replyTo} onClearReply={() => setReplyTo(null)} byId={byId} />
+              </div>
+            )}
+            {tab === "files" && <FilesTab taskKey={task.key} attachments={attachments} byId={byId} />}
           </div>
         </div>
-        <Sidebar detail={q.data} members={members.data ?? []} onPatch={(b) => patch.mutate(b)} runs={runs} />
+        <Details detail={q.data} members={members.data ?? []} onPatch={(b) => patch.mutate(b)} runs={runs} />
       </div>
     </div>
   );
@@ -114,10 +181,11 @@ function TitleEditor({ value, onSave }: { value: string; onSave: (v: string) => 
     <textarea
       value={v}
       rows={1}
+      aria-label="Task title"
       onChange={(e) => setV(e.target.value.replace(/\n/g, ""))}
       onBlur={() => v.trim() && v !== value && onSave(v.trim())}
       onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), (e.target as HTMLTextAreaElement).blur())}
-      className="w-full resize-none bg-transparent text-2xl font-semibold outline-none [field-sizing:content]"
+      className="-mx-1 w-full resize-none rounded-md bg-transparent px-1 text-[22px] leading-tight font-semibold tracking-[-0.015em] outline-none [field-sizing:content] hover:bg-hover focus:bg-transparent"
     />
   );
 }
@@ -126,11 +194,11 @@ function DescriptionEditor({ value, onSave }: { value: string; onSave: (v: strin
   const ref = useRef<EditorHandle>(null);
   const [dirty, setDirty] = useState(false);
   return (
-    <div className="mt-3 rounded-md">
+    <div className="rounded-[10px] border border-line px-3.5 py-3 focus-within:border-line-strong">
       <RichEditor
         ref={ref}
         initial={value}
-        placeholder="Add a description…"
+        placeholder="What needs to happen, and what does done look like?"
         onChange={(md) => setDirty(md !== value)}
         onSubmit={() => {
           onSave(ref.current!.getMarkdown());
@@ -138,9 +206,10 @@ function DescriptionEditor({ value, onSave }: { value: string; onSave: (v: strin
         }}
       />
       {dirty && (
-        <div className="mt-2 flex gap-2">
+        <div className="mt-3 flex gap-2">
           <Button
             variant="primary"
+            size="sm"
             onClick={() => {
               onSave(ref.current!.getMarkdown());
               setDirty(false);
@@ -150,6 +219,7 @@ function DescriptionEditor({ value, onSave }: { value: string; onSave: (v: strin
           </Button>
           <Button
             variant="ghost"
+            size="sm"
             onClick={() => {
               ref.current?.setMarkdown(value);
               setDirty(false);
@@ -163,9 +233,9 @@ function DescriptionEditor({ value, onSave }: { value: string; onSave: (v: strin
   );
 }
 
-// ---------- Sidebar ----------
+// ---------- Details panel ----------
 
-function Sidebar({
+function Details({
   detail,
   members,
   onPatch,
@@ -188,114 +258,116 @@ function Sidebar({
     mutationFn: ({ id, action }: { id: string; action: "retry" | "dismiss" }) => api.post(`/api/runs/${id}/${action}`),
     onSuccess: () => qc.invalidateQueries(),
   });
-  const row = (label: string, child: ReactNode) => (
-    <div className="flex items-center gap-3 py-1.5">
-      <span className="w-20 shrink-0 text-xs text-zinc-500">{label}</span>
-      <div className="min-w-0 flex-1 text-[13px]">{child}</div>
-    </div>
-  );
-  const btn = "flex items-center gap-1.5 rounded px-1.5 py-1 hover:bg-zinc-100 dark:hover:bg-zinc-800";
   const activeRuns = runs.filter((r) => !r.dismissed && r.status !== "ended");
 
   return (
-    <aside className="shrink-0 border-t border-zinc-200 bg-zinc-50/60 px-5 py-5 lg:w-80 lg:overflow-auto lg:border-t-0 lg:border-l dark:border-zinc-800 dark:bg-zinc-900/30">
-      {row(
-        "Status",
-        <Menu
-          trigger={
-            <span className={btn}>
-              <StatusIcon status={task.status} /> {STATUS_LABEL[task.status]}
-            </span>
-          }
-          value={task.status}
-          onChange={(s: Status) => onPatch({ status: s })}
-          options={STATUSES.map((s) => ({ value: s, label: STATUS_LABEL[s], icon: <StatusIcon status={s} /> }))}
-        />,
-      )}
-      {row(
-        "Priority",
-        <Menu
-          trigger={
-            <span className={btn}>
-              <PriorityIcon priority={task.priority} /> {PRIORITY_LABEL[task.priority]}
-            </span>
-          }
-          value={task.priority}
-          onChange={(p: Priority) => onPatch({ priority: p })}
-          options={PRIORITIES.map((p) => ({ value: p, label: PRIORITY_LABEL[p], icon: <PriorityIcon priority={p} /> }))}
-        />,
-      )}
-      {row(
-        "Assignee",
-        <Menu
-          searchable
-          trigger={
-            <span className={btn}>
-              <Avatar member={assignee} size={18} /> {assignee?.name ?? "Unassigned"}
-              {assignee?.kind === "agent" && <AgentBadge />}
-            </span>
-          }
-          value={task.assignee?.id ?? "none"}
-          onChange={(id) => onPatch({ assignee_id: id === "none" ? null : id })}
-          options={assigneeOptions(members)}
-        />,
-      )}
-      {row(
-        "Project",
-        <Menu
-          searchable
-          trigger={<span className={btn}>{task.project?.name ?? <span className="text-zinc-400">No project</span>}</span>}
-          value={task.project?.id ?? "none"}
-          onChange={(id) => onPatch({ project_id: id === "none" ? null : id })}
-          options={[
-            { value: "none", label: "No project" },
-            ...(projects.data ?? []).filter((p) => p.status === "active").map((p) => ({ value: p.id, label: p.name })),
-          ]}
-        />,
-      )}
-      {row(
-        "Due",
-        <input
-          type="date"
-          value={task.due_date ?? ""}
-          onChange={(e) => onPatch({ due_date: e.target.value || null })}
-          className="rounded bg-transparent px-1.5 py-1 text-[13px] outline-none hover:bg-zinc-100 dark:hover:bg-zinc-800"
-        />,
-      )}
+    <aside className="shrink-0 border-t border-line lg:w-[340px] lg:overflow-auto lg:border-t-0 lg:border-l">
+      <div className="px-4 py-4">
+        <SectionTitle>Details</SectionTitle>
+        <AttrRow icon={<CircleDot size={14} />} label="Status">
+          <Menu
+            trigger={
+              <span className={attrValue}>
+                <StatusTag status={task.status} />
+              </span>
+            }
+            value={task.status}
+            onChange={(s: Status) => onPatch({ status: s })}
+            options={STATUSES.map((s) => ({ value: s, label: STATUS_LABEL[s], icon: <StatusIcon status={s} /> }))}
+          />
+        </AttrRow>
+        <AttrRow icon={<UserRound size={14} />} label="Assignee">
+          <Menu
+            searchable
+            trigger={
+              <span className={attrValue}>
+                <MemberChip member={assignee} />
+                {assignee?.kind === "agent" && <AgentBadge />}
+              </span>
+            }
+            value={task.assignee?.id ?? "none"}
+            onChange={(id) => onPatch({ assignee_id: id === "none" ? null : id })}
+            options={assigneeOptions(members)}
+          />
+        </AttrRow>
+        <AttrRow icon={<Signal size={14} />} label="Priority">
+          <Menu
+            trigger={
+              <span className={attrValue}>
+                <PriorityIcon priority={task.priority} /> {PRIORITY_LABEL[task.priority]}
+              </span>
+            }
+            value={task.priority}
+            onChange={(p: Priority) => onPatch({ priority: p })}
+            options={PRIORITIES.map((p) => ({ value: p, label: PRIORITY_LABEL[p], icon: <PriorityIcon priority={p} /> }))}
+          />
+        </AttrRow>
+        <AttrRow icon={<FolderKanban size={14} />} label="Project">
+          <Menu
+            searchable
+            trigger={
+              <span className={attrValue}>
+                {task.project ? <Tag tone={projectTone(task.project.id)}>{task.project.name}</Tag> : <span className="text-ink-3">No project</span>}
+              </span>
+            }
+            value={task.project?.id ?? "none"}
+            onChange={(id) => onPatch({ project_id: id === "none" ? null : id })}
+            options={[
+              { value: "none", label: "No project" },
+              ...(projects.data ?? []).filter((p) => p.status === "active").map((p) => ({ value: p.id, label: p.name, icon: <ProjectDot id={p.id} /> })),
+            ]}
+          />
+        </AttrRow>
+        <AttrRow icon={<CalendarDays size={14} />} label="Due date">
+          <input
+            type="date"
+            aria-label="Due date"
+            value={task.due_date ?? ""}
+            onChange={(e) => onPatch({ due_date: e.target.value || null })}
+            className={cx(attrValue, "w-full bg-transparent text-[13px] outline-none", !task.due_date && "text-ink-3")}
+          />
+        </AttrRow>
+      </div>
 
       {assignee?.kind === "agent" && (
-        <div className="mt-5 rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-zinc-500">Agent runs</span>
-            <Button variant="ghost" className="px-1.5 py-0.5 text-xs" onClick={() => wake.mutate()} disabled={wake.isPending}>
-              Wake {assignee.name}
-            </Button>
-          </div>
+        <div className="border-t border-line px-4 py-4">
+          <SectionTitle
+            action={
+              <Button size="sm" onClick={() => wake.mutate()} disabled={wake.isPending}>
+                <Zap size={13} /> Wake
+              </Button>
+            }
+          >
+            Agent runs
+          </SectionTitle>
           {!assignee.has_webhook && (
-            <p className="mt-2 text-xs text-amber-600">
-              This agent has no webhook yet. <Link to="/members" className="underline">Set it up</Link>.
+            <p className="mb-2 rounded-lg bg-[#fdf5dc] px-2.5 py-2 text-[12px] text-[#946200] dark:bg-[#e5b53a]/15 dark:text-[#ecc76a]">
+              {assignee.name} has no wake-up webhook yet, so it can't be woken.{" "}
+              <Link to={`/team/${assignee.handle}`} className="underline">
+                Set it up
+              </Link>
             </p>
           )}
-          {runs.length === 0 && <p className="mt-2 text-xs text-zinc-400">No runs yet.</p>}
-          <ul className="mt-2 space-y-1.5">
-            {runs.slice(0, 5).map((r) => (
-              <li key={r.id} className="text-xs">
+          {runs.length === 0 && <p className="text-[12px] text-ink-3">{assignee.name} hasn't been woken for this task yet.</p>}
+          <ul className="space-y-1">
+            {runs.slice(0, 6).map((r) => (
+              <li key={r.id} className="rounded-lg px-2 py-1.5 text-[12px] hover:bg-hover">
                 <div className="flex items-center gap-2">
                   <RunStatus status={r.status} />
-                  <span className="text-zinc-500">{r.trigger}</span>
-                  <span className="ml-auto text-zinc-400">{timeAgo(r.created_at)}</span>
+                  <span className="text-ink-3">{TRIGGER_LABEL[r.trigger] ?? r.trigger}</span>
+                  <span className="ml-auto text-ink-3">{timeAgo(r.created_at)}</span>
                 </div>
                 {r.last_error && (r.status === "failed" || r.status === "queued") && (
-                  <div className="mt-0.5 truncate text-red-600" title={r.last_error}>
+                  <div className="mt-0.5 truncate text-[#c4312b]" title={r.last_error}>
                     {r.last_error}
                   </div>
                 )}
                 {(r.status === "failed" || r.status === "stale") && !r.dismissed && (
-                  <div className="mt-1 flex gap-1">
-                    <Button className="px-1.5 py-0.5 text-xs" onClick={() => runAction.mutate({ id: r.id, action: "retry" })}>
-                      Retry
+                  <div className="mt-1.5 flex gap-1">
+                    <Button size="sm" onClick={() => runAction.mutate({ id: r.id, action: "retry" })}>
+                      Wake again
                     </Button>
-                    <Button variant="ghost" className="px-1.5 py-0.5 text-xs" onClick={() => runAction.mutate({ id: r.id, action: "dismiss" })}>
+                    <Button size="sm" variant="ghost" onClick={() => runAction.mutate({ id: r.id, action: "dismiss" })}>
                       Dismiss
                     </Button>
                   </div>
@@ -303,50 +375,40 @@ function Sidebar({
               </li>
             ))}
           </ul>
-          {activeRuns.length > 0 && <p className="mt-2 text-[11px] text-zinc-400">New messages are queued for the agent while it works.</p>}
+          {activeRuns.length > 0 && <p className="mt-2 text-[12px] text-ink-3">Messages you send now are passed on when {assignee.name} finishes this run.</p>}
         </div>
       )}
-
-      {detail.attachments.length > 0 && (
-        <div className="mt-5">
-          <div className="mb-1.5 text-xs font-medium text-zinc-500">Attachments</div>
-          <ul className="space-y-1">
-            {detail.attachments.map((a) => (
-              <li key={a.id}>
-                <a href={`/api/attachments/${a.id}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded px-1.5 py-1 text-[13px] hover:bg-zinc-100 dark:hover:bg-zinc-800">
-                  <span className="truncate">{a.filename}</span>
-                  <span className="ml-auto shrink-0 text-xs text-zinc-400">{formatBytes(a.size)}</span>
-                </a>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      <div className="mt-6 text-[11px] text-zinc-400">
-        Created {timeAgo(task.created_at)} · Updated {timeAgo(task.updated_at)}
-      </div>
     </aside>
   );
 }
 
+const TRIGGER_LABEL: Record<string, string> = {
+  assigned: "Assigned",
+  answered: "Answer received",
+  mentioned: "Mentioned",
+  manual: "Woken manually",
+  followup: "Follow-up",
+};
+
 function RunStatus({ status }: { status: Run["status"] }) {
-  const color: Record<Run["status"], string> = {
-    queued: "bg-zinc-400",
-    dispatched: "bg-sky-500",
-    active: "bg-emerald-500 animate-pulse",
-    ended: "bg-zinc-300 dark:bg-zinc-600",
-    failed: "bg-red-500",
-    stale: "bg-amber-500",
+  const map: Record<Run["status"], [string, "gray" | "violet" | "red" | "amber" | "green"]> = {
+    queued: ["Queued", "gray"],
+    dispatched: ["Starting", "violet"],
+    active: ["Working", "violet"],
+    ended: ["Finished", "gray"],
+    failed: ["Unreachable", "red"],
+    stale: ["Gone quiet", "amber"],
   };
+  const [label, tone] = map[status];
   return (
-    <span className="flex items-center gap-1.5">
-      <span className={cx("h-1.5 w-1.5 rounded-full", color[status])} />
-      <span className="capitalize">{status}</span>
-    </span>
+    <Tag tone={tone}>
+      {status === "active" && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" />}
+      {label}
+    </Tag>
   );
 }
 
-// ---------- Thread ----------
+// ---------- Activity ----------
 
 const SYSTEM_TEXT: Record<string, (d: any, byId: Map<string, Member>) => string> = {
   created: () => "created the task",
@@ -377,37 +439,37 @@ function Thread({
   const entryById = new Map(entries.map((e) => [e.id, e]));
   const attById = new Map(attachments.map((a) => [a.id, a]));
   return (
-    <ol className="relative space-y-3 before:absolute before:top-2 before:bottom-2 before:left-[11px] before:w-px before:bg-zinc-200 dark:before:bg-zinc-800">
+    <ol className="relative space-y-4 before:absolute before:top-3 before:bottom-3 before:left-[11px] before:w-px before:bg-line">
       {entries.map((e) => {
         const author = byId.get(e.author_id);
         if (e.type === "system" || e.type === "note_created" || e.type === "checklist_created" || e.type === "attachment_added") {
           let text = "";
           if (e.type === "system") text = (SYSTEM_TEXT[e.data.event] ?? (() => e.data.event))(e.data, byId);
-          if (e.type === "note_created") text = `added note “${e.data.title}”`;
-          if (e.type === "checklist_created") text = `added checklist “${e.data.title}”`;
+          if (e.type === "note_created") text = `added the note “${e.data.title}”`;
+          if (e.type === "checklist_created") text = `added the checklist “${e.data.title}”`;
           const att = e.type === "attachment_added" ? attById.get(e.data.attachment_id) : undefined;
           const isProblem = e.data.event === "run_failed" || e.data.event === "run_stale" || e.data.event === "agent_not_configured";
           return (
-            <li key={e.id} className="relative flex items-start gap-2 pl-[3px] text-xs text-zinc-500">
-              <span className="relative z-10 mt-px flex h-[18px] w-[18px] items-center justify-center rounded-full bg-white ring-4 ring-white dark:bg-zinc-950 dark:ring-zinc-950">
+            <li key={e.id} className="relative flex items-start gap-3 text-[12px] text-ink-3">
+              <span className="relative z-10 flex h-6 w-6 items-center justify-center rounded-full bg-canvas">
                 <Avatar member={author} size={16} />
               </span>
-              <span className={cx("pt-0.5", isProblem && "text-red-600")}>
-                <span className="font-medium text-zinc-700 dark:text-zinc-300">{author?.name ?? "System"}</span>{" "}
+              <span className={cx("pt-1", isProblem && "text-[#c4312b]")}>
+                <span className="font-medium text-ink-2">{author?.name ?? "System"}</span>{" "}
                 {e.type === "attachment_added" ? (
                   <>
                     attached{" "}
-                    <a className="text-accent underline" href={`/api/attachments/${e.data.attachment_id}`} target="_blank" rel="noreferrer">
+                    <a className="font-medium text-accent hover:underline" href={`/api/attachments/${e.data.attachment_id}`} target="_blank" rel="noreferrer">
                       {e.data.filename}
                     </a>
                     {att && att.content_type.startsWith("image/") && (
-                      <img src={`/api/attachments/${att.id}`} alt="" className="mt-2 max-h-64 rounded-md border border-zinc-200 dark:border-zinc-800" />
+                      <img src={`/api/attachments/${att.id}`} alt={att.filename} className="mt-2 max-h-64 rounded-lg border border-line" />
                     )}
                   </>
                 ) : (
                   text
-                )}{" "}
-                · {timeAgo(e.created_at)}
+                )}
+                <span className="ml-1.5">{timeAgo(e.created_at)}</span>
               </span>
             </li>
           );
@@ -415,46 +477,48 @@ function Thread({
         const replied = e.reply_to_id ? entryById.get(e.reply_to_id) : undefined;
         const isQ = e.type === "question";
         const open = isQ && e.data.state === "open";
+        const isAgent = author?.kind === "agent";
         return (
           <li key={e.id} className="relative flex gap-3">
-            <span className="relative z-10 rounded-full bg-white ring-4 ring-white dark:bg-zinc-950 dark:ring-zinc-950">
+            <span className="relative z-10 flex h-6 w-6 shrink-0 items-center justify-center bg-canvas">
               <Avatar member={author} size={24} />
             </span>
-            <div
-              className={cx(
-                "min-w-0 flex-1 rounded-lg border px-3.5 py-2.5",
-                isQ
-                  ? open
-                    ? "border-orange-300 bg-orange-50/60 dark:border-orange-500/40 dark:bg-orange-500/5"
-                    : "border-zinc-200 dark:border-zinc-800"
-                  : e.type === "update"
-                    ? "border-indigo-200 bg-indigo-50/40 dark:border-indigo-500/30 dark:bg-indigo-500/5"
-                    : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900",
-              )}
-            >
-              <div className="mb-1 flex flex-wrap items-center gap-1.5 text-xs">
-                <span className="font-medium">{author?.name ?? "Unknown"}</span>
-                {author?.kind === "agent" && <AgentBadge />}
-                {e.type === "update" && <span className="text-indigo-600 dark:text-indigo-300">posted an update</span>}
-                {isQ && <span className="text-orange-600 dark:text-orange-300">{open ? "asked a question" : "asked (answered)"}</span>}
-                {e.type === "answer" && <span className="text-emerald-600 dark:text-emerald-400">answered</span>}
-                <span className="text-zinc-400">· {timeAgo(e.created_at)}</span>
-                {e.edited_at && <span className="text-zinc-400">(edited)</span>}
+            <div className="min-w-0 flex-1">
+              <div className="mb-1.5 flex flex-wrap items-center gap-1.5 pt-0.5 text-[13px]">
+                <span className="font-semibold">{author?.name ?? "Unknown"}</span>
+                {isAgent && <AgentBadge />}
+                <span className="text-ink-3">
+                  {e.type === "update" ? "posted an update" : isQ ? "asked a question" : e.type === "answer" ? "answered" : "commented"}
+                </span>
+                <span className="text-[12px] text-ink-3">{timeAgo(e.created_at)}</span>
+                {e.edited_at && <span className="text-[12px] text-ink-3">(edited)</span>}
+                {isQ && !open && <Tag tone="green">Answered</Tag>}
+              </div>
+              <div
+                className={cx(
+                  "rounded-[10px] border px-3.5 py-2.5 text-[14px]",
+                  open
+                    ? "border-[#f5c99a] bg-[#fef6ee] dark:border-[#e5791d]/40 dark:bg-[#e5791d]/10"
+                    : isAgent
+                      ? "border-agent/20 bg-agent-soft/50"
+                      : "border-line bg-canvas shadow-card",
+                )}
+              >
+                {replied && (
+                  <div className="mb-2 truncate border-l-2 border-line-strong pl-2 text-[12px] text-ink-3">
+                    {byId.get(replied.author_id)?.name}: {replied.body.slice(0, 140)}
+                  </div>
+                )}
+                {isQ && e.data.addressed_to && <div className="mb-1 text-[12px] text-ink-3">For {byId.get(e.data.addressed_to)?.name ?? "someone"}</div>}
+                <Markdown text={e.body} />
                 {(isQ || e.type === "comment" || e.type === "update") && (
-                  <button onClick={() => onReply(e)} className="ml-auto text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200">
-                    {open ? "Answer" : "Reply"}
-                  </button>
+                  <div className="mt-2">
+                    <Button size="sm" variant={open ? "secondary" : "ghost"} className={cx(!open && "-ml-2")} onClick={() => onReply(e)}>
+                      {open ? "Answer" : "Reply"}
+                    </Button>
+                  </div>
                 )}
               </div>
-              {replied && (
-                <div className="mb-1.5 truncate border-l-2 border-zinc-300 pl-2 text-xs text-zinc-500 dark:border-zinc-700">
-                  {byId.get(replied.author_id)?.name}: {replied.body.slice(0, 140)}
-                </div>
-              )}
-              {isQ && e.data.addressed_to && (
-                <div className="mb-1 text-xs text-zinc-500">For {byId.get(e.data.addressed_to)?.name ?? "someone"}</div>
-              )}
-              <Markdown text={e.body} />
             </div>
           </li>
         );
@@ -465,7 +529,7 @@ function Thread({
 
 // ---------- Composer ----------
 
-type Mode = "comment" | "update" | "note" | "checklist";
+type Mode = "comment" | "update";
 
 function Composer({
   taskKey,
@@ -479,9 +543,6 @@ function Composer({
   byId: Map<string, Member>;
 }) {
   const [mode, setMode] = useState<Mode>("comment");
-  const [noteTitle, setNoteTitle] = useState("");
-  const [checklistTitle, setChecklistTitle] = useState("");
-  const [checklistItems, setChecklistItems] = useState("");
   const [drag, setDrag] = useState(false);
   const editor = useRef<EditorHandle>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -502,53 +563,26 @@ function Composer({
 
   const submit = useMutation({
     mutationFn: async () => {
-      if (mode === "checklist") {
-        const items = checklistItems.split("\n").map((s) => s.trim()).filter(Boolean);
-        await api.post(`/api/tasks/${taskKey}/checklists`, { title: checklistTitle || "Checklist", items });
-        return;
-      }
       const body = editor.current?.getMarkdown().trim() ?? "";
-      if (!body) throw new Error("Write something first");
-      if (mode === "note") {
-        await api.post(`/api/tasks/${taskKey}/notes`, { title: noteTitle || "Untitled note", content: body });
-      } else {
-        await api.post(`/api/tasks/${taskKey}/entries`, { type: mode, body, reply_to_id: replyTo?.id });
-      }
+      if (!body) throw new Error("Write a message first");
+      await api.post(`/api/tasks/${taskKey}/entries`, { type: mode, body, reply_to_id: replyTo?.id });
     },
     onSuccess: () => {
       editor.current?.setMarkdown("");
-      setNoteTitle("");
-      setChecklistTitle("");
-      setChecklistItems("");
       onClearReply();
       done();
     },
   });
-
   const upload = useMutation({
     mutationFn: (files: File[]) => api.upload(`/api/tasks/${taskKey}/attachments`, files),
     onSuccess: done,
   });
-
-  const tab = (m: Mode, label: string) => (
-    <button
-      type="button"
-      onClick={() => setMode(m)}
-      className={cx("rounded px-2 py-1 text-xs", mode === m ? "bg-zinc-200 font-medium dark:bg-zinc-700" : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200")}
-    >
-      {label}
-    </button>
-  );
+  const isAnswer = replyTo?.type === "question";
 
   return (
     <div
-      className={cx(
-        "mt-5 flex gap-3",
-      )}
-      onDragOver={(e) => {
-        e.preventDefault();
-        setDrag(true);
-      }}
+      className="mt-6 flex gap-3"
+      onDragOver={(e) => (e.preventDefault(), setDrag(true))}
       onDragLeave={() => setDrag(false)}
       onDrop={(e) => {
         e.preventDefault();
@@ -558,61 +592,54 @@ function Composer({
       }}
     >
       <Avatar member={me} size={24} />
-      <div className={cx("min-w-0 flex-1 rounded-lg border bg-white dark:bg-zinc-900", drag ? "border-accent" : "border-zinc-200 dark:border-zinc-800")}>
+      <div
+        className={cx(
+          "min-w-0 flex-1 rounded-[10px] border bg-canvas shadow-card focus-within:border-accent focus-within:ring-3 focus-within:ring-[var(--c-focus)]",
+          drag ? "border-accent" : "border-line-strong",
+        )}
+      >
         {replyTo && (
-          <div className="flex items-center gap-2 border-b border-zinc-100 px-3 py-1.5 text-xs text-zinc-500 dark:border-zinc-800">
+          <div className="flex items-center gap-2 border-b border-line px-3 py-1.5 text-[12px] text-ink-3">
             <span className="truncate">
-              {replyTo.type === "question" ? "Answering" : "Replying to"} {byId.get(replyTo.author_id)?.name}: “{replyTo.body.slice(0, 80)}”
+              {isAnswer ? "Answering" : "Replying to"} {byId.get(replyTo.author_id)?.name}: “{replyTo.body.slice(0, 80)}”
             </span>
-            <button onClick={onClearReply} className="ml-auto hover:text-zinc-800">
-              ✕
-            </button>
+            <IconButton label="Cancel reply" className="ml-auto h-6 w-6" onClick={onClearReply}>
+              <X size={13} />
+            </IconButton>
           </div>
         )}
-        <div className="px-3 pt-2.5">
-          {mode === "note" && (
-            <input value={noteTitle} onChange={(e) => setNoteTitle(e.target.value)} placeholder="Note title" className="mb-2 w-full bg-transparent text-sm font-semibold outline-none" />
-          )}
-          {mode === "checklist" ? (
-            <div className="space-y-2 pb-1">
-              <input value={checklistTitle} onChange={(e) => setChecklistTitle(e.target.value)} placeholder="Checklist title" className="w-full bg-transparent text-sm font-semibold outline-none" />
-              <textarea
-                value={checklistItems}
-                onChange={(e) => setChecklistItems(e.target.value)}
-                placeholder={"One item per line\nAnother item"}
-                rows={4}
-                className="w-full resize-y bg-transparent text-sm outline-none"
-              />
-            </div>
-          ) : (
-            <RichEditor
-              ref={editor}
-              placeholder={
-                replyTo?.type === "question"
-                  ? "Type your answer… the agent will be woken to continue."
-                  : mode === "update"
-                    ? "Share a progress update…"
-                    : mode === "note"
-                      ? "Write a note — headings, lists, to-dos, code…"
-                      : "Leave a comment… @mention an agent to wake it"
-              }
-              onSubmit={() => submit.mutate()}
-              className="max-h-80 overflow-auto"
-            />
-          )}
+        <div className="px-3.5 pt-3">
+          <RichEditor
+            ref={editor}
+            placeholder={
+              isAnswer
+                ? "Type your answer. The agent is woken to continue as soon as you send it."
+                : mode === "update"
+                  ? "Share a progress update…"
+                  : "Write a comment… @mention an agent to wake it"
+            }
+            onSubmit={() => submit.mutate()}
+            className="max-h-80 overflow-auto"
+          />
         </div>
-        <div className="flex items-center gap-1 px-2 py-2">
+        <div className="flex items-center gap-1 px-2 pt-1 pb-2">
           {!replyTo && (
-            <>
-              {tab("comment", "Comment")}
-              {tab("update", "Update")}
-              {tab("note", "Note")}
-              {tab("checklist", "Checklist")}
-            </>
+            <div className="flex rounded-lg bg-subtle p-0.5">
+              {(["comment", "update"] as Mode[]).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setMode(m)}
+                  className={cx("h-6 rounded-md px-2 text-[12px] font-medium capitalize", mode === m ? "bg-canvas text-ink shadow-btn" : "text-ink-3 hover:text-ink-2")}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
           )}
-          <button type="button" onClick={() => fileInput.current?.click()} className="rounded px-2 py-1 text-xs text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200">
-            {upload.isPending ? "Uploading…" : "Attach"}
-          </button>
+          <IconButton label={upload.isPending ? "Uploading…" : "Attach files"} onClick={() => fileInput.current?.click()}>
+            <Paperclip size={15} />
+          </IconButton>
           <input
             ref={fileInput}
             type="file"
@@ -624,20 +651,177 @@ function Composer({
               e.target.value = "";
             }}
           />
-          <span className="ml-auto mr-2 hidden text-[11px] text-zinc-400 sm:inline">⌘↵</span>
-          <Button variant="primary" onClick={() => submit.mutate()} disabled={submit.isPending}>
-            {replyTo?.type === "question" ? "Send answer" : mode === "note" ? "Add note" : mode === "checklist" ? "Add checklist" : mode === "update" ? "Post update" : "Comment"}
+          <span className="mr-2 ml-auto hidden text-[12px] text-ink-3 sm:inline">⌘ Enter</span>
+          <Button variant="primary" size="sm" onClick={() => submit.mutate()} disabled={submit.isPending}>
+            {isAnswer ? "Send answer" : mode === "update" ? "Post update" : "Comment"}
           </Button>
         </div>
-        {(submit.error || upload.error) && (
-          <p className="px-3 pb-2 text-xs text-red-600">{((submit.error || upload.error) as Error).message}</p>
-        )}
+        {(submit.error || upload.error) && <p className="px-3.5 pb-2 text-[12px] text-[#c4312b]">{((submit.error || upload.error) as Error).message}</p>}
       </div>
     </div>
   );
 }
 
+// ---------- Files ----------
+
+function FilesTab({ taskKey, attachments, byId }: { taskKey: string; attachments: TaskDetail["attachments"]; byId: Map<string, Member> }) {
+  const qc = useQueryClient();
+  const input = useRef<HTMLInputElement>(null);
+  const upload = useMutation({
+    mutationFn: (files: File[]) => api.upload(`/api/tasks/${taskKey}/attachments`, files),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["task", taskKey] }),
+  });
+  const picker = (
+    <>
+      <Button onClick={() => input.current?.click()} disabled={upload.isPending}>
+        <Plus size={14} /> {upload.isPending ? "Uploading…" : "Upload files"}
+      </Button>
+      <input
+        ref={input}
+        type="file"
+        multiple
+        hidden
+        onChange={(e) => {
+          const files = [...(e.target.files ?? [])];
+          if (files.length) upload.mutate(files);
+          e.target.value = "";
+        }}
+      />
+    </>
+  );
+  if (!attachments.length)
+    return (
+      <EmptyState icon={<Paperclip size={18} />} title="No files yet" action={picker}>
+        Files uploaded here, dropped into the thread, or attached by an agent appear in this list.
+      </EmptyState>
+    );
+  return (
+    <div className="max-w-3xl">
+      <div className="mb-3 flex justify-end">{picker}</div>
+      <ul className="divide-y divide-line overflow-hidden rounded-[10px] border border-line">
+        {attachments.map((a) => (
+          <li key={a.id}>
+            <a href={`/api/attachments/${a.id}`} target="_blank" rel="noreferrer" className="flex h-12 items-center gap-3 px-3.5 hover:bg-hover">
+              <span className="flex h-7 w-7 items-center justify-center rounded-md border border-line bg-panel text-ink-3">
+                <FileText size={14} />
+              </span>
+              <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{a.filename}</span>
+              <span className="hidden text-[12px] text-ink-3 sm:inline">{byId.get(a.uploaded_by)?.name}</span>
+              <span className="w-16 text-right text-[12px] text-ink-3 tabular-nums">{formatBytes(a.size)}</span>
+            </a>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 // ---------- Notes & checklists ----------
+
+function NotesSection({ taskKey, notes, byId }: { taskKey: string; notes: Note[]; byId: Map<string, Member> }) {
+  const [adding, setAdding] = useState(false);
+  const [title, setTitle] = useState("");
+  const editor = useRef<EditorHandle>(null);
+  const qc = useQueryClient();
+  const create = useMutation({
+    mutationFn: () => api.post(`/api/tasks/${taskKey}/notes`, { title: title || "Untitled note", content: editor.current?.getMarkdown() ?? "" }),
+    onSuccess: () => {
+      setAdding(false);
+      setTitle("");
+      qc.invalidateQueries({ queryKey: ["task", taskKey] });
+    },
+  });
+  return (
+    <section>
+      <SectionTitle
+        action={
+          !adding && (
+            <Button size="sm" variant="ghost" onClick={() => setAdding(true)}>
+              <Plus size={13} /> New note
+            </Button>
+          )
+        }
+      >
+        Notes
+      </SectionTitle>
+      <div className="space-y-3">
+        {adding && (
+          <div className="rounded-[10px] border border-line-strong px-3.5 py-3 shadow-card">
+            <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Note title" className="mb-2 w-full bg-transparent text-[14px] font-semibold outline-none placeholder:text-ink-3" />
+            <RichEditor ref={editor} placeholder="Write a note: headings, lists, to-dos, code…" onSubmit={() => create.mutate()} />
+            <div className="mt-3 flex gap-2">
+              <Button size="sm" variant="primary" onClick={() => create.mutate()} disabled={create.isPending}>
+                Add note
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setAdding(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+        {notes.map((n) => (
+          <NoteCard key={n.id} note={n} taskKey={taskKey} byId={byId} />
+        ))}
+        {!notes.length && !adding && <p className="text-[13px] text-ink-3">Longer write-ups (research, drafts, decisions) live here. Agents can write them too.</p>}
+      </div>
+    </section>
+  );
+}
+
+function ChecklistsSection({ taskKey, checklists, byId }: { taskKey: string; checklists: Checklist[]; byId: Map<string, Member> }) {
+  const [adding, setAdding] = useState(false);
+  const [title, setTitle] = useState("");
+  const [items, setItems] = useState("");
+  const qc = useQueryClient();
+  const create = useMutation({
+    mutationFn: () =>
+      api.post(`/api/tasks/${taskKey}/checklists`, {
+        title: title || "Checklist",
+        items: items.split("\n").map((s) => s.trim()).filter(Boolean),
+      }),
+    onSuccess: () => {
+      setAdding(false);
+      setTitle("");
+      setItems("");
+      qc.invalidateQueries({ queryKey: ["task", taskKey] });
+    },
+  });
+  return (
+    <section>
+      <SectionTitle
+        action={
+          !adding && (
+            <Button size="sm" variant="ghost" onClick={() => setAdding(true)}>
+              <Plus size={13} /> Add checklist
+            </Button>
+          )
+        }
+      >
+        Checklists
+      </SectionTitle>
+      <div className="space-y-3">
+        {adding && (
+          <div className="space-y-2 rounded-[10px] border border-line-strong p-3.5 shadow-card">
+            <input autoFocus className={inputClass} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Checklist title" />
+            <textarea className={textareaClass} rows={4} value={items} onChange={(e) => setItems(e.target.value)} placeholder={"One item per line\nAnother item"} />
+            <div className="flex gap-2">
+              <Button size="sm" variant="primary" onClick={() => create.mutate()} disabled={create.isPending}>
+                Add checklist
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setAdding(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+        {checklists.map((c) => (
+          <ChecklistCard key={c.id} checklist={c} taskKey={taskKey} byId={byId} />
+        ))}
+        {!checklists.length && !adding && <p className="text-[13px] text-ink-3">Break the work into steps people and agents can tick off.</p>}
+      </div>
+    </section>
+  );
+}
 
 function NoteCard({ note, taskKey, byId }: { note: Note; taskKey: string; byId: Map<string, Member> }) {
   const [editing, setEditing] = useState(false);
@@ -652,38 +836,39 @@ function NoteCard({ note, taskKey, byId }: { note: Note; taskKey: string; byId: 
       qc.invalidateQueries({ queryKey: ["task", taskKey] });
     },
   });
+  const author = byId.get(note.updated_by);
   return (
-    <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-      <div className="flex items-center gap-2 border-b border-zinc-100 px-3.5 py-2 dark:border-zinc-800">
-        <span className="text-zinc-400">¶</span>
+    <div className="rounded-[10px] border border-line bg-canvas shadow-card">
+      <div className="flex h-11 items-center gap-2 border-b border-line px-3.5">
+        <FileText size={14} className="text-ink-3" />
         {editing ? (
-          <input value={title} onChange={(e) => setTitle(e.target.value)} className="flex-1 bg-transparent text-sm font-semibold outline-none" />
+          <input value={title} onChange={(e) => setTitle(e.target.value)} className="flex-1 bg-transparent text-[13px] font-semibold outline-none" />
         ) : (
-          <button onClick={() => setCollapsed((c) => !c)} className="flex-1 truncate text-left text-sm font-semibold">
+          <button onClick={() => setCollapsed((c) => !c)} className="flex-1 truncate text-left text-[13px] font-semibold">
             {note.title}
           </button>
         )}
-        <span className="text-xs text-zinc-400">
-          {byId.get(note.updated_by)?.name} · {timeAgo(note.updated_at)}
+        <span className="hidden items-center gap-1.5 text-[12px] text-ink-3 sm:flex">
+          <Avatar member={author} size={14} /> {timeAgo(note.updated_at)}
         </span>
         {editing ? (
           <>
-            <Button variant="primary" className="px-2 py-0.5 text-xs" onClick={() => save.mutate()}>
+            <Button variant="primary" size="sm" onClick={() => save.mutate()}>
               Save
             </Button>
-            <Button variant="ghost" className="px-2 py-0.5 text-xs" onClick={() => setEditing(false)}>
+            <Button variant="ghost" size="sm" onClick={() => setEditing(false)}>
               Cancel
             </Button>
           </>
         ) : (
-          <Button variant="ghost" className="px-2 py-0.5 text-xs" onClick={() => (setEditing(true), setCollapsed(false), setTitle(note.title))}>
+          <Button variant="ghost" size="sm" onClick={() => (setEditing(true), setCollapsed(false), setTitle(note.title))}>
             Edit
           </Button>
         )}
       </div>
       {!collapsed && (
-        <div className="px-3.5 py-3">
-          {editing ? <RichEditor ref={editor} initial={note.content} autoFocus onSubmit={() => save.mutate()} /> : <Markdown text={note.content || "_Empty note_"} />}
+        <div className="px-3.5 py-3 text-[14px]">
+          {editing ? <RichEditor ref={editor} initial={note.content} autoFocus onSubmit={() => save.mutate()} /> : <Markdown text={note.content || "_This note is empty._"} />}
         </div>
       )}
     </div>
@@ -706,25 +891,26 @@ function ChecklistCard({ checklist, taskKey, byId }: { checklist: Checklist; tas
   const doneCount = checklist.items.filter((i) => i.done).length;
   const pct = checklist.items.length ? Math.round((doneCount / checklist.items.length) * 100) : 0;
   return (
-    <div className="rounded-lg border border-zinc-200 bg-white px-3.5 py-3 dark:border-zinc-800 dark:bg-zinc-900">
+    <div className="rounded-[10px] border border-line bg-canvas px-3.5 py-3 shadow-card">
       <div className="flex items-center gap-2">
-        <span className="text-sm font-semibold">{checklist.title}</span>
-        <span className="text-xs text-zinc-400">
-          {doneCount}/{checklist.items.length}
+        <CheckSquare size={14} className="text-ink-3" />
+        <span className="text-[13px] font-semibold">{checklist.title}</span>
+        <span className="ml-auto text-[12px] text-ink-3 tabular-nums">
+          {doneCount} of {checklist.items.length}
         </span>
       </div>
-      <div className="mt-2 h-1 overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800">
-        <div className="h-full bg-accent transition-all" style={{ width: `${pct}%` }} />
+      <div className="mt-2.5 h-1 overflow-hidden rounded-full bg-active">
+        <div className="h-full rounded-full bg-[#1f9d5c] transition-[width]" style={{ width: `${pct}%` }} />
       </div>
-      <ul className="mt-2 space-y-0.5">
+      <ul className="mt-2">
         {checklist.items.map((i) => (
-          <li key={i.id} className="group flex items-center gap-2 rounded px-1 py-1 hover:bg-zinc-50 dark:hover:bg-zinc-800/50">
-            <input type="checkbox" checked={!!i.done} onChange={(e) => toggle.mutate({ id: i.id, done: e.target.checked })} className="accent-[#5b5bd6]" />
-            <span className={cx("flex-1 text-[13px]", !!i.done && "text-zinc-400 line-through")}>{i.text}</span>
+          <li key={i.id} className="group flex min-h-8 items-center gap-2.5 rounded-md px-1 hover:bg-hover">
+            <input type="checkbox" checked={!!i.done} onChange={(e) => toggle.mutate({ id: i.id, done: e.target.checked })} />
+            <span className={cx("flex-1 text-[13px]", !!i.done && "text-ink-3 line-through")}>{i.text}</span>
             {i.done_by && i.done ? <Avatar member={byId.get(i.done_by)} size={14} /> : null}
-            <button onClick={() => remove.mutate(i.id)} className="hidden text-xs text-zinc-400 group-hover:block hover:text-red-600">
-              ✕
-            </button>
+            <IconButton label="Remove item" className="h-6 w-6 opacity-0 group-hover:opacity-100 focus:opacity-100" onClick={() => remove.mutate(i.id)}>
+              <X size={13} />
+            </IconButton>
           </li>
         ))}
       </ul>
@@ -734,8 +920,10 @@ function ChecklistCard({ checklist, taskKey, byId }: { checklist: Checklist; tas
           if (text.trim()) add.mutate();
         }}
       >
-        <input value={text} onChange={(e) => setText(e.target.value)} placeholder="+ Add item" className="mt-1 w-full bg-transparent px-1 py-1 text-[13px] outline-none" />
+        <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Add an item…" className="mt-1 h-8 w-full rounded-md bg-transparent px-1 text-[13px] outline-none placeholder:text-ink-3 hover:bg-hover focus:bg-transparent" />
       </form>
     </div>
   );
 }
+
+export { Bot };

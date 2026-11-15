@@ -66,5 +66,5 @@ export const RichEditor = forwardRef<
 
   useEffect(() => () => editor?.destroy(), [editor]);
 
-  return <EditorContent editor={editor} className={cx("text-sm", className)} />;
+  return <EditorContent editor={editor} className={cx("text-[14px]", className)} />;
 });

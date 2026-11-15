@@ -1,6 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Marked, type Tokens } from "marked";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { Bot, Check, ChevronDown, Menu as MenuIcon, Search, X } from "lucide-react";
+import { Link, useOutletContext } from "react-router";
 import {
   type Me,
   type Member,
@@ -70,67 +72,107 @@ export function cx(...c: (string | false | null | undefined)[]) {
   return c.filter(Boolean).join(" ");
 }
 
-const AVATAR_COLORS = ["bg-rose-500", "bg-amber-500", "bg-emerald-500", "bg-sky-500", "bg-violet-500", "bg-pink-500", "bg-teal-500"];
+const AVATAR_TONES = [
+  "bg-[#e8f0fe] text-[#1f5fd6]",
+  "bg-[#e6f6ec] text-[#16794a]",
+  "bg-[#fdf0e1] text-[#b25b0b]",
+  "bg-[#fde8ee] text-[#c0315a]",
+  "bg-[#e3f5f6] text-[#0f7b80]",
+  "bg-[#f0f0f2] text-[#4b4d52]",
+];
 
+/** People are round; agents are violet rounded squares with a bot glyph, everywhere. */
 export function Avatar({ member, size = 20 }: { member: MemberRef | Member | null | undefined; size?: number }) {
   if (!member)
     return (
       <span
-        className="inline-flex shrink-0 items-center justify-center rounded-full border border-dashed border-zinc-300 dark:border-zinc-600"
+        className="inline-flex shrink-0 rounded-full border border-dashed border-line-strong"
         style={{ width: size, height: size }}
         title="Unassigned"
       />
     );
-  const color = AVATAR_COLORS[member.name.split("").reduce((a, ch) => a + ch.charCodeAt(0), 0) % AVATAR_COLORS.length];
   const isAgent = member.kind === "agent";
+  const tone = AVATAR_TONES[member.name.split("").reduce((a, ch) => a + ch.charCodeAt(0), 0) % AVATAR_TONES.length];
+  const radius = isAgent ? (size > 24 ? "rounded-lg" : "rounded-[5px]") : "rounded-full";
   return (
     <span className="relative inline-flex shrink-0" title={`${member.name}${isAgent ? " (agent)" : ""}`} style={{ width: size, height: size }}>
       {member.avatar_url ? (
-        <img
-          src={member.avatar_url}
-          alt=""
-          className={cx("h-full w-full object-cover", isAgent ? "rounded-md" : "rounded-full")}
-          referrerPolicy="no-referrer"
-        />
+        <img src={member.avatar_url} alt="" className={cx("h-full w-full object-cover", radius)} referrerPolicy="no-referrer" />
       ) : (
         <span
-          className={cx(
-            "flex h-full w-full items-center justify-center font-semibold text-white",
-            isAgent ? "rounded-md bg-zinc-800 dark:bg-zinc-200 dark:text-zinc-900" : cx("rounded-full", color),
-          )}
-          style={{ fontSize: size * 0.45 }}
+          className={cx("flex h-full w-full items-center justify-center font-semibold", radius, isAgent ? "bg-agent text-white" : tone)}
+          style={{ fontSize: Math.max(9, size * 0.44) }}
         >
-          {isAgent ? <BotGlyph size={size * 0.62} /> : member.name.slice(0, 1).toUpperCase()}
+          {isAgent ? <Bot size={size * 0.62} strokeWidth={2} /> : member.name.slice(0, 1).toUpperCase()}
         </span>
       )}
     </span>
   );
 }
 
-export function BotGlyph({ size = 12 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden>
-      <rect x="2.5" y="5" width="11" height="8" rx="2.2" />
-      <path d="M8 2.2V5M5.8 8.6v.8M10.2 8.6v.8" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 export function AgentBadge() {
   return (
-    <span className="inline-flex items-center gap-0.5 rounded bg-zinc-100 px-1 py-px text-[10px] font-medium uppercase tracking-wide text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
-      Agent
+    <span className="inline-flex items-center gap-1 rounded-[5px] bg-agent-soft px-1.5 py-px text-[11px] font-medium text-agent">
+      <Bot size={11} strokeWidth={2.2} /> Agent
     </span>
   );
 }
 
+/** A member reference rendered like an Attio record chip: avatar + name. */
+export function MemberChip({ member, size = 18, muted }: { member: MemberRef | Member | null | undefined; size?: number; muted?: boolean }) {
+  return (
+    <span className="inline-flex min-w-0 items-center gap-1.5">
+      <Avatar member={member} size={size} />
+      <span className={cx("truncate", !member && "text-ink-3", muted && "text-ink-2")}>{member?.name ?? "Unassigned"}</span>
+    </span>
+  );
+}
+
+// ---------- Tags ----------
+
+export type Tone = "gray" | "blue" | "green" | "amber" | "orange" | "red" | "violet" | "teal" | "pink";
+const TONES: Record<Tone, string> = {
+  gray: "bg-[#f0f0f2] text-[#4b4d52] dark:bg-white/8 dark:text-[#c4c6cc]",
+  blue: "bg-[#e8f0fe] text-[#1f5fd6] dark:bg-[#4d86f0]/15 dark:text-[#8db1f5]",
+  green: "bg-[#e6f6ec] text-[#16794a] dark:bg-[#3fb27f]/15 dark:text-[#7dd3a8]",
+  amber: "bg-[#fdf5dc] text-[#946200] dark:bg-[#e5b53a]/15 dark:text-[#ecc76a]",
+  orange: "bg-[#fdf0e1] text-[#b25b0b] dark:bg-[#f08c3a]/15 dark:text-[#f5ac6e]",
+  red: "bg-[#fde9e8] text-[#c4312b] dark:bg-[#ef5350]/15 dark:text-[#f28b88]",
+  violet: "bg-agent-soft text-agent",
+  teal: "bg-[#e3f5f6] text-[#0f7b80] dark:bg-[#2fb5bb]/15 dark:text-[#72d1d5]",
+  pink: "bg-[#fde8ee] text-[#c0315a] dark:bg-[#ec5c86]/15 dark:text-[#f190ac]",
+};
+
+export function Tag({ tone = "gray", children, className }: { tone?: Tone; children: ReactNode; className?: string }) {
+  return (
+    <span className={cx("inline-flex h-[22px] max-w-full items-center gap-1 rounded-[6px] px-1.5 text-[12px] font-medium whitespace-nowrap", TONES[tone], className)}>
+      {children}
+    </span>
+  );
+}
+
+/** Deterministic colour for a project tag. */
+export function projectTone(id: string): Tone {
+  const tones: Tone[] = ["blue", "green", "amber", "pink", "teal", "orange"];
+  return tones[id.split("").reduce((a, ch) => a + ch.charCodeAt(0), 0) % tones.length];
+}
+
+export const STATUS_TONE: Record<Status, Tone> = {
+  backlog: "gray",
+  todo: "gray",
+  in_progress: "blue",
+  waiting_on_human: "orange",
+  done: "green",
+  canceled: "gray",
+};
+
 const STATUS_COLOR: Record<Status, string> = {
-  backlog: "#a1a1aa",
-  todo: "#71717a",
-  in_progress: "#eab308",
-  waiting_on_human: "#f97316",
-  done: "#5b5bd6",
-  canceled: "#a1a1aa",
+  backlog: "#a3a5ab",
+  todo: "#7c7e85",
+  in_progress: "#2b6feb",
+  waiting_on_human: "#e5791d",
+  done: "#1f9d5c",
+  canceled: "#a3a5ab",
 };
 
 export function StatusIcon({ status, size = 14 }: { status: Status; size?: number }) {
@@ -168,11 +210,20 @@ export function StatusIcon({ status, size = 14 }: { status: Status; size?: numbe
   );
 }
 
+export function StatusTag({ status }: { status: Status }) {
+  return (
+    <Tag tone={STATUS_TONE[status]}>
+      <StatusIcon status={status} size={12} />
+      {STATUS_LABEL[status]}
+    </Tag>
+  );
+}
+
 export function PriorityIcon({ priority, size = 14 }: { priority: Priority; size?: number }) {
   if (priority === "urgent")
     return (
       <svg width={size} height={size} viewBox="0 0 16 16" aria-label="Urgent" className="shrink-0">
-        <rect x="1.5" y="1.5" width="13" height="13" rx="3" fill="#f97316" />
+        <rect x="1.5" y="1.5" width="13" height="13" rx="3.5" fill="#e5543d" />
         <path d="M8 4.5v4.5M8 11.2v.3" stroke="white" strokeWidth="1.8" strokeLinecap="round" />
       </svg>
     );
@@ -180,21 +231,21 @@ export function PriorityIcon({ priority, size = 14 }: { priority: Priority; size
   return (
     <svg width={size} height={size} viewBox="0 0 16 16" aria-label={PRIORITY_LABEL[priority]} className="shrink-0">
       {priority === "none" ? (
-        <path d="M3 8h2M7 8h2M11 8h2" stroke="#a1a1aa" strokeWidth="1.6" strokeLinecap="round" />
+        <path d="M3 8h2M7 8h2M11 8h2" stroke="var(--c-ink-3)" strokeWidth="1.6" strokeLinecap="round" />
       ) : (
         [0, 1, 2].map((i) => (
-          <rect
-            key={i}
-            x={2.5 + i * 4}
-            y={10 - i * 3}
-            width="3"
-            height={4 + i * 3}
-            rx="1"
-            className={i < bars ? "fill-zinc-600 dark:fill-zinc-300" : "fill-zinc-200 dark:fill-zinc-700"}
-          />
+          <rect key={i} x={2.5 + i * 4} y={10 - i * 3} width="3" height={4 + i * 3} rx="1" fill={i < bars ? "var(--c-ink-2)" : "var(--c-line-strong)"} />
         ))
       )}
     </svg>
+  );
+}
+
+export function Kbd({ children }: { children: ReactNode }) {
+  return (
+    <kbd className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-[4px] border border-line-strong bg-canvas px-1 font-sans text-[11px] text-ink-3">
+      {children}
+    </kbd>
   );
 }
 
@@ -253,13 +304,15 @@ export function Menu<T extends string>({
   onChange,
   searchable,
   align = "left",
+  width = "w-60",
 }: {
   trigger: ReactNode;
-  options: { value: T; label: string; icon?: ReactNode; hint?: string }[];
+  options: { value: T; label: string; icon?: ReactNode; hint?: ReactNode }[];
   value?: T | null;
   onChange: (v: T) => void;
   searchable?: boolean;
   align?: "left" | "right";
+  width?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -277,35 +330,34 @@ export function Menu<T extends string>({
   }, [open]);
   const filtered = options.filter((o) => !q || o.label.toLowerCase().includes(q.toLowerCase()));
   return (
-    <div className="relative" ref={ref}>
+    <div className="relative min-w-0" ref={ref}>
       <button
         type="button"
+        aria-expanded={open}
         onClick={(e) => {
           e.stopPropagation();
           e.preventDefault();
           setOpen((o) => !o);
           setQ("");
         }}
-        className="flex items-center"
+        className="flex max-w-full min-w-0 items-center rounded-md text-left"
       >
         {trigger}
       </button>
       {open && (
         <div
           className={cx(
-            "absolute z-50 mt-1 max-h-80 w-60 overflow-auto rounded-lg border border-zinc-200 bg-white p-1 shadow-lg dark:border-zinc-800 dark:bg-zinc-900",
+            "absolute z-50 mt-1 max-h-80 overflow-auto rounded-[10px] bg-canvas p-1 shadow-pop",
+            width,
             align === "right" ? "right-0" : "left-0",
           )}
           onClick={(e) => e.stopPropagation()}
         >
           {searchable && (
-            <input
-              autoFocus
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Search…"
-              className="mb-1 w-full rounded-md border-0 bg-zinc-100 px-2 py-1.5 text-sm outline-none dark:bg-zinc-800"
-            />
+            <div className="mb-1 flex items-center gap-1.5 border-b border-line px-2 pb-1.5 pt-1">
+              <Search size={13} className="text-ink-3" />
+              <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search…" className="w-full bg-transparent text-[13px] outline-none" />
+            </div>
           )}
           {filtered.map((o) => (
             <button
@@ -316,17 +368,15 @@ export function Menu<T extends string>({
                 onChange(o.value);
                 setOpen(false);
               }}
-              className={cx(
-                "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800",
-                value === o.value && "bg-zinc-100 dark:bg-zinc-800",
-              )}
+              className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] hover:bg-hover"
             >
               {o.icon}
               <span className="flex-1 truncate">{o.label}</span>
-              {o.hint && <span className="text-xs text-zinc-400">{o.hint}</span>}
+              {o.hint && <span className="text-[12px] text-ink-3">{o.hint}</span>}
+              {value === o.value && <Check size={14} className="text-accent" />}
             </button>
           ))}
-          {!filtered.length && <div className="px-2 py-1.5 text-sm text-zinc-400">No matches</div>}
+          {!filtered.length && <div className="px-2 py-1.5 text-[13px] text-ink-3">No matches</div>}
         </div>
       )}
     </div>
@@ -338,26 +388,33 @@ export function assigneeOptions(members: Member[] | undefined) {
     { value: "none", label: "Unassigned", icon: <Avatar member={null} size={16} /> },
     ...(members ?? [])
       .filter((m) => m.active)
-      .map((m) => ({ value: m.id, label: m.name, icon: <Avatar member={m} size={16} />, hint: m.kind === "agent" ? "agent" : undefined })),
+      .map((m) => ({
+        value: m.id,
+        label: m.name,
+        icon: <Avatar member={m} size={16} />,
+        hint: m.kind === "agent" ? <span className="text-agent">Agent</span> : undefined,
+      })),
   ];
 }
 
-export function Button({
-  children,
-  variant = "secondary",
-  className,
-  ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "secondary" | "ghost" | "danger" }) {
+// ---------- Buttons, inputs, modals ----------
+
+type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: "primary" | "secondary" | "ghost" | "danger";
+  size?: "sm" | "md";
+};
+
+export function Button({ children, variant = "secondary", size = "md", className, ...props }: ButtonProps) {
   return (
     <button
       {...props}
       className={cx(
-        "inline-flex items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm font-medium transition-colors disabled:opacity-50",
-        variant === "primary" && "bg-accent text-white hover:bg-accent-hover",
-        variant === "secondary" &&
-          "border border-zinc-200 bg-white hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:bg-zinc-800",
-        variant === "ghost" && "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800",
-        variant === "danger" && "text-red-600 hover:bg-red-50 dark:hover:bg-red-500/10",
+        "inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg font-medium whitespace-nowrap transition-colors disabled:pointer-events-none disabled:opacity-50",
+        size === "sm" ? "h-7 px-2 text-[12px]" : "h-8 px-2.5 text-[13px]",
+        variant === "primary" && "bg-accent text-white shadow-btn hover:bg-accent-hover",
+        variant === "secondary" && "border border-line-strong bg-canvas text-ink shadow-btn hover:bg-hover",
+        variant === "ghost" && "text-ink-2 hover:bg-hover hover:text-ink",
+        variant === "danger" && "border border-line-strong bg-canvas text-[#c4312b] shadow-btn hover:bg-[#fde9e8] dark:text-[#f28b88] dark:hover:bg-[#ef5350]/10",
         className,
       )}
     >
@@ -366,7 +423,33 @@ export function Button({
   );
 }
 
-export function Modal({ open, onClose, children, wide }: { open: boolean; onClose: () => void; children: ReactNode; wide?: boolean }) {
+export function IconButton({ label, children, className, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { label: string }) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      {...props}
+      className={cx("inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-3 hover:bg-hover hover:text-ink", className)}
+    >
+      {children}
+    </button>
+  );
+}
+
+export function Modal({
+  open,
+  onClose,
+  children,
+  wide,
+  title,
+}: {
+  open: boolean;
+  onClose: () => void;
+  children: ReactNode;
+  wide?: boolean;
+  title?: ReactNode;
+}) {
   useEffect(() => {
     if (!open) return;
     const esc = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -375,19 +458,176 @@ export function Modal({ open, onClose, children, wide }: { open: boolean; onClos
   }, [open, onClose]);
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/30 px-4 pt-[12vh] dark:bg-black/60" onMouseDown={onClose}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-[rgba(16,24,40,0.28)] px-4 pt-[10vh] dark:bg-black/60" onMouseDown={onClose}>
       <div
-        className={cx(
-          "w-full rounded-xl border border-zinc-200 bg-white shadow-2xl dark:border-zinc-800 dark:bg-zinc-900",
-          wide ? "max-w-2xl" : "max-w-md",
-        )}
+        role="dialog"
+        aria-modal
+        className={cx("w-full overflow-hidden rounded-xl bg-canvas shadow-pop", wide ? "max-w-2xl" : "max-w-md")}
         onMouseDown={(e) => e.stopPropagation()}
       >
+        {title && (
+          <div className="flex h-12 items-center gap-2 border-b border-line px-4 text-[14px] font-semibold">
+            {title}
+            <IconButton label="Close" className="ml-auto" onClick={onClose}>
+              <X size={16} />
+            </IconButton>
+          </div>
+        )}
         {children}
       </div>
     </div>
   );
 }
 
+export function ModalFooter({ children, hint }: { children: ReactNode; hint?: ReactNode }) {
+  return (
+    <div className="flex items-center gap-2 border-t border-line bg-panel px-4 py-3">
+      <span className="min-w-0 flex-1 truncate text-[12px] text-ink-3">{hint}</span>
+      {children}
+    </div>
+  );
+}
+
 export const inputClass =
-  "w-full rounded-md border border-zinc-200 bg-white px-2.5 py-1.5 text-sm outline-none focus:border-accent dark:border-zinc-800 dark:bg-zinc-950";
+  "w-full h-8 rounded-lg border border-line-strong bg-canvas px-2.5 text-[13px] shadow-btn outline-none placeholder:text-ink-3 focus:border-accent focus:ring-3 focus:ring-[var(--c-focus)]";
+export const textareaClass =
+  "w-full rounded-lg border border-line-strong bg-canvas px-2.5 py-2 text-[13px] shadow-btn outline-none placeholder:text-ink-3 focus:border-accent focus:ring-3 focus:ring-[var(--c-focus)]";
+
+export function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-[13px] font-medium text-ink">{label}</span>
+      {children}
+      {hint && <span className="mt-1 block text-[12px] text-ink-3">{hint}</span>}
+    </label>
+  );
+}
+
+/** Small chip button used in toolbars and for picking attributes ("Status: Todo"). */
+export function Chip({ children, active, className }: { children: ReactNode; active?: boolean; className?: string }) {
+  return (
+    <span
+      className={cx(
+        "inline-flex h-7 max-w-full min-w-0 items-center gap-1.5 rounded-lg border px-2 text-[12px] font-medium whitespace-nowrap",
+        active ? "border-accent/30 bg-accent-soft text-accent" : "border-line-strong bg-canvas text-ink-2 shadow-btn hover:bg-hover",
+        className,
+      )}
+    >
+      {children}
+    </span>
+  );
+}
+
+// ---------- Page chrome ----------
+
+export interface ShellContext {
+  openNav: () => void;
+  openSearch: () => void;
+  createTask: () => void;
+}
+export const useShell = () => useOutletContext<ShellContext>();
+
+/** Breadcrumb bar at the top of every page. */
+export function TopBar({ crumbs, actions }: { crumbs: { label: ReactNode; to?: string; icon?: ReactNode }[]; actions?: ReactNode }) {
+  const shell = useShell();
+  return (
+    <header className="flex h-12 shrink-0 items-center gap-2 border-b border-line px-3 md:px-5">
+      <IconButton label="Open navigation" className="md:hidden" onClick={shell?.openNav}>
+        <MenuIcon size={16} />
+      </IconButton>
+      <nav className="flex min-w-0 items-center gap-1 text-[14px]">
+        {crumbs.map((c, i) => (
+          <span key={i} className="flex min-w-0 items-center gap-1">
+            {i > 0 && <span className="px-0.5 text-ink-3">/</span>}
+            {c.to ? (
+              <Link to={c.to} className="flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-ink-2 hover:bg-hover hover:text-ink">
+                {c.icon}
+                <span className="truncate">{c.label}</span>
+              </Link>
+            ) : (
+              <span className="flex min-w-0 items-center gap-1.5 px-1.5 py-1 font-medium">
+                {c.icon}
+                <span className="truncate">{c.label}</span>
+              </span>
+            )}
+          </span>
+        ))}
+      </nav>
+      <div className="ml-auto flex items-center gap-2">{actions}</div>
+    </header>
+  );
+}
+
+/** Underlined tabs, Attio record-page style. */
+export function Tabs<T extends string>({
+  tabs,
+  value,
+  onChange,
+  className,
+}: {
+  tabs: { value: T; label: string; icon?: ReactNode; count?: number }[];
+  value: T;
+  onChange: (v: T) => void;
+  className?: string;
+}) {
+  return (
+    <div role="tablist" className={cx("flex items-end gap-4 overflow-x-auto border-b border-line px-4 md:px-6", className)}>
+      {tabs.map((t) => (
+        <button
+          key={t.value}
+          role="tab"
+          aria-selected={value === t.value}
+          onClick={() => onChange(t.value)}
+          className={cx(
+            "-mb-px flex h-10 shrink-0 items-center gap-1.5 border-b-2 text-[13px] font-medium",
+            value === t.value ? "border-ink text-ink" : "border-transparent text-ink-3 hover:text-ink-2",
+          )}
+        >
+          {t.icon}
+          {t.label}
+          {t.count !== undefined && t.count > 0 && (
+            <span className="rounded-[5px] bg-active px-1.5 text-[11px] leading-[18px] text-ink-2">{t.count}</span>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function EmptyState({ icon, title, children, action }: { icon?: ReactNode; title: string; children?: ReactNode; action?: ReactNode }) {
+  return (
+    <div className="flex flex-col items-center px-6 py-16 text-center">
+      {icon && <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl border border-line bg-panel text-ink-3 shadow-card">{icon}</div>}
+      <div className="text-[14px] font-medium">{title}</div>
+      {children && <div className="mt-1 max-w-sm text-[13px] text-ink-3">{children}</div>}
+      {action && <div className="mt-4">{action}</div>}
+    </div>
+  );
+}
+
+/** Attribute row on a record page: grey label on the left, editable value on the right. */
+export function AttrRow({ icon, label, children }: { icon?: ReactNode; label: string; children: ReactNode }) {
+  return (
+    <div className="flex min-h-9 items-center gap-2">
+      <span className="flex w-28 shrink-0 items-center gap-2 text-[13px] text-ink-3">
+        {icon}
+        {label}
+      </span>
+      <div className="min-w-0 flex-1 text-[13px]">{children}</div>
+    </div>
+  );
+}
+
+/** Hover target used as the trigger inside an AttrRow. */
+export const attrValue = "flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-md px-1.5 hover:bg-hover";
+
+export function SectionTitle({ children, action }: { children: ReactNode; action?: ReactNode }) {
+  return (
+    <div className="mb-2 flex items-center gap-2">
+      <h2 className="text-[13px] font-semibold text-ink">{children}</h2>
+      <div className="ml-auto">{action}</div>
+    </div>
+  );
+}
+
+export { ChevronDown };
