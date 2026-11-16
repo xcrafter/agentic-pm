@@ -28,5 +28,6 @@
   },
   "durable_objects": { "bindings": [{ "name": "REALTIME", "class_name": "Realtime" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Realtime"] }],
-  "triggers": { "crons": ["*/5 * * * *"] }
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "ai": { "binding": "AI", "remote": true }
 }

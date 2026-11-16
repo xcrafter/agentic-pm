@@ -14,6 +14,7 @@ import { InvitePage } from "./pages/Invite";
 import { SettingsPage } from "./pages/Settings";
 import { UpdatesPage } from "./pages/Updates";
 import { ReportsPage } from "./pages/Reports";
+import { IdeasPage } from "./pages/Ideas";
 
 const qc = new QueryClient({
   defaultOptions: { queries: { staleTime: 10_000, refetchOnWindowFocus: true, retry: 1 } },
@@ -35,6 +36,7 @@ createRoot(document.getElementById("root")!).render(
             <Route path="settings" element={<SettingsPage />} />
             <Route path="feed" element={<UpdatesPage />} />
             <Route path="reports" element={<ReportsPage />} />
+            <Route path="ideas" element={<IdeasPage />} />
             <Route path="team" element={<TeamPage />} />
             <Route path="team/:handle" element={<MemberPage />} />
             <Route path="members" element={<Navigate to="/team" replace />} />

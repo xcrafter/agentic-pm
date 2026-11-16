@@ -256,3 +256,20 @@ export interface Report {
   people: ReportPerson[];
   routines: { routine: string; author_id: string; posts: number; last_at: string; days: string[] }[];
 }
+
+export type IdeaStatus = "new" | "exploring" | "planned" | "converted" | "parked";
+export interface Idea {
+  id: string;
+  title: string;
+  body: string;
+  labels: string[];
+  labels_by: "pending" | "ai" | "human" | "agent" | "fallback";
+  suggested_owner_id: string | null;
+  owner_reason: string | null;
+  status: IdeaStatus;
+  source_url: string | null;
+  created_by: string;
+  task: { id: string; key: string; status: string | null } | null;
+  created_at: string;
+  updated_at: string;
+}

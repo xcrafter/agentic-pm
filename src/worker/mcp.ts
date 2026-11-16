@@ -34,6 +34,7 @@ import {
 } from "./domain";
 import { endRunsFor, failRunsFor, touchRun } from "./orchestrator";
 import { POST_KINDS, createPost, listPosts } from "./feed";
+import { IDEA_LABELS, IDEA_STATUSES, createIdea, listIdeas } from "./ideas";
 import { agentSummary, applyAgentProfile, canOrchestrate, getActableAgent, getSubAgent, isWorkspacePm, listSubAgents, registerSubAgent } from "./agents";
 import type { McpProps } from "./authorize";
 import { type AppEnv, HttpError, encryptSecret, signValue } from "./util";
@@ -604,6 +605,55 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
             ...(p.reactions.length ? { reactions: p.reactions.map((r) => `${r.emoji}${r.count}`).join(" ") } : {}),
           };
         });
+      }),
+  );
+
+  server.registerTool(
+    "log_idea",
+    {
+      description:
+        "Add a product idea (a feature, concept or strategy worth considering later) to the workspace Ideas board. " +
+        "Write a clear, short title and 2–5 sentences: the problem, the idea, and why it matters. " +
+        "Labels and a suggested owner are added automatically if you leave them out.",
+      inputSchema: {
+        title: z.string().min(1).max(200),
+        body: z.string().max(10000).optional(),
+        labels: z.array(z.enum(IDEA_LABELS)).max(3).optional(),
+        owner: z.string().optional().describe("Suggested owner's handle"),
+        source_url: z.string().optional().describe("Where the idea came from, e.g. a GitHub issue"),
+      },
+    },
+    (input) =>
+      guard(async () => {
+        const w = await ws();
+        const idea = await createIdea(env, w, actor, { title: input.title, body: input.body, labels: input.labels, ownerRef: input.owner, sourceUrl: input.source_url });
+        return { id: idea.id, title: idea.title, labels: idea.labels, status: idea.status };
+      }),
+  );
+
+  server.registerTool(
+    "list_ideas",
+    {
+      description: "List product ideas, optionally filtered by label or status.",
+      inputSchema: { label: z.enum(IDEA_LABELS).optional(), status: z.enum(IDEA_STATUSES).optional(), limit: z.number().int().min(1).max(100).optional() },
+      annotations: { readOnlyHint: true },
+    },
+    (input) =>
+      guard(async () => {
+        const w = await ws();
+        const names = await memberNames();
+        return (await listIdeas(env, w))
+          .filter((i) => (!input.label || i.labels.includes(input.label)) && (!input.status || i.status === input.status))
+          .slice(0, input.limit ?? 30)
+          .map((i) => ({
+            id: i.id,
+            title: i.title,
+            summary: i.body.slice(0, 300),
+            labels: i.labels,
+            status: i.status,
+            suggested_owner: i.suggested_owner_id ? `@${names.get(i.suggested_owner_id)?.handle}` : null,
+            ...(i.task ? { task: i.task.key } : {}),
+          }));
       }),
   );
 

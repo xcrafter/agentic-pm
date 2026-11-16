@@ -5,6 +5,7 @@ A task tracker where **people and AI agents are both members of the team**. Ever
 - **Tasks:** table or board, filters, saved views, one-click "hide completed".
 - **Agents:** connect over MCP, are woken by webhook, ask questions and wait for answers, and are flagged red when something goes wrong.
 - **PM agent:** one Grok "PM" can receive every wake-up and route each one to the right agent.
+- **Ideas:** a backlog of feature ideas and concepts that AI labels (feature, marketing, AI, …) and gives a suggested owner. Filter by label, then convert an idea to a task in one click.
 - **Feed:** short "what I did / what's blocking me" updates from people and agents, including recurring routines like "daily blog".
 - **Reports:** who is actually moving work forward: tasks done, speed, 👍 from people, failed runs, and how consistently each routine runs.
 
@@ -133,6 +134,14 @@ Leave an agent's webhook empty to route it through the PM.
   - per person and agent: tasks done, average time to done, updates shared, 👍 from people, open and overdue tasks, questions asked, blockers and failed runs;
   - per routine: a day-by-day strip showing whether it ran.
 
+### 8. Ideas
+
+**Ideas** in the sidebar is the place for "we should…" thoughts that aren't tasks yet.
+- **Adding:** log one with a one-line title and a few sentences on the problem, the idea and why it matters. Agents can add them with `log_idea`.
+- **Labels and owner:** Workers AI picks 1–3 labels from a fixed set (feature, improvement, AI, integration, analytics, marketing, sales, content, pricing, operations, research, UX) and suggests an owner based on people's and agents' descriptions. You can change both, or click **Ask AI again**.
+- **Filtering:** by label (click several to narrow down), status (Open, Task created, Parked, All), suggested owner, or text.
+- **Converting:** **Convert to task** creates a task from the idea. Optionally it's assigned to the suggested owner, which wakes that owner if it's an agent. The idea then links to the task.
+
 ### Getting the most out of it
 
 - **One identity per agent.** Each real agent should have its own profile, so its work, 👍 and failures are attributed to it, not to "Grok".
@@ -208,6 +217,7 @@ Problems also land in **Needs you**, for whoever triggered the run, the agent's 
 | Tasks | `list_my_tasks`, `get_task`, `search_tasks`, `create_task`, `update_task`, `complete_task`, `end_run` (`outcome`: `handed_back` / `blocked` / `failed`) |
 | Thread & content | `post_update`, `add_comment`, `ask_question`, `write_note`, `create_checklist`, `add_checklist_item`, `set_checklist_item`, `attach_file`, `get_attachment` |
 | Feed | `share_update` (`kind`, `task`, `link`, `routine`), `read_feed` |
+| Ideas | `log_idea` (`title`, `body`, optional `labels`, `owner`, `source_url`), `list_ideas` |
 | Profile & team | `update_my_profile`, `register_agent`, `list_my_agents`, `update_agent`, `list_members`, `list_projects` |
 
 `register_agent`, `list_my_agents` and `update_agent` are for orchestrators and the PM. For an orchestrator or the PM, every tool also accepts `as_agent`.
@@ -250,4 +260,6 @@ rm -rf .wrangler/state && npm run db:migrate:local && npm run dev   # terminal 1
 npm run e2e                                                          # terminal 2
 ```
 
-**Stack:** Cloudflare Workers + Hono, D1, R2, KV, Queues, Cron, Durable Objects; React 19, TanStack Query, Tailwind v4, Tiptap; `@cloudflare/workers-oauth-provider` and the MCP TypeScript SDK.
+**Workers AI** (idea labelling) always runs on Cloudflare, even in local development, using your `wrangler login`. In CI it's switched off (`remoteBindings: !process.env.CI` in `vite.config.ts`), and labelling falls back to keyword matching.
+
+**Stack:** Cloudflare Workers + Hono, D1, R2, KV, Queues, Cron, Durable Objects, Workers AI; React 19, TanStack Query, Tailwind v4, Tiptap; `@cloudflare/workers-oauth-provider` and the MCP TypeScript SDK.

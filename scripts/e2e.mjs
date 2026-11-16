@@ -619,6 +619,40 @@ try {
   await assert.rejects(alice("GET", "/api/reports?days=12"), /400/);
   pass(`@${agent.handle}: ${agentRow.tasks_done} done, ${agentRow.useful} 👍, routine daily-blog on ${routineRow.days.length} day(s)`);
 
+  // ---------- product ideas ----------
+  step("Ideas: auto-labelled with a suggested owner, editable, convert to task");
+  const ideaA = await alice("POST", "/api/ideas", {
+    title: "Pay creators inside the app",
+    body: "Merchants pay creators off-platform today. Let them record and send upfront and milestone payments, with status per creator.",
+  });
+  let labelled;
+  for (let i = 0; i < 40; i++) {
+    labelled = (await alice("GET", "/api/ideas")).ideas.find((x) => x.id === ideaA.id);
+    if (labelled.labels_by !== "pending") break;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  assert.notEqual(labelled.labels_by, "pending", "labelling finished");
+  assert.ok(labelled.labels.length >= 1 && labelled.labels.length <= 3, JSON.stringify(labelled.labels));
+  const { labels: allowedLabels } = await alice("GET", "/api/ideas");
+  assert.ok(labelled.labels.every((l) => allowedLabels.includes(l)));
+  console.log(`    labels by ${labelled.labels_by}: ${labelled.labels.join(", ")}; owner ${labelled.suggested_owner_id ? "suggested" : "none"}`);
+  const fromAgent = await tool("log_idea", { title: "Weekly 'what worked' email for brands", body: "Summarise top creators and content each week.", labels: ["marketing", "analytics"], source_url: "https://github.com/example/repo/issues/1" });
+  assert.deepEqual(fromAgent.labels, ["marketing", "analytics"]);
+  assert.ok((await tool("list_ideas", { label: "marketing" })).some((x) => x.id === fromAgent.id));
+  const relabelled = await alice("PATCH", `/api/ideas/${ideaA.id}`, { labels: ["feature", "pricing", "nonsense"], status: "exploring" });
+  assert.deepEqual(relabelled.labels, ["feature", "pricing"]);
+  assert.equal(relabelled.labels_by, "human");
+  await assert.rejects(bob2("DELETE", `/api/ideas/${ideaA.id}`), /403/);
+  const conv = await alice("POST", `/api/ideas/${ideaA.id}/convert`, { assign: false });
+  const ideaTask = await alice("GET", `/api/tasks/${conv.task_key}`);
+  assert.equal(ideaTask.task.title, "Pay creators inside the app");
+  assert.match(ideaTask.task.description, /Created from a product idea/);
+  assert.equal(conv.idea.status, "converted");
+  assert.equal(conv.idea.task.key, conv.task_key);
+  await assert.rejects(alice("POST", `/api/ideas/${ideaA.id}/convert`, {}), /409/);
+  await alice("DELETE", `/api/ideas/${fromAgent.id}`);
+  pass(`labels within the fixed set; agent idea kept its labels; converted to ${conv.task_key}; Bob can't delete Alice's idea`);
+
   // ---------- views & closing ----------
   step("Saved views are shared; only their creator or an admin can delete them");
   const view = await bob2("POST", "/api/views", { name: "Bob's urgent", config: { priorities: ["urgent"], hideDone: true, layout: "board" } });

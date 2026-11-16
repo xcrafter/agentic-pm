@@ -14,6 +14,7 @@ import {
   Layers,
   Megaphone,
   BarChart3,
+  Lightbulb,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router";
@@ -164,6 +165,9 @@ function Sidebar({ shell }: { shell: ShellContext }) {
           <NavItem to="/my" icon={<CircleUser size={15} />}>
             My tasks
           </NavItem>
+          <NavItem to="/ideas" icon={<Lightbulb size={15} />}>
+            Ideas
+          </NavItem>
           <NavItem to="/" end icon={<ListTodo size={15} />}>
             All tasks
           </NavItem>
@@ -307,6 +311,7 @@ function CommandPalette({ onClose, onCreate }: { onClose: () => void; onCreate: 
       { id: "ws", label: "Team overview", icon: <Building2 size={15} />, run: go("/workspace") },
       { id: "settings", label: "Workspace settings", icon: <Settings size={15} />, run: go("/settings") },
       { id: "feed", label: "Feed", icon: <Megaphone size={15} />, run: go("/feed") },
+      { id: "ideas", label: "Ideas", icon: <Lightbulb size={15} />, run: go("/ideas") },
       { id: "reports", label: "Reports", icon: <BarChart3 size={15} />, run: go("/reports") },
       { id: "team", label: "Members & agents", icon: <Users size={15} />, run: go("/team") },
       { id: "projects", label: "Projects", icon: <FolderKanban size={15} />, run: go("/projects") },
