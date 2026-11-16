@@ -465,7 +465,8 @@ function DocPane({ id, all }: { id: string; all: PolicyMeta[] }) {
         <RichEditor
           ref={editor}
           initial={p.content}
-          placeholder="Write the steps, rules and examples agents should follow…"
+          slash
+          placeholder="Write the steps, rules and examples agents should follow. Type “/” for headings, lists, to-dos…"
           onChange={(md) => {
             latest.current = md;
             if (md === lastSaved.current) return;

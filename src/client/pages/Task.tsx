@@ -266,7 +266,8 @@ function DescriptionEditor({ value, onSave }: { value: string; onSave: (v: strin
       <RichEditor
         ref={ref}
         initial={value}
-        placeholder="What needs to happen, and what does done look like?"
+        slash
+        placeholder="What needs to happen, and what does done look like? Type “/” for headings, lists, to-dos…"
         onChange={(md) => setDirty(md !== value)}
         onSubmit={() => {
           onSave(ref.current!.getMarkdown());
