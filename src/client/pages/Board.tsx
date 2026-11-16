@@ -1,11 +1,38 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarDays, CircleDot, Clock, Columns3, FolderKanban, ListTodo, Plus, Signal, Table2, UserRound, Bot, Users, TriangleAlert } from "lucide-react";
+import {
+  ArrowUpDown,
+  CalendarDays,
+  Check,
+  CircleDot,
+  Clock,
+  Columns3,
+  Eye,
+  EyeOff,
+  Filter,
+  FolderKanban,
+  Layers,
+  ListTodo,
+  Plus,
+  Search,
+  Signal,
+  SlidersHorizontal,
+  Table2,
+  Trash2,
+  TriangleAlert,
+  UserRound,
+  X,
+} from "lucide-react";
 import { type ReactNode, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+import { Link, useParams, useSearchParams } from "react-router";
 import { type Priority, type Status, type Task, PRIORITIES, PRIORITY_LABEL, STATUSES, STATUS_LABEL, api } from "../api";
 import {
   Avatar,
   Button,
+  IconButton,
+  MultiSelect,
+  Popover,
+  inputClass,
+  useSavedViews,
   assigneeOptions,
   Chip,
   EmptyState,
@@ -26,38 +53,81 @@ import {
   ChevronDown,
 } from "../components";
 import { CreateTaskModal } from "./CreateTask";
+import {
+  type Layout,
+  type SavedView,
+  type SortKey,
+  type ViewConfig,
+  DEFAULT_CONFIG,
+  PRESETS,
+  SORT_LABEL,
+  activeFilterCount,
+  applyFilters,
+  isClosed,
+  normalizeConfig,
+  sameConfig,
+  sortTasks,
+} from "../taskViews";
 import { ProjectDot } from "./Layout";
 
-type View = "table" | "board";
-const BOARD_STATUSES: Status[] = ["backlog", "todo", "in_progress", "waiting_on_human", "done"];
+const BOARD_STATUSES: Status[] = ["backlog", "todo", "in_progress", "waiting_on_human", "done", "canceled"];
 
-function loadView(): View {
+function loadLocal(key: string): ViewConfig | null {
   try {
-    const v = localStorage.getItem("apm:view");
-    return v === "board" ? "board" : "table";
+    const raw = localStorage.getItem(`apm:cfg:${key}`);
+    if (raw) return normalizeConfig(JSON.parse(raw));
+    // Older single "view" preference.
+    const legacy = localStorage.getItem("apm:view");
+    return legacy === "board" ? { ...DEFAULT_CONFIG, layout: "board" } : null;
   } catch {
-    return "table";
+    return null;
+  }
+}
+function saveLocal(key: string, c: ViewConfig) {
+  try {
+    localStorage.setItem(`apm:cfg:${key}`, JSON.stringify(c));
+  } catch {
+    /* per-viewer convenience only */
   }
 }
 
+
 export function BoardPage({ mine }: { mine?: boolean }) {
   const { projectId } = useParams();
+  const [search, setSearch] = useSearchParams();
+  const viewId = search.get("view");
   const me = useMe().data!;
-  const members = useMembers();
-  const projects = useProjects();
   const shell = useShell();
-  const [view, setView] = useState<View>(loadView);
-  const [assignee, setAssignee] = useState<string>("all");
-  const [kind, setKind] = useState<"all" | "human" | "agent">("all");
+  const projects = useProjects();
+  const views = useSavedViews();
   const [creatingIn, setCreatingIn] = useState<Status | null>(null);
   const qc = useQueryClient();
 
+  const scope = mine ? "mine" : projectId ? `project:${projectId}` : "all";
+  const preset = viewId ? PRESETS.find((p) => p.id === viewId) : undefined;
+  const saved = viewId && !preset ? views.data?.find((v) => v.id === viewId) : undefined;
+  const base: ViewConfig = preset ? preset.config : saved ? normalizeConfig(saved.config) : (loadLocal(scope) ?? DEFAULT_CONFIG);
+  const draftKey = viewId ? `view:${viewId}` : scope;
+  const [drafts, setDrafts] = useState<Record<string, ViewConfig>>({});
+  const cfg = drafts[draftKey] ?? base;
+  const setCfg = (patch: Partial<ViewConfig>) => {
+    const next = { ...cfg, ...patch };
+    setDrafts((d) => ({ ...d, [draftKey]: next }));
+    if (!viewId) saveLocal(scope, next);
+  };
+  const dirty = !!viewId && !sameConfig(cfg, base);
+  const resetDraft = () => setDrafts((d) => {
+    const { [draftKey]: _, ...rest } = d;
+    return rest;
+  });
+
   const params = new URLSearchParams();
   if (mine) params.set("assignee", me.member!.id);
-  else if (assignee !== "all") params.set("assignee", assignee);
   if (projectId) params.set("project", projectId);
-  if (kind !== "all") params.set("kind", kind);
   const tasks = useQuery({ queryKey: ["tasks", params.toString()], queryFn: () => api.get<Task[]>(`/api/tasks?${params}`) });
+  const all = tasks.data ?? [];
+  const list = sortTasks(applyFilters(all, cfg, me.member?.id), cfg.sort);
+  const closedHidden = cfg.hideDone ? applyFilters(all, { ...cfg, hideDone: false }, me.member?.id).filter(isClosed).length : 0;
 
   const move = useMutation({
     mutationFn: ({ key, status }: { key: string; status: Status }) => api.patch(`/api/tasks/${key}`, { status }),
@@ -69,18 +139,18 @@ export function BoardPage({ mine }: { mine?: boolean }) {
     onSettled: () => qc.invalidateQueries({ queryKey: ["tasks"] }),
   });
 
-  const project = projects.data?.find((p) => p.id === projectId);
-  const setV = (v: View) => {
-    setView(v);
-    try {
-      localStorage.setItem("apm:view", v);
-    } catch {
-      /* per-viewer convenience only */
-    }
-  };
-  const list = tasks.data ?? [];
-  const assigneeName = assignee === "all" ? null : assignee === "none" ? "Unassigned" : members.data?.find((m) => m.id === assignee)?.name;
+  const saveView = useMutation({
+    mutationFn: (v: { id?: string; name?: string }) =>
+      v.id ? api.patch<SavedView>(`/api/views/${v.id}`, { config: cfg, ...(v.name ? { name: v.name } : {}) }) : api.post<SavedView>("/api/views", { name: v.name, config: cfg }),
+    onSuccess: (v) => {
+      qc.invalidateQueries({ queryKey: ["views"] });
+      resetDraft();
+      if (v.id !== viewId) setSearch({ view: v.id });
+    },
+  });
 
+  const project = projects.data?.find((p) => p.id === projectId);
+  const viewName = preset?.name ?? saved?.name;
   const crumbs = mine
     ? [{ label: "My tasks", icon: <UserRound size={15} className="text-ink-3" /> }]
     : project
@@ -88,7 +158,11 @@ export function BoardPage({ mine }: { mine?: boolean }) {
           { label: "Projects", to: "/projects", icon: <FolderKanban size={15} className="text-ink-3" /> },
           { label: project.name, icon: <ProjectDot id={project.id} /> },
         ]
-      : [{ label: "All tasks", icon: <ListTodo size={15} className="text-ink-3" /> }];
+      : [{ label: "All tasks", icon: <ListTodo size={15} className="text-ink-3" />, to: viewName ? "/" : undefined }, ...(viewName ? [{ label: viewName }] : [])];
+  const boardStatuses = BOARD_STATUSES.filter((st) =>
+    cfg.status.length ? cfg.status.includes(st) : cfg.hideDone ? !(st === "done" || st === "canceled") : st !== "canceled",
+  );
+  const filters = activeFilterCount(cfg);
 
   return (
     <div className="flex h-full flex-col">
@@ -100,69 +174,28 @@ export function BoardPage({ mine }: { mine?: boolean }) {
           </Button>
         }
       />
-      <div className="flex flex-wrap items-center gap-2 border-b border-line px-3 py-2 md:px-5">
-        <div className="flex rounded-lg border border-line-strong bg-subtle p-0.5">
-          {(
-            [
-              ["table", "Table", <Table2 size={14} />],
-              ["board", "Board", <Columns3 size={14} />],
-            ] as [View, string, ReactNode][]
-          ).map(([v, label, icon]) => (
-            <button
-              key={v}
-              onClick={() => setV(v)}
-              className={cx(
-                "flex h-6 items-center gap-1.5 rounded-md px-2 text-[12px] font-medium",
-                view === v ? "bg-canvas text-ink shadow-btn" : "text-ink-3 hover:text-ink-2",
-              )}
-            >
-              {icon}
-              {label}
-            </button>
-          ))}
-        </div>
-        <span className="mx-1 h-4 w-px bg-line-strong" />
-        {!mine && (
-          <Menu
-            searchable
-            trigger={
-              <Chip active={assignee !== "all"}>
-                <UserRound size={13} /> {assigneeName ? `Assignee: ${assigneeName}` : "Assignee"} <ChevronDown size={13} />
-              </Chip>
-            }
-            value={assignee}
-            onChange={setAssignee}
-            options={[
-              { value: "all", label: "Anyone" },
-              { value: "none", label: "Unassigned", icon: <Avatar member={null} size={16} /> },
-              ...(members.data ?? []).filter((m) => m.active).map((m) => ({ value: m.id, label: m.name, icon: <Avatar member={m} size={16} /> })),
-            ]}
-          />
-        )}
-        <Menu
-          trigger={
-            <Chip active={kind !== "all"}>
-              {kind === "agent" ? <Bot size={13} /> : <Users size={13} />}
-              {kind === "all" ? "People & agents" : kind === "agent" ? "Agents' work" : "People's work"}
-              <ChevronDown size={13} />
-            </Chip>
-          }
-          value={kind}
-          onChange={setKind}
-          options={[
-            { value: "all", label: "People & agents" },
-            { value: "human", label: "Assigned to people" },
-            { value: "agent", label: "Assigned to agents" },
-          ]}
-        />
-        <span className="ml-auto text-[12px] text-ink-3">
-          {list.length} {list.length === 1 ? "task" : "tasks"}
-        </span>
-      </div>
+      <Toolbar
+        cfg={cfg}
+        setCfg={setCfg}
+        hideAssignee={!!mine}
+        hideProject={!!projectId}
+        viewId={viewId}
+        viewName={viewName}
+        savedViews={views.data ?? []}
+        onPickView={(id) => setSearch(id ? { view: id } : {})}
+        dirty={dirty}
+        onReset={resetDraft}
+        onSave={(name) => saveView.mutate(saved && !name ? { id: saved.id } : { name })}
+        saving={saveView.isPending}
+        saveError={saveView.error ? (saveView.error as Error).message : null}
+        count={list.length}
+        closedHidden={closedHidden}
+        canSaveInPlace={!!saved}
+      />
 
       {tasks.isLoading ? (
         <div className="p-6 text-[13px] text-ink-3">Loading…</div>
-      ) : !list.length ? (
+      ) : !all.length ? (
         <EmptyState
           icon={<ListTodo size={18} />}
           title={mine ? "Nothing assigned to you" : "No tasks yet"}
@@ -174,16 +207,384 @@ export function BoardPage({ mine }: { mine?: boolean }) {
         >
           Create a task and assign it to a teammate or an agent. Agents are woken as soon as you assign them.
         </EmptyState>
-      ) : view === "table" ? (
-        <TaskTable tasks={list} />
+      ) : !list.length ? (
+        <EmptyState
+          icon={<Filter size={18} />}
+          title="No tasks match"
+          action={
+            <Button onClick={() => setCfg({ ...DEFAULT_CONFIG, layout: cfg.layout, sort: cfg.sort, hideDone: false })}>Clear filters</Button>
+          }
+        >
+          {filters ? `${filters} filter${filters > 1 ? "s" : ""} applied` : ""}
+          {cfg.hideDone && closedHidden ? `${filters ? "; " : ""}${closedHidden} completed hidden` : ""}.
+        </EmptyState>
+      ) : cfg.layout === "table" ? (
+        <TaskTable tasks={list} sort={cfg.sort} onSort={(sort) => setCfg({ sort })} />
       ) : (
         <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto bg-subtle p-3 md:p-4">
-          {BOARD_STATUSES.map((s) => (
-            <Column key={s} status={s} tasks={list.filter((t) => t.status === s)} onDrop={(key) => move.mutate({ key, status: s })} onAdd={() => setCreatingIn(s)} />
+          {boardStatuses.map((st) => (
+            <Column key={st} status={st} tasks={list.filter((t) => t.status === st)} onDrop={(key) => move.mutate({ key, status: st })} onAdd={() => setCreatingIn(st)} />
           ))}
         </div>
       )}
       <CreateTaskModal open={!!creatingIn} onClose={() => setCreatingIn(null)} defaultProjectId={projectId} defaultStatus={creatingIn ?? undefined} />
+    </div>
+  );
+}
+
+// ---------- Toolbar: views, filters, sort ----------
+
+function Toolbar(p: {
+  cfg: ViewConfig;
+  setCfg: (patch: Partial<ViewConfig>) => void;
+  hideAssignee: boolean;
+  hideProject: boolean;
+  viewId: string | null;
+  viewName: string | undefined;
+  savedViews: SavedView[];
+  onPickView: (id: string | null) => void;
+  dirty: boolean;
+  onReset: () => void;
+  onSave: (newName?: string) => void;
+  saving: boolean;
+  saveError: string | null;
+  count: number;
+  closedHidden: number;
+  canSaveInPlace: boolean;
+}) {
+  const { cfg, setCfg } = p;
+  const me = useMe().data;
+  const members = useMembers();
+  const projects = useProjects();
+  const qc = useQueryClient();
+  const [naming, setNaming] = useState<string | null>(null);
+  const filters = activeFilterCount(cfg);
+  const removeView = useMutation({
+    mutationFn: (id: string) => api.del(`/api/views/${id}`),
+    onSuccess: (_d, id) => {
+      qc.invalidateQueries({ queryKey: ["views"] });
+      if (id === p.viewId) p.onPickView(null);
+    },
+  });
+  const nameOf = (ids: string[], lookup: (id: string) => string | undefined) =>
+    ids.length === 1 ? lookup(ids[0]) : `${ids.length} selected`;
+  const memberName = (id: string) => (id === "me" ? "Me" : id === "none" ? "Unassigned" : members.data?.find((m) => m.id === id)?.name);
+  const projectName = (id: string) => (id === "none" ? "No project" : projects.data?.find((x) => x.id === id)?.name);
+  const sep = <span className="mx-0.5 h-4 w-px bg-line-strong" />;
+
+  return (
+    <div className="border-b border-line">
+      <div className="flex flex-wrap items-center gap-2 px-3 py-2 md:px-5">
+        {/* Views */}
+        <Popover
+          label="Views"
+          width="w-72"
+          trigger={
+            <Chip active={!!p.viewId}>
+              <Layers size={13} /> {p.viewName ?? "Views"}
+              {p.dirty && <span className="h-1.5 w-1.5 rounded-full bg-current" title="Unsaved changes" />}
+              <ChevronDown size={13} />
+            </Chip>
+          }
+        >
+          {(close) => (
+            <>
+              <div className="px-2 pt-1 pb-1 text-[11px] font-medium text-ink-3">Built in</div>
+              {PRESETS.map((v) => (
+                <ViewRow key={v.id} name={v.name} active={p.viewId === v.id} onPick={() => (p.onPickView(v.id), close())} />
+              ))}
+              <div className="mt-1 border-t border-line px-2 pt-2 pb-1 text-[11px] font-medium text-ink-3">Saved views</div>
+              {p.savedViews.map((v) => (
+                <ViewRow
+                  key={v.id}
+                  name={v.name}
+                  active={p.viewId === v.id}
+                  onPick={() => (p.onPickView(v.id), close())}
+                  onDelete={me?.member && (me.member.role === "admin" || v.created_by === me.member.id) ? () => removeView.mutate(v.id) : undefined}
+                />
+              ))}
+              {!p.savedViews.length && <div className="px-2 pb-1 text-[12px] text-ink-3">Set filters, then save them as a view everyone can use.</div>}
+              <div className="mt-1 border-t border-line pt-1">
+                {naming === null ? (
+                  <button type="button" onClick={() => setNaming("")} className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-[13px] hover:bg-hover">
+                    <Plus size={13} className="text-ink-3" /> Save current as new view…
+                  </button>
+                ) : (
+                  <form
+                    className="flex gap-1 p-1"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (naming.trim()) {
+                        p.onSave(naming.trim());
+                        setNaming(null);
+                        close();
+                      }
+                    }}
+                  >
+                    <input autoFocus value={naming} onChange={(e) => setNaming(e.target.value)} placeholder="View name" maxLength={60} className={cx(inputClass, "h-7")} />
+                    <Button size="sm" variant="primary" disabled={!naming.trim()}>
+                      Save
+                    </Button>
+                  </form>
+                )}
+                {p.viewId && (
+                  <button type="button" onClick={() => (p.onPickView(null), close())} className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-[13px] text-ink-2 hover:bg-hover">
+                    <X size={13} className="text-ink-3" /> Leave view
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+        </Popover>
+
+        <div className="flex rounded-lg border border-line-strong bg-subtle p-0.5">
+          {(
+            [
+              ["table", "Table", <Table2 size={14} />],
+              ["board", "Board", <Columns3 size={14} />],
+            ] as [Layout, string, ReactNode][]
+          ).map(([v, label, icon]) => (
+            <button
+              key={v}
+              onClick={() => setCfg({ layout: v })}
+              aria-pressed={cfg.layout === v}
+              className={cx(
+                "flex h-6 items-center gap-1.5 rounded-md px-2 text-[12px] font-medium",
+                cfg.layout === v ? "bg-canvas text-ink shadow-btn" : "text-ink-3 hover:text-ink-2",
+              )}
+            >
+              {icon}
+              {label}
+            </button>
+          ))}
+        </div>
+        {sep}
+
+        <label className="flex h-7 w-44 items-center gap-1.5 rounded-lg border border-line-strong bg-canvas px-2 text-[12px] focus-within:border-accent/50">
+          <Search size={13} className="shrink-0 text-ink-3" />
+          <input
+            value={cfg.q}
+            onChange={(e) => setCfg({ q: e.target.value })}
+            placeholder="Filter by title or key"
+            aria-label="Filter tasks by text"
+            className="w-full min-w-0 bg-transparent outline-none placeholder:text-ink-3"
+          />
+          {cfg.q && (
+            <button type="button" onClick={() => setCfg({ q: "" })} aria-label="Clear text filter" className="text-ink-3 hover:text-ink">
+              <X size={12} />
+            </button>
+          )}
+        </label>
+
+        <MultiSelect
+          label="Filter by status"
+          trigger={
+            <Chip active={!!cfg.status.length}>
+              <CircleDot size={13} /> {cfg.status.length ? `Status: ${nameOf(cfg.status, (s) => STATUS_LABEL[s as Status])}` : "Status"} <ChevronDown size={13} />
+            </Chip>
+          }
+          value={cfg.status}
+          onChange={(status) => setCfg({ status })}
+          options={STATUSES.map((st) => ({ value: st, label: STATUS_LABEL[st], icon: <StatusIcon status={st} /> }))}
+        />
+        {!p.hideAssignee && (
+          <MultiSelect
+            searchable
+            label="Filter by assignee"
+            width="w-72"
+            trigger={
+              <Chip active={!!cfg.assignees.length}>
+                <UserRound size={13} /> {cfg.assignees.length ? `Assignee: ${nameOf(cfg.assignees, memberName)}` : "Assignee"} <ChevronDown size={13} />
+              </Chip>
+            }
+            value={cfg.assignees}
+            onChange={(assignees) => setCfg({ assignees })}
+            options={[
+              { value: "me", label: "Me", icon: <Avatar member={me?.member} size={16} /> },
+              { value: "none", label: "Unassigned", icon: <Avatar member={null} size={16} /> },
+              ...(members.data ?? [])
+                .filter((m) => m.active)
+                .map((m) => ({ value: m.id, label: m.name, icon: <Avatar member={m} size={16} />, hint: m.kind === "agent" ? <span className="text-agent">Agent</span> : undefined })),
+            ]}
+          />
+        )}
+        {!p.hideProject && (
+          <MultiSelect
+            searchable
+            label="Filter by project"
+            trigger={
+              <Chip active={!!cfg.projects.length}>
+                <FolderKanban size={13} /> {cfg.projects.length ? `Project: ${nameOf(cfg.projects, projectName)}` : "Project"} <ChevronDown size={13} />
+              </Chip>
+            }
+            value={cfg.projects}
+            onChange={(projects) => setCfg({ projects })}
+            options={[
+              { value: "none", label: "No project" },
+              ...(projects.data ?? []).filter((x) => x.status === "active").map((x) => ({ value: x.id, label: x.name, icon: <ProjectDot id={x.id} /> })),
+            ]}
+          />
+        )}
+        <MultiSelect
+          label="Filter by priority"
+          width="w-52"
+          trigger={
+            <Chip active={!!cfg.priorities.length}>
+              <Signal size={13} /> {cfg.priorities.length ? `Priority: ${nameOf(cfg.priorities, (x) => PRIORITY_LABEL[x as Priority])}` : "Priority"} <ChevronDown size={13} />
+            </Chip>
+          }
+          value={cfg.priorities}
+          onChange={(priorities) => setCfg({ priorities })}
+          options={PRIORITIES.map((x) => ({ value: x, label: PRIORITY_LABEL[x], icon: <PriorityIcon priority={x} /> }))}
+        />
+        <Popover
+          label="More filters"
+          width="w-64"
+          trigger={
+            <Chip active={cfg.due !== "any" || cfg.kind !== "all" || cfg.attention}>
+              <SlidersHorizontal size={13} /> More
+              {cfg.due !== "any" || cfg.kind !== "all" || cfg.attention ? ` · ${(cfg.due !== "any" ? 1 : 0) + (cfg.kind !== "all" ? 1 : 0) + (cfg.attention ? 1 : 0)}` : ""}
+              <ChevronDown size={13} />
+            </Chip>
+          }
+        >
+          <div className="space-y-3 p-2 text-[13px]">
+            <label className="flex items-start gap-2">
+              <input type="checkbox" className="mt-0.5" checked={cfg.attention} onChange={(e) => setCfg({ attention: e.target.checked })} />
+              <span>
+                Needs attention
+                <span className="block text-[12px] text-ink-3">Failed or quiet agent runs, and unanswered questions</span>
+              </span>
+            </label>
+            <div>
+              <div className="mb-1 text-[12px] font-medium text-ink-3">Due date</div>
+              <Segmented
+                value={cfg.due}
+                onChange={(due) => setCfg({ due })}
+                options={[
+                  ["any", "Any"],
+                  ["overdue", "Overdue"],
+                  ["week", "Next 7 days"],
+                  ["none", "No date"],
+                ]}
+              />
+            </div>
+            <div>
+              <div className="mb-1 text-[12px] font-medium text-ink-3">Assigned to</div>
+              <Segmented
+                value={cfg.kind}
+                onChange={(kind) => setCfg({ kind })}
+                options={[
+                  ["all", "Anyone"],
+                  ["human", "People"],
+                  ["agent", "Agents"],
+                ]}
+              />
+            </div>
+          </div>
+        </Popover>
+        {filters > 0 && (
+          <button
+            type="button"
+            onClick={() => setCfg({ status: [], assignees: [], projects: [], priorities: [], due: "any", kind: "all", attention: false, q: "" })}
+            className="h-7 rounded-md px-1.5 text-[12px] font-medium text-ink-3 hover:bg-hover hover:text-ink"
+          >
+            Clear filters
+          </button>
+        )}
+
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={!cfg.hideDone}
+            onClick={() => setCfg({ hideDone: !cfg.hideDone })}
+            title={cfg.hideDone ? "Done and canceled tasks are hidden" : "Showing done and canceled tasks"}
+            className={cx(
+              "flex h-7 items-center gap-1.5 rounded-lg border px-2 text-[12px] font-medium",
+              cfg.hideDone ? "border-line-strong bg-canvas text-ink-2 shadow-btn hover:bg-hover" : "border-accent/30 bg-accent-soft text-accent",
+            )}
+          >
+            {cfg.hideDone ? <EyeOff size={13} /> : <Eye size={13} />}
+            {cfg.hideDone ? `Completed hidden${p.closedHidden ? ` (${p.closedHidden})` : ""}` : "Showing completed"}
+          </button>
+          <Menu
+            label="Sort tasks"
+            align="right"
+            width="w-48"
+            trigger={
+              <Chip>
+                <ArrowUpDown size={13} /> {SORT_LABEL[cfg.sort]}
+              </Chip>
+            }
+            value={cfg.sort}
+            onChange={(sort: SortKey) => setCfg({ sort })}
+            options={(Object.keys(SORT_LABEL) as SortKey[]).map((k) => ({ value: k, label: SORT_LABEL[k] }))}
+          />
+          <span className="text-[12px] text-ink-3 tabular-nums">
+            {p.count} {p.count === 1 ? "task" : "tasks"}
+          </span>
+        </div>
+      </div>
+      {p.dirty && (
+        <div className="flex flex-wrap items-center gap-2 border-t border-line bg-panel px-3 py-1.5 text-[12px] md:px-5">
+          <span className="text-ink-2">You've changed “{p.viewName}”.</span>
+          {p.canSaveInPlace && (
+            <Button size="sm" variant="primary" onClick={() => p.onSave()} disabled={p.saving}>
+              Save view
+            </Button>
+          )}
+          <Button size="sm" variant="ghost" onClick={p.onReset}>
+            Reset
+          </Button>
+          {!p.canSaveInPlace && <span className="text-ink-3">Built-in views can't be changed. Use Views → Save current as new view.</span>}
+          {p.saveError && <span className="text-danger">{p.saveError}</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ViewRow({ name, active, onPick, onDelete }: { name: string; active: boolean; onPick: () => void; onDelete?: () => void }) {
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <div className="group flex items-center rounded-md hover:bg-hover" onMouseLeave={() => setConfirming(false)}>
+      <button type="button" onClick={onPick} className="flex h-8 min-w-0 flex-1 items-center gap-2 px-2 text-left text-[13px]">
+        <span className="flex-1 truncate">{name}</span>
+        {active && <Check size={14} className="text-accent" />}
+      </button>
+      {onDelete &&
+        (confirming ? (
+          <button type="button" onClick={onDelete} className="mr-1 h-6 rounded-md bg-danger px-1.5 text-[12px] font-medium text-white">
+            Delete for everyone
+          </button>
+        ) : (
+          <IconButton
+            label={`Delete view ${name}`}
+            className="mr-0.5 h-6 w-6 opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-danger"
+            onClick={() => setConfirming(true)}
+          >
+            <Trash2 size={12} />
+          </IconButton>
+        ))}
+    </div>
+  );
+}
+
+function Segmented<T extends string>({ value, onChange, options }: { value: T; onChange: (v: T) => void; options: [T, string][] }) {
+  return (
+    <div className="flex rounded-lg border border-line-strong bg-subtle p-0.5">
+      {options.map(([v, label]) => (
+        <button
+          key={v}
+          type="button"
+          aria-pressed={value === v}
+          onClick={() => onChange(v)}
+          className={cx("h-6 flex-1 rounded-md px-1.5 text-[12px] font-medium whitespace-nowrap", value === v ? "bg-canvas text-ink shadow-btn" : "text-ink-3 hover:text-ink-2")}
+        >
+          {label}
+        </button>
+      ))}
     </div>
   );
 }
@@ -236,12 +637,14 @@ export function useTaskPatch() {
 /** A table cell whose whole area opens an editor; hover shows it's editable. */
 const editCell = "flex h-full w-full items-center gap-1.5 px-3 rounded-none hover:bg-active focus-visible:bg-active";
 
-export function TaskTable({ tasks }: { tasks: Task[] }) {
+const COL_SORT: Record<string, SortKey | undefined> = { title: "title", status: "status", priority: "priority", due: "due", updated: "updated" };
+
+/** Rows come in sorted when `sort` is given (the list page); otherwise they're sorted by status. */
+export function TaskTable({ tasks, sort, onSort }: { tasks: Task[]; sort?: SortKey; onSort?: (s: SortKey) => void }) {
   const members = useMembers();
   const projects = useProjects();
   const patch = useTaskPatch();
-  const [order] = useState(() => new Map(STATUSES.map((s, i) => [s, i])));
-  const rows = [...tasks].sort((a, b) => order.get(a.status)! - order.get(b.status)! || b.created_at.localeCompare(a.created_at));
+  const rows = sort ? tasks : sortTasks(tasks, "status");
   const cell = "h-10 border-r border-b border-line text-[13px] whitespace-nowrap";
   const edit = (task: Task, body: Record<string, unknown>) => patch.mutate({ task, body });
   return (
@@ -263,10 +666,23 @@ export function TaskTable({ tasks }: { tasks: Task[] }) {
                   i === 0 && "sticky left-0 z-10 bg-canvas",
                 )}
               >
-                <span className="flex items-center gap-1.5">
-                  {c.icon}
-                  {c.label}
-                </span>
+                {onSort && COL_SORT[c.key] ? (
+                  <button
+                    type="button"
+                    onClick={() => onSort(COL_SORT[c.key]!)}
+                    className={cx("flex items-center gap-1.5 hover:text-ink", sort === COL_SORT[c.key] && "text-ink")}
+                    title={`Sort by ${c.label.toLowerCase()}`}
+                  >
+                    {c.icon}
+                    {c.label}
+                    {sort === COL_SORT[c.key] && <ArrowUpDown size={11} />}
+                  </button>
+                ) : (
+                  <span className="flex items-center gap-1.5">
+                    {c.icon}
+                    {c.label}
+                  </span>
+                )}
               </th>
             ))}
             <th className="border-b border-line" />
@@ -434,6 +850,7 @@ export function taskHealth(task: Pick<Task, "run_status" | "open_questions">): T
 
 export function RunBadge({ task, compact }: { task: Task; compact?: boolean }) {
   const problem = taskHealth(task) === "problem";
+  if (isClosed(task) && !problem) return null;
   const map: Record<string, [string, "gray" | "violet" | "red" | "amber"]> = {
     queued: ["Waking", "gray"],
     dispatched: ["Starting", "violet"],

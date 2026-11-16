@@ -32,7 +32,7 @@ Under **Workspace settings → Agent dispatch**, an admin picks a **PM agent** (
 
 - **An agent without its own webhook** is woken through the PM. The payload carries `as_agent`, `agent` (its handle, name and description) and `routed_via`. The PM hands the work to that agent, or does it as that agent by passing `as_agent`.
 - **An agent with its own webhook** is woken directly. Setting one is how you override the PM for a single agent.
-- **New unassigned tasks** (if the setting is on): the PM is woken with `event: "triage"`. It reads the task, picks an agent using `list_members`, and assigns it with `update_task`. That assignment wakes the chosen agent, and the PM's own run on the task ends.
+- **The PM stays idle** unless an agent is assigned or @mentioned. **New unassigned tasks** wake it only if you turn that setting on (off by default): the PM is woken with `event: "triage"`. It reads the task, picks an agent using `list_members`, and assigns it with `update_task`. That assignment wakes the chosen agent, and the PM's own run on the task ends.
 - **What the PM can do:** wake any agent except itself, and act as any agent. When it's acting as another agent, it can't wake anyone. That keeps wake-ups from looping.
 
 ### When something goes wrong

@@ -11,9 +11,10 @@ import {
   Search,
   Users,
   Settings,
+  Layers,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { NavLink, Outlet, useLocation, useNavigate } from "react-router";
+import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router";
 import { type Inbox, type Task, api } from "../api";
 import {
   Avatar,
@@ -28,6 +29,7 @@ import {
   useMembers,
   useProjects,
   useRealtime,
+  useSavedViews,
   WorkspaceLogo,
 } from "../components";
 import { CreateTaskModal } from "./CreateTask";
@@ -113,6 +115,8 @@ function NavItem({ to, icon, children, end, badge }: { to: string; icon: ReactNo
 function Sidebar({ shell }: { shell: ShellContext }) {
   const me = useMe().data!;
   const projects = useProjects();
+  const views = useSavedViews();
+  const location = useLocation();
   const inbox = useQuery({ queryKey: ["inbox"], queryFn: () => api.get<Inbox>("/api/inbox") });
   const inboxCount = (inbox.data?.questions.length ?? 0) + (inbox.data?.runs.length ?? 0) + (inbox.data?.mentions.length ?? 0);
   const qc = useQueryClient();
@@ -175,6 +179,33 @@ function Sidebar({ shell }: { shell: ShellContext }) {
             Workspace settings
           </NavItem>
         </nav>
+
+        {!!views.data?.length && (
+          <>
+            <div className="mt-5 mb-1 px-2 text-[12px] font-medium text-ink-3">Views</div>
+            <nav className="flex flex-col gap-0.5">
+              {views.data.map((v) => {
+                const active = location.pathname === "/" && new URLSearchParams(location.search).get("view") === v.id;
+                return (
+                  <Link
+                    key={v.id}
+                    to={`/?view=${v.id}`}
+                    aria-current={active ? "page" : undefined}
+                    className={cx(
+                      "flex h-8 items-center gap-2 rounded-md px-2 text-[13px] font-medium",
+                      active ? "bg-active text-ink" : "text-ink-2 hover:bg-hover hover:text-ink",
+                    )}
+                  >
+                    <span className="flex w-4 justify-center text-ink-3">
+                      <Layers size={14} />
+                    </span>
+                    <span className="truncate">{v.name}</span>
+                  </Link>
+                );
+              })}
+            </nav>
+          </>
+        )}
 
         {!!projects.data?.filter((p) => p.status === "active").length && (
           <>

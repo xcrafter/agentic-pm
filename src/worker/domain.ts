@@ -129,9 +129,9 @@ export async function ensureWorkspace(env: AppEnv): Promise<WorkspaceRow> {
     logo_updated_at: null,
     allowed_domains: null,
     pm_agent_id: null,
-    pm_triage: 1,
+    pm_triage: 0, // opt-in: the PM stays idle unless an agent is assigned or @mentioned
   };
-  await env.DB.prepare("INSERT INTO workspaces (id, name, key_prefix, next_task_number, created_at) VALUES (?,?,?,?,?)")
+  await env.DB.prepare("INSERT INTO workspaces (id, name, key_prefix, next_task_number, created_at, pm_triage) VALUES (?,?,?,?,?,0)")
     .bind(row.id, row.name, row.key_prefix, 1, row.created_at)
     .run();
   return row;
@@ -331,6 +331,8 @@ export interface CreateTaskInput {
   assigneeId?: string | null;
   projectId?: string | null;
   dueDate?: string | null;
+  /** Ask the workspace PM to pick an assignee (only when there's none). Defaults to the workspace setting. */
+  triage?: boolean;
 }
 
 export async function createTask(env: AppEnv, ws: WorkspaceRow, actor: Actor, input: CreateTaskInput): Promise<TaskRow> {
@@ -393,7 +395,7 @@ export async function createTask(env: AppEnv, ws: WorkspaceRow, actor: Actor, in
     if (canWake(actor, assignee, ws)) {
       await onAgentTrigger(env, { task, agent: assignee, trigger: "assigned", triggeredBy: actor.member.id });
     }
-  } else if (actor.member.kind === "human" && ws.pm_agent_id && ws.pm_triage) {
+  } else if (actor.member.kind === "human" && ws.pm_agent_id && (input.triage ?? !!ws.pm_triage)) {
     // No assignee: let the workspace PM agent pick the right agent (or person) for it.
     const pm = await env.DB.prepare("SELECT * FROM members WHERE id = ? AND kind = 'agent' AND active = 1").bind(ws.pm_agent_id).first<MemberRow>();
     if (pm) await onAgentTrigger(env, { task, agent: pm, trigger: "triage", triggeredBy: actor.member.id });
@@ -524,7 +526,18 @@ export async function updateTask(
       }
     }
   }
-  if (actor.member.kind === "agent") await touchRun(env, next.id, actor.member.id);
+  // Finished or canceled (by anyone): close every open agent run so nothing shows as working or gone quiet.
+  const statusChange = changes.find((c) => c.field === "status");
+  if (statusChange && (statusChange.to === "done" || statusChange.to === "canceled")) {
+    const open = await env.DB.prepare(
+      "SELECT DISTINCT agent_id FROM agent_runs WHERE task_id = ? AND status IN ('queued','dispatched','active','stale')",
+    )
+      .bind(task.id)
+      .all<{ agent_id: string }>();
+    for (const r of open.results) await endRunsFor(env, task.id, r.agent_id, "completed");
+  } else if (actor.member.kind === "agent") {
+    await touchRun(env, next.id, actor.member.id);
+  }
 
   await notify(env, ws.id, { type: "task", task_id: task.id });
   return next;
@@ -562,7 +575,8 @@ export async function addSystemEntry(
 const MENTION_RE = /(^|[^\w@])@([a-z0-9][a-z0-9_-]*)/gi;
 export function extractMentions(body: string): string[] {
   const out = new Set<string>();
-  for (const m of body.matchAll(MENTION_RE)) out.add(m[2].toLowerCase());
+  // The editor's Markdown output may escape "_" in handles as "\_".
+  for (const m of body.replace(/\\_/g, "_").matchAll(MENTION_RE)) out.add(m[2].toLowerCase());
   return [...out];
 }
 

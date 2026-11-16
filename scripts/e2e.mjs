@@ -363,15 +363,20 @@ try {
   const inbox = await alice("GET", "/api/inbox");
   assert.ok(inbox.questions.some((x) => x.id === q.id), "question in creator's inbox");
   pass("question shows in the human's Needs you inbox");
-  // The pending mention from earlier triggers a follow-up run once the agent's run ends.
-  const followup = await waitForHook((c) => c.body?.event === "followup" && c.body.task.key === task.key);
-  pass(`queued mention produced a follow-up wake (run ${followup.body.run_id})`);
-  await tool("end_run", { task: task.key, reason: "Noted Hooli; still waiting on the private-companies question." });
+  // No catch-up wake right after a question: the answer will wake the agent (and it sees the mention then).
+  await new Promise((r) => setTimeout(r, 2500));
+  assert.ok(!hookCalls.some((c) => c.body?.event === "followup" && c.body.task.key === task.key), "no follow-up after asking");
+  pass("asking a question doesn't trigger a catch-up wake");
 
-  step("Human answers → agent is woken with event=answered");
+  step("Human answers while another run is open → the answer is still delivered at once");
+  await alice("POST", `/api/tasks/${task.key}/wake`, { agent_id: agent.id });
+  const manualHook = await waitForHook((c) => c.body?.event === "manual" && c.body.task.key === task.key);
   await alice("POST", `/api/tasks/${task.key}/entries`, { body: "Yes, include private ones.", reply_to_id: q.id });
   const answeredHook = await waitForHook((c) => c.body?.event === "answered" && c.body.task.key === task.key);
-  pass(`webhook called: event=answered run=${answeredHook.body.run_id}`);
+  assert.notEqual(answeredHook.body.run_id, manualHook.body.run_id);
+  const superseded = (await alice("GET", `/api/tasks/${task.key}`)).runs.find((r) => r.id === manualHook.body.run_id);
+  assert.equal(superseded.status, "ended");
+  pass(`answer delivered immediately (run ${answeredHook.body.run_id}); the open run was replaced`);
   detail = await alice("GET", `/api/tasks/${task.key}`);
   assert.equal(detail.task.status, "in_progress");
   pass("task back to In Progress");
@@ -500,8 +505,9 @@ try {
   const pmAgent = await alice("POST", "/api/members/agents", { name: `Grok PM ${runId}`, description: "Routes work to the right agent" });
   const writer = await alice("POST", "/api/members/agents", { name: `Writer ${runId}`, description: "Writes outreach copy" });
   await assert.rejects(bob2("PATCH", "/api/workspace", { pm_agent_id: pmAgent.id }), /403/);
-  wsInfo = await alice("PATCH", "/api/workspace", { pm_agent_id: pmAgent.id, pm_triage: true });
+  wsInfo = await alice("PATCH", "/api/workspace", { pm_agent_id: pmAgent.id });
   assert.equal(wsInfo.pm_agent_id, pmAgent.id);
+  assert.equal(wsInfo.pm_triage, false, "triage is opt-in");
   await alice("PATCH", "/api/workspace/pm-webhook", { webhook_url: `http://localhost:${HOOK_PORT}/hook`, webhook_key: HOOK_KEY });
   const pmPing = await alice("POST", "/api/workspace/pm-webhook/test");
   assert.equal(pmPing.ok, true, JSON.stringify(pmPing));
@@ -525,7 +531,23 @@ try {
   await tool("end_run", { task: ownTask.key, reason: "test" });
   pass("own webhook used directly");
 
-  step("New unassigned task → PM is woken to triage; PM assigns it, which wakes that agent");
+  step("By default the PM stays idle for unassigned tasks");
+  const idleBefore = hookCalls.length;
+  const idle = await alice("POST", "/api/tasks", { title: `Idle ${runId}` });
+  await new Promise((r) => setTimeout(r, 2500));
+  assert.equal(hookCalls.length, idleBefore);
+  assert.equal((await alice("GET", `/api/tasks/${idle.key}`)).runs.length, 0);
+  pass("no wake-up without an assigned or mentioned agent");
+
+  step("Per task: 'ask the PM to triage' on create, or later from the task");
+  const asked = await alice("POST", "/api/tasks", { title: `Ask PM ${runId}`, triage: true });
+  await waitForHook((c) => c.body?.event === "triage" && c.body.task.key === asked.key);
+  await alice("POST", `/api/tasks/${idle.key}/triage`);
+  await waitForHook((c) => c.body?.event === "triage" && c.body.task.key === idle.key);
+  pass("triage on create (setting off) and the Ask-PM button both wake the PM");
+
+  step("With triage on: new unassigned task → PM is woken; PM assigns it, which wakes that agent");
+  await alice("PATCH", "/api/workspace", { pm_triage: true });
   const loose = await alice("POST", "/api/tasks", { title: `Unassigned ${runId}` });
   const triage = await waitForHook((c) => c.body?.event === "triage" && c.body.task.key === loose.key);
   assert.match(triage.body.instruction, /list_members/);
@@ -555,6 +577,28 @@ try {
   wsInfo = await alice("PATCH", "/api/workspace", { pm_agent_id: null });
   assert.equal(wsInfo.pm_agent_id, null);
   pass("update authored by @writer; acting-as agent can't wake others; PM cleared");
+
+  // ---------- views & closing ----------
+  step("Saved views are shared; only their creator or an admin can delete them");
+  const view = await bob2("POST", "/api/views", { name: "Bob's urgent", config: { priorities: ["urgent"], hideDone: true, layout: "board" } });
+  assert.deepEqual(view.config.priorities, ["urgent"]);
+  assert.ok((await alice("GET", "/api/views")).some((v) => v.id === view.id), "visible to everyone");
+  const renamed = await bob2("PATCH", `/api/views/${view.id}`, { name: "Urgent", config: { priorities: ["urgent", "high"] } });
+  assert.equal(renamed.name, "Urgent");
+  const aliceView = await alice("POST", "/api/views", { name: "Alice's", config: {} });
+  await assert.rejects(bob2("DELETE", `/api/views/${aliceView.id}`), /403/);
+  await alice("DELETE", `/api/views/${view.id}`);
+  assert.ok(!(await alice("GET", "/api/views")).some((v) => v.id === view.id));
+  pass("create, share, rename; Bob can't delete Alice's view; admin can delete Bob's");
+
+  step("A person marking a task done closes the agent's open run");
+  const closeTask = await alice("POST", "/api/tasks", { title: `Close me ${runId}`, assignee_id: agent.id });
+  await waitForHook((c) => c.body?.event === "assigned" && c.body.task.key === closeTask.key);
+  await alice("PATCH", `/api/tasks/${closeTask.key}`, { status: "done" });
+  const closed = await alice("GET", `/api/tasks/${closeTask.key}`);
+  assert.ok(closed.runs.every((r) => r.status === "ended"), JSON.stringify(closed.runs.map((r) => r.status)));
+  assert.equal((await alice("GET", "/api/tasks")).find((t) => t.key === closeTask.key).run_status, null);
+  pass("run ended; task no longer shows as Starting/Working");
 
   // ---------- deleting ----------
   step("Deleting: people delete their own things, admins delete anything, only admins delete tasks");

@@ -3,6 +3,7 @@ import { Marked, type Tokens } from "marked";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Bot, Check, ChevronDown, Menu as MenuIcon, Search, Trash2, X } from "lucide-react";
 import { createPortal } from "react-dom";
+import type { SavedView } from "./taskViews";
 import { Link, useOutletContext } from "react-router";
 import {
   type Me,
@@ -20,6 +21,7 @@ import {
 
 export const useMe = () => useQuery({ queryKey: ["me"], queryFn: () => api.get<Me>("/api/me") });
 export const useMembers = () => useQuery({ queryKey: ["members"], queryFn: () => api.get<Member[]>("/api/members") });
+export const useSavedViews = () => useQuery({ queryKey: ["views"], queryFn: () => api.get<SavedView[]>("/api/views") });
 export const useProjects = () => useQuery({ queryKey: ["projects"], queryFn: () => api.get<Project[]>("/api/projects") });
 
 /** One websocket per tab; server events just invalidate the matching queries. */
@@ -48,6 +50,7 @@ export function useRealtime(enabled: boolean) {
           if (msg.type === "members") qc.invalidateQueries({ queryKey: ["members"] });
           if (msg.type === "projects") qc.invalidateQueries({ queryKey: ["projects"] });
           if (msg.type === "workspace") qc.invalidateQueries({ queryKey: ["me"] });
+          if (msg.type === "views") qc.invalidateQueries({ queryKey: ["views"] });
           if (msg.type === "members") qc.invalidateQueries({ queryKey: ["member-record"] });
         } catch {
           /* ignore */
@@ -479,6 +482,154 @@ export function Menu<T extends string>({
 function FocusOnMount({ target }: { target: React.RefObject<HTMLElement | null> }) {
   useEffect(() => target.current?.focus(), [target]);
   return null;
+}
+
+/** Popover anchored to a trigger, portalled with fixed positioning (never clipped). */
+export function Popover({
+  trigger,
+  children,
+  width = "w-64",
+  align = "left",
+  label,
+  className,
+}: {
+  trigger: ReactNode;
+  children: ReactNode | ((close: () => void) => ReactNode);
+  width?: string;
+  align?: "left" | "right";
+  label?: string;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<React.CSSProperties>({});
+  const btn = useRef<HTMLButtonElement>(null);
+  const pop = useRef<HTMLDivElement>(null);
+  const place = () => {
+    const r = btn.current?.getBoundingClientRect();
+    if (!r) return;
+    const below = window.innerHeight - r.bottom;
+    setPos({
+      ...(below < 300 && r.top > below ? { bottom: window.innerHeight - r.top + 4 } : { top: r.bottom + 4 }),
+      ...(align === "right" ? { right: Math.max(8, window.innerWidth - r.right) } : { left: Math.max(8, Math.min(r.left, window.innerWidth - 300)) }),
+    });
+  };
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!pop.current?.contains(t) && !btn.current?.contains(t)) setOpen(false);
+    };
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && (setOpen(false), btn.current?.focus());
+    const onScroll = (e: Event) => !pop.current?.contains(e.target as Node) && setOpen(false);
+    document.addEventListener("mousedown", close, true);
+    document.addEventListener("keydown", esc);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", place);
+    return () => {
+      document.removeEventListener("mousedown", close, true);
+      document.removeEventListener("keydown", esc);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [open]);
+  const close = () => setOpen(false);
+  return (
+    <>
+      <button
+        ref={btn}
+        type="button"
+        aria-expanded={open}
+        aria-label={label}
+        className={cx("flex min-w-0 items-center rounded-md", className)}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (!open) place();
+          setOpen((o) => !o);
+        }}
+      >
+        {trigger}
+      </button>
+      {open &&
+        createPortal(
+          <div
+            ref={pop}
+            className={cx("fixed z-[100] max-h-[70vh] overflow-auto rounded-[10px] bg-canvas p-1 text-ink shadow-pop", width)}
+            style={pos}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {typeof children === "function" ? children(close) : children}
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
+
+/** Checkbox list for picking several values; stays open while you pick. */
+export function MultiSelect<T extends string>({
+  trigger,
+  options,
+  value,
+  onChange,
+  searchable,
+  label,
+  width,
+}: {
+  trigger: ReactNode;
+  options: { value: T; label: string; icon?: ReactNode; hint?: ReactNode }[];
+  value: T[];
+  onChange: (v: T[]) => void;
+  searchable?: boolean;
+  label?: string;
+  width?: string;
+}) {
+  const [q, setQ] = useState("");
+  const filtered = options.filter((o) => !q || o.label.toLowerCase().includes(q.toLowerCase()));
+  const toggle = (v: T) => onChange(value.includes(v) ? value.filter((x) => x !== v) : [...value, v]);
+  return (
+    <Popover trigger={trigger} label={label} width={width}>
+      {searchable && (
+        <div className="mb-1 flex items-center gap-1.5 border-b border-line px-2 pb-1.5 pt-1">
+          <Search size={13} className="text-ink-3" />
+          <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search…" className="w-full bg-transparent text-[13px] outline-none" />
+        </div>
+      )}
+      {filtered.map((o) => {
+        const on = value.includes(o.value);
+        return (
+          <button
+            key={o.value}
+            type="button"
+            role="menuitemcheckbox"
+            aria-checked={on}
+            onClick={() => toggle(o.value)}
+            className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] hover:bg-hover focus-visible:bg-hover"
+          >
+            <span
+              className={cx(
+                "flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border",
+                on ? "border-accent bg-accent text-white" : "border-line-strong bg-canvas",
+              )}
+            >
+              {on && <Check size={11} strokeWidth={3} />}
+            </span>
+            {o.icon}
+            <span className="flex-1 truncate">{o.label}</span>
+            {o.hint && <span className="text-[12px] text-ink-3">{o.hint}</span>}
+          </button>
+        );
+      })}
+      {!filtered.length && <div className="px-2 py-1.5 text-[13px] text-ink-3">No matches</div>}
+      {value.length > 0 && (
+        <div className="mt-1 border-t border-line pt-1">
+          <button type="button" onClick={() => onChange([])} className="flex h-8 w-full items-center rounded-md px-2 text-[13px] text-ink-2 hover:bg-hover">
+            Clear selection
+          </button>
+        </div>
+      )}
+    </Popover>
+  );
 }
 
 /**

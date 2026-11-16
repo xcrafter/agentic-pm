@@ -325,6 +325,11 @@ function Details({
   const activeRuns = runs.filter((r) => !r.dismissed && r.status !== "ended");
   const me = useMe().data;
   const route = assignee ? wakeRoute(assignee, members, me) : { kind: null, pm: null };
+  const pmAgent = members.find((m) => m.id === me?.workspace?.pm_agent_id && m.active) ?? null;
+  const triage = useMutation({
+    mutationFn: () => api.post(`/api/tasks/${task.key}/triage`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["task"] }),
+  });
 
   return (
     <aside className="shrink-0 border-t border-line lg:w-[340px] lg:overflow-auto lg:border-t-0 lg:border-l">
@@ -394,6 +399,17 @@ function Details({
           />
         </AttrRow>
       </div>
+
+      {!assignee && pmAgent && (
+        <div className="border-t border-line px-4 py-4">
+          <SectionTitle>Assignment</SectionTitle>
+          <p className="mb-2 text-[12px] leading-relaxed text-ink-3">No one is assigned. {pmAgent.name} can read the task and pick the right agent or person.</p>
+          <Button size="sm" onClick={() => triage.mutate()} disabled={triage.isPending || triage.isSuccess}>
+            <Zap size={13} /> {triage.isSuccess ? `${pmAgent.name} is on it` : `Ask ${pmAgent.name} to assign`}
+          </Button>
+          {triage.error && <p className="mt-1.5 text-[12px] text-danger">{(triage.error as Error).message}</p>}
+        </div>
+      )}
 
       {assignee?.kind === "agent" && (
         <div className="border-t border-line px-4 py-4">

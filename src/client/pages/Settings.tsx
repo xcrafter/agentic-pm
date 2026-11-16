@@ -380,8 +380,10 @@ function AgentDispatch({ ws, isAdmin, onSaved }: { ws: WorkspaceInfo; isAdmin: b
                 onChange={(e) => setPmField.mutate({ pm_triage: e.target.checked })}
               />
               <span>
-                <span className="font-medium">Send new unassigned tasks to the PM</span>
-                <span className="block text-ink-3">When someone creates a task without an assignee, the PM is woken to pick the right agent or person.</span>
+                <span className="font-medium">Also wake the PM for new unassigned tasks</span>
+                <span className="block text-ink-3">
+                  Off by default: the PM stays idle unless an agent is assigned or @mentioned. Turn this on to have it pick an assignee for every new task created without one.
+                </span>
               </span>
             </label>
 

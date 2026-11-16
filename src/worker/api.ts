@@ -336,9 +336,11 @@ api.post("/api/tasks", async (c) => {
     assignee_id?: string | null;
     project_id?: string | null;
     due_date?: string | null;
+    triage?: boolean;
   }>();
   const ws = c.get("ws");
   const task = await createTask(c.env, ws, c.get("actor"), {
+    triage: typeof b.triage === "boolean" ? b.triage : undefined,
     title: b.title,
     description: b.description,
     status: b.status,
@@ -481,6 +483,17 @@ api.post("/api/tasks/:ref/wake", async (c) => {
   return c.json({ run });
 });
 
+// Ask the workspace PM agent to pick an assignee for this task.
+api.post("/api/tasks/:ref/triage", async (c) => {
+  const ws = c.get("ws");
+  const task = await getTaskByRef(c.env, ws.id, c.req.param("ref"));
+  if (!ws.pm_agent_id) throw badRequest("Choose a PM agent in Workspace settings first");
+  const pm = await c.env.DB.prepare("SELECT * FROM members WHERE id = ? AND kind = 'agent' AND active = 1").bind(ws.pm_agent_id).first<MemberRow>();
+  if (!pm) throw badRequest("The PM agent is deactivated");
+  const run = await onAgentTrigger(c.env, { task, agent: pm, trigger: "triage", triggeredBy: c.get("me").id });
+  return c.json({ run });
+});
+
 api.post("/api/runs/:id/retry", async (c) => c.json({ run: await retryRun(c.env, c.req.param("id"), c.get("me").id) }));
 api.post("/api/runs/:id/dismiss", async (c) => {
   await c.env.DB.prepare(
@@ -592,6 +605,61 @@ api.get("/api/members/:id/record", async (c) => {
     recent: feed(ws, recent.results),
     runs: runs.results.map((r) => ({ ...r, task_key: `${ws.key_prefix}-${r.number}` })),
   });
+});
+
+// ----- Saved views (shared across the workspace) -----
+type ViewRow = { id: string; workspace_id: string; name: string; config: string; created_by: string; position: number; created_at: string; updated_at: string };
+const viewOut = (v: ViewRow) => ({ ...v, config: JSON.parse(v.config || "{}") });
+const viewConfig = (raw: unknown) => {
+  const text = JSON.stringify(raw ?? {});
+  if (text.length > 4000) throw badRequest("View is too large");
+  return text;
+};
+async function getView(c: { env: AppEnv; get: (k: "ws") => WorkspaceRow }, id: string) {
+  const v = await c.env.DB.prepare("SELECT * FROM views WHERE id = ? AND workspace_id = ?").bind(id, c.get("ws").id).first<ViewRow>();
+  if (!v) throw notFound("View");
+  return v;
+}
+
+api.get("/api/views", async (c) => {
+  const rows = await c.env.DB.prepare("SELECT * FROM views WHERE workspace_id = ? ORDER BY position, created_at").bind(c.get("ws").id).all<ViewRow>();
+  return c.json(rows.results.map(viewOut));
+});
+
+api.post("/api/views", async (c) => {
+  const body = await c.req.json<{ name?: string; config?: unknown }>();
+  const name = body.name?.trim();
+  if (!name || name.length > 60) throw badRequest("Give the view a name (up to 60 characters)");
+  const ws = c.get("ws");
+  const count = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM views WHERE workspace_id = ?").bind(ws.id).first<{ n: number }>();
+  if ((count?.n ?? 0) >= 100) throw badRequest("This workspace already has 100 views");
+  const now = nowIso();
+  const id = newId();
+  await c.env.DB.prepare("INSERT INTO views (id, workspace_id, name, config, created_by, position, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)")
+    .bind(id, ws.id, name, viewConfig(body.config), c.get("me").id, Date.now(), now, now)
+    .run();
+  await notify(c.env, ws.id, { type: "views" });
+  return c.json(viewOut((await getView(c, id))), 201);
+});
+
+api.patch("/api/views/:id", async (c) => {
+  const v = await getView(c, c.req.param("id"));
+  const body = await c.req.json<{ name?: string; config?: unknown }>();
+  const name = body.name === undefined ? v.name : body.name.trim();
+  if (!name || name.length > 60) throw badRequest("Give the view a name (up to 60 characters)");
+  const config = body.config === undefined ? v.config : viewConfig(body.config);
+  await c.env.DB.prepare("UPDATE views SET name = ?, config = ?, updated_at = ? WHERE id = ?").bind(name, config, nowIso(), v.id).run();
+  await notify(c.env, c.get("ws").id, { type: "views" });
+  return c.json(viewOut(await getView(c, v.id)));
+});
+
+api.delete("/api/views/:id", async (c) => {
+  const v = await getView(c, c.req.param("id"));
+  const me = c.get("me");
+  if (me.role !== "admin" && v.created_by !== me.id) throw forbidden("Only admins or whoever made this view can delete it");
+  await c.env.DB.prepare("DELETE FROM views WHERE id = ?").bind(v.id).run();
+  await notify(c.env, c.get("ws").id, { type: "views" });
+  return c.json({ ok: true });
 });
 
 api.get("/api/inbox", async (c) => c.json(await getInbox(c.env, c.get("ws"), c.get("me"))));

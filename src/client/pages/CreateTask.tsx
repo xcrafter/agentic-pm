@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { type Priority, type Status, type Task, PRIORITIES, PRIORITY_LABEL, STATUSES, STATUS_LABEL, api } from "../api";
-import { Button, Chip, MemberChip, Menu, Modal, ModalFooter, PriorityIcon, StatusIcon, assigneeOptions, useMembers, useProjects } from "../components";
+import { Button, Chip, MemberChip, Menu, Modal, ModalFooter, PriorityIcon, StatusIcon, assigneeOptions, useMe, useMembers, useProjects } from "../components";
 import { FolderKanban } from "lucide-react";
 import { ProjectDot } from "./Layout";
 import { type EditorHandle, RichEditor } from "../editor";
@@ -23,6 +23,8 @@ export function CreateTaskModal({
   const [priority, setPriority] = useState<Priority>("none");
   const [assignee, setAssignee] = useState<string>("none");
   const [project, setProject] = useState<string>(defaultProjectId ?? "none");
+  const ws = useMe().data?.workspace;
+  const [triage, setTriage] = useState(false);
   const editor = useRef<EditorHandle>(null);
   const members = useMembers();
   const projects = useProjects();
@@ -36,6 +38,7 @@ export function CreateTaskModal({
       setPriority("none");
       setAssignee("none");
       setProject(defaultProjectId ?? "none");
+      setTriage(!!ws?.pm_triage);
     }
   }, [open, defaultProjectId, defaultStatus]);
 
@@ -48,6 +51,7 @@ export function CreateTaskModal({
         priority,
         assignee_id: assignee === "none" ? null : assignee,
         project_id: project === "none" ? null : project,
+        ...(assignee === "none" && pm ? { triage } : {}),
       }),
     onSuccess: (t) => {
       qc.invalidateQueries({ queryKey: ["tasks"] });
@@ -57,6 +61,7 @@ export function CreateTaskModal({
   });
 
   const selectedMember = members.data?.find((m) => m.id === assignee);
+  const pm = members.data?.find((m) => m.id === ws?.pm_agent_id && m.active);
 
   return (
     <Modal open={open} onClose={onClose} wide>
@@ -128,11 +133,19 @@ export function CreateTaskModal({
             ]}
           />
         </div>
+        {pm && assignee === "none" && (
+          <label className="mx-4 mb-3 flex w-fit cursor-pointer items-center gap-2 rounded-lg border border-line px-2.5 py-1.5 text-[13px] hover:bg-hover">
+            <input type="checkbox" checked={triage} onChange={(e) => setTriage(e.target.checked)} />
+            Ask <span className="font-medium text-agent">{pm.name}</span> to pick an assignee
+          </label>
+        )}
         {create.error && <p className="px-4 pb-3 text-[13px] text-[#c4312b]">{(create.error as Error).message}</p>}
         <ModalFooter
           hint={
             selectedMember?.kind === "agent" ? (
               <span className="text-agent">{selectedMember.name} is woken as soon as you create this.</span>
+            ) : pm && assignee === "none" && triage ? (
+              <span className="text-agent">{pm.name} is woken to assign this.</span>
             ) : (
               "⌘ Enter to create"
             )

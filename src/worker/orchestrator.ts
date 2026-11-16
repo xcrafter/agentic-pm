@@ -71,8 +71,16 @@ export async function onAgentTrigger(
     .bind(task.id, agent.id)
     .first<RunRow>();
   if (open) {
-    await env.DB.prepare("UPDATE agent_runs SET pending_trigger = 1 WHERE id = ?").bind(open.id).run();
-    return open;
+    // An answer to the agent's question, or a person pressing Wake, must reach the agent now: it may be
+    // waiting on exactly this, and an open run (e.g. an idle follow-up) would otherwise hold it back.
+    if (opts.trigger === "answered" || opts.trigger === "manual") {
+      await env.DB.prepare("UPDATE agent_runs SET status = 'ended', ended_at = ?, last_error = ? WHERE id = ? AND status IN " + OPEN_STATUSES)
+        .bind(nowIso(), `superseded by ${opts.trigger}`, open.id)
+        .run();
+    } else {
+      await env.DB.prepare("UPDATE agent_runs SET pending_trigger = 1 WHERE id = ?").bind(open.id).run();
+      return open;
+    }
   }
 
   const run: RunRow = {
@@ -280,7 +288,8 @@ export async function endRunsFor(env: AppEnv, taskId: string, agentId: string, r
     .bind(now, taskId, agentId)
     .run();
   const hadPending = runs.results.some((r) => r.pending_trigger);
-  if (hadPending && reason !== "unassigned" && reason !== "completed") {
+  // No follow-up after a question: the agent is waiting on the answer, and the answer wakes it.
+  if (hadPending && reason !== "unassigned" && reason !== "completed" && reason !== "asked_question") {
     const task = await env.DB.prepare("SELECT * FROM tasks WHERE id = ?").bind(taskId).first<TaskRow>();
     const agent = await getMember(env, agentId);
     const last = runs.results[0];
