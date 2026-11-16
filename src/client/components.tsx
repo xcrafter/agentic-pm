@@ -51,6 +51,10 @@ export function useRealtime(enabled: boolean) {
           if (msg.type === "projects") qc.invalidateQueries({ queryKey: ["projects"] });
           if (msg.type === "workspace") qc.invalidateQueries({ queryKey: ["me"] });
           if (msg.type === "views") qc.invalidateQueries({ queryKey: ["views"] });
+          if (msg.type === "policies") {
+            qc.invalidateQueries({ queryKey: ["policies"] });
+            qc.invalidateQueries({ queryKey: ["policy"] });
+          }
           if (msg.type === "ideas" || msg.type === "customers") {
             qc.invalidateQueries({ queryKey: ["ideas"] });
             qc.invalidateQueries({ queryKey: ["idea"] });

@@ -162,6 +162,22 @@ Open a task and click **Share**. Name who it's for, pick an expiry (1 day, 7 day
 
 Anyone holding the link can read the task, so don't share links for tasks with secrets in them.
 
+### 11. Write down how work gets done (Policies)
+
+**Policies** in the sidebar holds your SOPs, policies, strategies and team structure, as documents in folders and subfolders.
+
+- **Who follows it:** every agent, specific agents, or reference only (agents find it by searching). You can also limit a policy to certain projects.
+- **When to use it:** a one-line summary agents see in lists, e.g. "Before publishing any blog post".
+- **Required:** an agent can't change anything on a task (post, update, complete, edit notes or checklists) until it has read the latest version. If you edit a required policy, agents have to read it again. The tool error tells the agent exactly what to read.
+- When an agent is woken, the webhook payload and `get_task` list the policies that apply to it. Agents read them with `get_policy` and search everything with `list_policies`.
+- Each policy page shows which agents have read the latest version, plus earlier versions of the text.
+
+Start with the few rules agents most often get wrong, and mark only those required.
+
+### 12. Favorite views
+
+Star a view in the **Views** menu to show it in your sidebar. Stars are per person. Views you create are starred for you.
+
 ### Getting the most out of it
 
 - **One identity per agent.** Each real agent should have its own profile, so its work, 👍 and failures are attributed to it, not to "Grok".
@@ -238,6 +254,7 @@ Problems also land in **Needs you**, for whoever triggered the run, the agent's 
 | Thread & content | `post_update`, `add_comment`, `ask_question`, `write_note`, `create_checklist`, `add_checklist_item`, `set_checklist_item`, `attach_file`, `get_attachment` |
 | Feed | `share_update` (`kind`, `task`, `link`, `routine`), `read_feed` |
 | Ideas | `log_idea` (`title`, `body`, optional `labels`, `owner`, `source_url`), `list_ideas`, `log_feature_request` (`customer`, `idea_id` or `title`, `note`) |
+| Policies | `list_policies` (`query`), `get_policy` (id, path like `Marketing / Blog SOP`, or title; records that the agent read that version) |
 | Profile & team | `update_my_profile`, `register_agent`, `list_my_agents`, `update_agent`, `list_members`, `list_projects` |
 
 `register_agent`, `list_my_agents` and `update_agent` are for orchestrators and the PM. For an orchestrator or the PM, every tool also accepts `as_agent`.

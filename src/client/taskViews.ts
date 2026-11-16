@@ -147,4 +147,6 @@ export interface SavedView {
   created_by: string;
   created_at: string;
   updated_at: string;
+  /** Pinned to my sidebar. */
+  favorite?: boolean;
 }

@@ -36,6 +36,7 @@ import { endRunsFor, failRunsFor, touchRun } from "./orchestrator";
 import { POST_KINDS, createPost, listPosts } from "./feed";
 import { IDEA_LABELS, IDEA_STATUSES, createIdea, listIdeas } from "./ideas";
 import { logFeatureRequest } from "./customers";
+import { assertPoliciesRead, findPolicy, listPoliciesForAgent, markPolicyRead, policiesFor, policyForAgent } from "./policies";
 import { agentSummary, applyAgentProfile, canOrchestrate, getActableAgent, getSubAgent, isWorkspacePm, listSubAgents, registerSubAgent } from "./agents";
 import type { McpProps } from "./authorize";
 import { type AppEnv, HttpError, encryptSecret, signValue } from "./util";
@@ -73,6 +74,9 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
         `ask_question if you need a human (then stop; you'll be woken when they answer) → complete_task with a summary. ` +
         `If something goes wrong and you can't continue, call end_run with outcome "failed" (or "blocked") and the reason, so humans see it. ` +
         `When you finish recurring work outside a task (e.g. a daily blog), post one line with share_update (set routine, e.g. "daily-blog", and link the result).` +
+        ` The workspace keeps policies (SOPs, guidelines, strategies) that tell you how work must be done. get_task lists the ones that apply to you; ` +
+        `read them with get_policy before acting and follow them. Required ones must be read in their latest version before you can change anything; ` +
+        `if a tool says so, read what it names and retry. Use list_policies to search the rest when unsure how something should be done.` +
         (isPm
           ? ` You are the workspace PM: you're woken for new unassigned tasks (assign each to the best agent; check list_members) ` +
             `and for any agent without its own webhook (the payload's as_agent says which). You can act as any agent by passing as_agent, ` +
@@ -91,6 +95,28 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
     const register = server.registerTool.bind(server) as (...args: any[]) => unknown;
     (server as any).registerTool = (name: string, config: any, cb: any) =>
       register(name, { ...config, inputSchema: { ...(config.inputSchema ?? {}), as_agent: z.string().optional().describe(AS_AGENT_HELP) } }, cb);
+  }
+
+  // Tools that change work are gated on the agent having read its required policies (latest version).
+  const GATED = new Set([
+    "create_task", "update_task", "post_update", "add_comment", "write_note", "create_checklist",
+    "set_checklist_item", "add_checklist_item", "attach_file", "complete_task", "share_update",
+  ]);
+  {
+    const registerGated = server.registerTool.bind(server) as (...args: any[]) => unknown;
+    (server as any).registerTool = (name: string, config: any, cb: any) =>
+      registerGated(name, config, !GATED.has(name)
+        ? cb
+        : async (args: any, extra: any) => {
+            try {
+              const w = await ws();
+              const t = typeof args?.task === "string" ? await getTaskByRef(env, w.id, args.task).catch(() => null) : null;
+              await assertPoliciesRead(env, w, actor, t ?? (typeof args?.project === "string" ? { project_id: args.project } : null));
+            } catch (err) {
+              return { content: [{ type: "text", text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+            }
+            return cb(args, extra);
+          });
   }
 
   const memberNames = async () => {
@@ -165,6 +191,7 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
           notes: detail.notes,
           checklists: detail.checklists,
           attachments: detail.attachments,
+          policies: me.kind === "agent" ? await policiesFor(env, w.id, me, t) : undefined,
           unread: unread.slice(-200).map((e) => compactEntry(e, names)),
           thread: recent.map((e) => compactEntry(e, names)),
           thread_total: entries.length,
@@ -701,6 +728,38 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
     "list_projects",
     { description: "List projects.", annotations: { readOnlyHint: true } },
     () => guard(async () => listProjects(env, props.workspaceId)),
+  );
+
+  server.registerTool(
+    "list_policies",
+    {
+      description:
+        "List or search the workspace's policies (SOPs, guidelines, strategies, structure). Ones that apply to you come first, " +
+        "marked required/read_latest. Read one with get_policy.",
+      inputSchema: { query: z.string().optional().describe("Words to search titles, summaries and content") },
+      annotations: { readOnlyHint: true },
+    },
+    ({ query }) => guard(async () => listPoliciesForAgent(env, props.workspaceId, me, query)),
+  );
+
+  server.registerTool(
+    "get_policy",
+    {
+      description: "Read a policy in full (by id, or by its path/title). Reading it records that you have the latest version.",
+      inputSchema: { policy: z.string().describe("Policy id, path (e.g. 'Marketing / Blog SOP') or title") },
+      annotations: { readOnlyHint: true },
+    },
+    ({ policy }) =>
+      guard(async () => {
+        const p = await findPolicy(env, props.workspaceId, policy);
+        const all = await env.DB.prepare("SELECT * FROM policies WHERE workspace_id = ?").bind(props.workspaceId).all<any>();
+        if (p.kind === "folder") {
+          const prefix = `${policyForAgent(env, p, all.results).path} / `;
+          return { folder: prefix.slice(0, -3), docs: (await listPoliciesForAgent(env, props.workspaceId, me)).filter((d) => d.path.startsWith(prefix)) };
+        }
+        await markPolicyRead(env, me, p);
+        return policyForAgent(env, p, all.results);
+      }),
   );
 
   server.registerTool(

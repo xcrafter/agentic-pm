@@ -15,6 +15,7 @@ import {
   Megaphone,
   BarChart3,
   Lightbulb,
+  BookOpen,
   Building,
   MoreHorizontal,
 } from "lucide-react";
@@ -211,6 +212,9 @@ function Sidebar({ shell }: { shell: ShellContext }) {
           <NavItem to="/customers" icon={<Building size={15} />}>
             Customers
           </NavItem>
+          <NavItem to="/policies" icon={<BookOpen size={15} />}>
+            Policies
+          </NavItem>
           <NavItem to="/" end icon={<ListTodo size={15} />}>
             All tasks
           </NavItem>
@@ -235,11 +239,11 @@ function Sidebar({ shell }: { shell: ShellContext }) {
           </NavItem>
         </nav>
 
-        {!!views.data?.length && (
+        {!!views.data?.some((v) => v.favorite) && (
           <>
-            <div className="mt-5 mb-1 px-2 text-[12px] font-medium text-ink-3">Views</div>
+            <div className="mt-5 mb-1 px-2 text-[12px] font-medium text-ink-3">Favorite views</div>
             <nav className="flex flex-col gap-0.5">
-              {views.data.map((v) => {
+              {views.data.filter((v) => v.favorite).map((v) => {
                 const active = location.pathname === "/" && new URLSearchParams(location.search).get("view") === v.id;
                 return (
                   <Link

@@ -18,6 +18,7 @@ import {
   SlidersHorizontal,
   Table2,
   Trash2,
+  Star,
   TriangleAlert,
   UserRound,
   X,
@@ -266,6 +267,11 @@ function Toolbar(p: {
       if (id === p.viewId) p.onPickView(null);
     },
   });
+  const toggleFavorite = useMutation({
+    mutationFn: (v: SavedView) => (v.favorite ? api.del(`/api/views/${v.id}/favorite`) : api.put(`/api/views/${v.id}/favorite`)),
+    onMutate: (v) => qc.setQueryData<SavedView[]>(["views"], (old) => old?.map((x) => (x.id === v.id ? { ...x, favorite: !v.favorite } : x))),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["views"] }),
+  });
   const nameOf = (ids: string[], lookup: (id: string) => string | undefined) =>
     ids.length === 1 ? lookup(ids[0]) : `${ids.length} selected`;
   const memberName = (id: string) => (id === "me" ? "Me" : id === "none" ? "Unassigned" : members.data?.find((m) => m.id === id)?.name);
@@ -293,13 +299,17 @@ function Toolbar(p: {
               {PRESETS.map((v) => (
                 <ViewRow key={v.id} name={v.name} active={p.viewId === v.id} onPick={() => (p.onPickView(v.id), close())} />
               ))}
-              <div className="mt-1 border-t border-line px-2 pt-2 pb-1 text-[11px] font-medium text-ink-3">Saved views</div>
+              <div className="mt-1 flex items-baseline justify-between border-t border-line px-2 pt-2 pb-1 text-[11px] font-medium text-ink-3">
+                Saved views <span className="font-normal">Star to show in your sidebar</span>
+              </div>
               {p.savedViews.map((v) => (
                 <ViewRow
                   key={v.id}
                   name={v.name}
                   active={p.viewId === v.id}
                   onPick={() => (p.onPickView(v.id), close())}
+                  favorite={!!v.favorite}
+                  onFavorite={() => toggleFavorite.mutate(v)}
                   onDelete={me?.member && (me.member.role === "admin" || v.created_by === me.member.id) ? () => removeView.mutate(v.id) : undefined}
                 />
               ))}
@@ -545,7 +555,21 @@ function Toolbar(p: {
   );
 }
 
-function ViewRow({ name, active, onPick, onDelete }: { name: string; active: boolean; onPick: () => void; onDelete?: () => void }) {
+function ViewRow({
+  name,
+  active,
+  onPick,
+  onDelete,
+  favorite,
+  onFavorite,
+}: {
+  name: string;
+  active: boolean;
+  onPick: () => void;
+  onDelete?: () => void;
+  favorite?: boolean;
+  onFavorite?: () => void;
+}) {
   const [confirming, setConfirming] = useState(false);
   return (
     <div className="group flex items-center rounded-md hover:bg-hover" onMouseLeave={() => setConfirming(false)}>
@@ -553,6 +577,16 @@ function ViewRow({ name, active, onPick, onDelete }: { name: string; active: boo
         <span className="flex-1 truncate">{name}</span>
         {active && <Check size={14} className="text-accent" />}
       </button>
+      {onFavorite && (
+        <IconButton
+          label={favorite ? `Remove ${name} from sidebar` : `Show ${name} in sidebar`}
+          aria-pressed={favorite}
+          className={cx("mr-0.5 h-6 w-6", favorite ? "text-[#e5a00d]" : "opacity-0 group-hover:opacity-100 focus:opacity-100")}
+          onClick={onFavorite}
+        >
+          <Star size={13} fill={favorite ? "currentColor" : "none"} />
+        </IconButton>
+      )}
       {onDelete &&
         (confirming ? (
           <button type="button" onClick={onDelete} className="mr-1 h-6 rounded-md bg-danger px-1.5 text-[12px] font-medium text-white">

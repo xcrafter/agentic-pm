@@ -747,6 +747,53 @@ try {
   await assert.rejects(alice("GET", `/api/tasks/${task.key}`), /404/);
   pass("admin deleted tasks, including one with agent runs, files and a full thread");
 
+  step("Policies: folders and docs; required policies gate agent work until the latest version is read");
+  const ops = await alice("POST", "/api/policies", { kind: "folder", title: `Ops ${runId}` });
+  const sop = await alice("POST", "/api/policies", { kind: "doc", title: "Blog SOP", parent_id: ops.id, content: "1. Draft in Docs\n2. Get review" });
+  await assert.rejects(alice("PATCH", `/api/policies/${ops.id}`, { parent_id: sop.id }), /folder/i);
+  const subFolder = await alice("POST", "/api/policies", { kind: "folder", title: "Sub", parent_id: ops.id });
+  await assert.rejects(alice("PATCH", `/api/policies/${ops.id}`, { parent_id: subFolder.id }), /inside itself/);
+  await alice("PATCH", `/api/policies/${sop.id}`, { required: true, summary: "Before publishing any blog post" });
+  const pt = await alice("POST", "/api/tasks", { title: `Policy gated ${runId}` });
+  await assert.rejects(tool("post_update", { task: pt.key, body: "starting" }), /read the workspace policies/);
+  const gt = await tool("get_task", { task: pt.key });
+  const listedPol = gt.policies.find((x) => x.id === sop.id);
+  assert.ok(listedPol && listedPol.required && !listedPol.read_latest && listedPol.path === `Ops ${runId} / Blog SOP`);
+  assert.ok((await tool("list_policies", { query: "draft in docs" })).some((x) => x.id === sop.id && x.applies_to_you));
+  const read1 = await tool("get_policy", { policy: `Ops ${runId} / Blog SOP` });
+  assert.ok(read1.content.includes("Get review") && read1.version === 1);
+  await tool("post_update", { task: pt.key, body: "read the SOP, starting" });
+  await alice("PATCH", `/api/policies/${sop.id}`, { content: "1. Draft in Docs\n2. Get review\n3. Add alt text" });
+  await assert.rejects(tool("post_update", { task: pt.key, body: "more" }), /Blog SOP/);
+  assert.equal((await tool("get_policy", { policy: sop.id })).version, 2);
+  await tool("post_update", { task: pt.key, body: "synced with v2" });
+  const sopDetail = await alice("GET", `/api/policies/${sop.id}`);
+  assert.ok(sopDetail.revisions.some((r) => r.version === 1) && sopDetail.reads.some((r) => r.member_id === agent.id && r.version === 2));
+  // Scoped to another agent → no longer applies to this one.
+  await alice("PATCH", `/api/policies/${sop.id}`, { audience: "agents", agent_ids: [] });
+  assert.ok(!(await tool("get_task", { task: pt.key })).policies.some((x) => x.id === sop.id));
+  await alice("PATCH", `/api/policies/${sop.id}`, { audience: "all", content: "v3 text" });
+  await alice("PATCH", `/api/tasks/${pt.key}`, { assignee_id: agent.id });
+  const polHook = await waitForHook((c) => c.body?.task?.key === pt.key && c.body.policies);
+  assert.ok(polHook.body.policies.some((x) => x.id === sop.id && x.required && !x.read_latest) && /must read/.test(polHook.body.instruction));
+  await assert.rejects(bob2("DELETE", `/api/policies/${ops.id}`), /403/);
+  const removedPol = await alice("DELETE", `/api/policies/${ops.id}`);
+  assert.equal(removedPol.removed, 3);
+  await tool("post_update", { task: pt.key, body: "policy gone, not gated" });
+  await alice("PATCH", `/api/tasks/${pt.key}`, { status: "done" });
+  pass("tree + cycle guard, gating until read, re-read after edits, revisions, scoping, webhook lists policies, folder delete cascades");
+
+  step("Favorite views: each person picks which views show in their sidebar");
+  const fv = await alice("POST", "/api/views", { name: `Fav ${runId}`, config: { hideDone: true } });
+  assert.equal((await alice("GET", "/api/views")).find((v) => v.id === fv.id).favorite, true, "creator's new view is starred");
+  assert.equal((await bob2("GET", "/api/views")).find((v) => v.id === fv.id).favorite, false);
+  await bob2("PUT", `/api/views/${fv.id}/favorite`);
+  assert.equal((await bob2("GET", "/api/views")).find((v) => v.id === fv.id).favorite, true);
+  await alice("DELETE", `/api/views/${fv.id}/favorite`);
+  assert.equal((await alice("GET", "/api/views")).find((v) => v.id === fv.id).favorite, false);
+  await alice("DELETE", `/api/views/${fv.id}`);
+  pass("stars are per person; deleting a starred view works");
+
   step("Share links: hand a task to an outside AI tool; reply links post back without waking agents");
   const st = await alice("POST", "/api/tasks", { title: `Shareable ${runId}`, description: "Write the **launch** post." });
   await alice("POST", `/api/tasks/${st.key}/entries`, { body: "Keep it under 300 words" });

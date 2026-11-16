@@ -38,6 +38,7 @@ import { feedRoutes } from "./feed";
 import { ideaRoutes } from "./ideas";
 import { customerRoutes } from "./customers";
 import { shareRoutes } from "./shares";
+import { policyRoutes } from "./policies";
 import { type AppEnv, HttpError, badRequest, encryptSecret, forbidden, newId, notFound, nowIso, verifySignedValue } from "./util";
 
 type Vars = { me: MemberRow; ws: WorkspaceRow; actor: Actor };
@@ -112,6 +113,7 @@ api.route("/", feedRoutes);
 api.route("/", ideaRoutes);
 api.route("/", customerRoutes);
 api.route("/", shareRoutes);
+api.route("/", policyRoutes);
 
 const requireAdmin = (me: MemberRow) => {
   if (me.role !== "admin") throw forbidden("Admins only");
@@ -630,8 +632,24 @@ async function getView(c: { env: AppEnv; get: (k: "ws") => WorkspaceRow }, id: s
 }
 
 api.get("/api/views", async (c) => {
-  const rows = await c.env.DB.prepare("SELECT * FROM views WHERE workspace_id = ? ORDER BY position, created_at").bind(c.get("ws").id).all<ViewRow>();
-  return c.json(rows.results.map(viewOut));
+  const rows = await c.env.DB.prepare(
+    "SELECT v.*, (f.view_id IS NOT NULL) AS favorite FROM views v LEFT JOIN view_favorites f ON f.view_id = v.id AND f.member_id = ? WHERE v.workspace_id = ? ORDER BY v.position, v.created_at",
+  )
+    .bind(c.get("me").id, c.get("ws").id)
+    .all<ViewRow & { favorite: number }>();
+  return c.json(rows.results.map((v) => ({ ...viewOut(v), favorite: !!v.favorite })));
+});
+
+// Favorites are per person: they decide which views show in that person's sidebar.
+api.put("/api/views/:id/favorite", async (c) => {
+  const v = await getView(c, c.req.param("id"));
+  await c.env.DB.prepare("INSERT OR IGNORE INTO view_favorites (member_id, view_id, created_at) VALUES (?,?,?)").bind(c.get("me").id, v.id, nowIso()).run();
+  return c.json({ ok: true, favorite: true });
+});
+api.delete("/api/views/:id/favorite", async (c) => {
+  const v = await getView(c, c.req.param("id"));
+  await c.env.DB.prepare("DELETE FROM view_favorites WHERE member_id = ? AND view_id = ?").bind(c.get("me").id, v.id).run();
+  return c.json({ ok: true, favorite: false });
 });
 
 api.post("/api/views", async (c) => {
@@ -646,6 +664,7 @@ api.post("/api/views", async (c) => {
   await c.env.DB.prepare("INSERT INTO views (id, workspace_id, name, config, created_by, position, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)")
     .bind(id, ws.id, name, viewConfig(body.config), c.get("me").id, Date.now(), now, now)
     .run();
+  await c.env.DB.prepare("INSERT OR IGNORE INTO view_favorites (member_id, view_id, created_at) VALUES (?,?,?)").bind(c.get("me").id, id, now).run();
   await notify(c.env, ws.id, { type: "views" });
   return c.json(viewOut((await getView(c, id))), 201);
 });
@@ -665,7 +684,10 @@ api.delete("/api/views/:id", async (c) => {
   const v = await getView(c, c.req.param("id"));
   const me = c.get("me");
   if (me.role !== "admin" && v.created_by !== me.id) throw forbidden("Only admins or whoever made this view can delete it");
-  await c.env.DB.prepare("DELETE FROM views WHERE id = ?").bind(v.id).run();
+  await c.env.DB.batch([
+    c.env.DB.prepare("DELETE FROM view_favorites WHERE view_id = ?").bind(v.id),
+    c.env.DB.prepare("DELETE FROM views WHERE id = ?").bind(v.id),
+  ]);
   await notify(c.env, c.get("ws").id, { type: "views" });
   return c.json({ ok: true });
 });

@@ -4,6 +4,7 @@
  */
 import type { MemberRow, TaskRow } from "./domain";
 import { addSystemEntry, getMember, getWorkspace, notify, taskKey } from "./domain";
+import { policiesFor } from "./policies";
 import { type AppEnv, decryptSecret, newId, nowIso } from "./util";
 
 export type TriggerKind = "assigned" | "answered" | "mentioned" | "manual" | "followup" | "triage";
@@ -216,6 +217,15 @@ export async function handleDispatch(env: AppEnv, msg: Message<DispatchMessage>)
     parent || route.via ? { handle: agent.handle, name: agent.name, description: agent.description } : undefined,
     route.via ? { handle: route.via.handle, name: route.via.name } : undefined,
   );
+  // Tell the agent which workspace policies govern this work.
+  const pols = await policiesFor(env, ws.id, agent, task);
+  if (pols.length) {
+    const required = pols.filter((p) => p.required && !p.read_latest);
+    Object.assign(payload, { policies: pols });
+    payload.instruction +=
+      ` Workspace policies apply to this work (listed in "policies"): read them with get_policy and follow them.` +
+      (required.length ? ` You must read ${required.map((p) => `"${p.title}"`).join(", ")} before you can change anything.` : "");
+  }
   const attempts = run.attempts + 1;
   let result: { ok: boolean; status: number; body: string };
   try {
