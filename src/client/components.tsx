@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Marked, type Tokens } from "marked";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Bot, Check, ChevronDown, Menu as MenuIcon, Search, X } from "lucide-react";
+import { createPortal } from "react-dom";
 import { Link, useOutletContext } from "react-router";
 import {
   type Me,
@@ -327,6 +328,8 @@ export function Menu<T extends string>({
   searchable,
   align = "left",
   width = "w-60",
+  className,
+  label,
 }: {
   trigger: ReactNode;
   options: { value: T; label: string; icon?: ReactNode; hint?: ReactNode }[];
@@ -335,74 +338,145 @@ export function Menu<T extends string>({
   searchable?: boolean;
   align?: "left" | "right";
   width?: string;
+  /** Classes for the trigger button (e.g. to fill a table cell). */
+  className?: string;
+  label?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
-  const ref = useRef<HTMLDivElement>(null);
+  const [active, setActive] = useState(0);
+  const [pos, setPos] = useState<{ top?: number; bottom?: number; left?: number; right?: number }>({});
+  const btn = useRef<HTMLButtonElement>(null);
+  const pop = useRef<HTMLDivElement>(null);
+
+  // The popover is portalled with fixed positioning so scrolling containers (tables) can't clip it.
+  const place = () => {
+    const r = btn.current?.getBoundingClientRect();
+    if (!r) return;
+    const below = window.innerHeight - r.bottom;
+    const vertical = below < 260 && r.top > below ? { bottom: window.innerHeight - r.top + 4 } : { top: r.bottom + 4 };
+    const horizontal = align === "right" ? { right: Math.max(8, window.innerWidth - r.right) } : { left: Math.min(r.left, window.innerWidth - 248) };
+    setPos({ ...vertical, ...horizontal });
+  };
+
   useEffect(() => {
     if (!open) return;
-    const close = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    const close = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!pop.current?.contains(t) && !btn.current?.contains(t)) setOpen(false);
+    };
+    const onScroll = (e: Event) => !pop.current?.contains(e.target as Node) && setOpen(false);
     document.addEventListener("mousedown", close);
-    document.addEventListener("keydown", esc);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", place);
     return () => {
       document.removeEventListener("mousedown", close);
-      document.removeEventListener("keydown", esc);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", place);
     };
   }, [open]);
+
   const filtered = options.filter((o) => !q || o.label.toLowerCase().includes(q.toLowerCase()));
+  const choose = (v: T) => {
+    if (v !== value) onChange(v);
+    setOpen(false);
+    btn.current?.focus();
+  };
+  const onKey = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setOpen(false);
+      btn.current?.focus();
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActive((i) => Math.min(i + 1, filtered.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActive((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Enter" && filtered[active]) {
+      e.preventDefault();
+      choose(filtered[active].value);
+    }
+  };
+
   return (
-    <div className="relative min-w-0" ref={ref}>
+    <div className={cx("relative min-w-0", className && "h-full w-full")}>
       <button
+        ref={btn}
         type="button"
+        aria-haspopup="listbox"
         aria-expanded={open}
+        aria-label={label}
         onClick={(e) => {
           e.stopPropagation();
           e.preventDefault();
+          if (!open) {
+            place();
+            setQ("");
+            setActive(Math.max(0, options.findIndex((o) => o.value === value)));
+          }
           setOpen((o) => !o);
-          setQ("");
         }}
-        className="flex max-w-full min-w-0 items-center rounded-md text-left"
+        className={cx("flex max-w-full min-w-0 items-center rounded-md text-left", className)}
       >
         {trigger}
       </button>
-      {open && (
-        <div
-          className={cx(
-            "absolute z-50 mt-1 max-h-80 overflow-auto rounded-[10px] bg-canvas p-1 shadow-pop",
-            width,
-            align === "right" ? "right-0" : "left-0",
-          )}
-          onClick={(e) => e.stopPropagation()}
-        >
-          {searchable && (
-            <div className="mb-1 flex items-center gap-1.5 border-b border-line px-2 pb-1.5 pt-1">
-              <Search size={13} className="text-ink-3" />
-              <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search…" className="w-full bg-transparent text-[13px] outline-none" />
-            </div>
-          )}
-          {filtered.map((o) => (
-            <button
-              key={o.value}
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                onChange(o.value);
-                setOpen(false);
-              }}
-              className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] hover:bg-hover"
-            >
-              {o.icon}
-              <span className="flex-1 truncate">{o.label}</span>
-              {o.hint && <span className="text-[12px] text-ink-3">{o.hint}</span>}
-              {value === o.value && <Check size={14} className="text-accent" />}
-            </button>
-          ))}
-          {!filtered.length && <div className="px-2 py-1.5 text-[13px] text-ink-3">No matches</div>}
-        </div>
-      )}
+      {open &&
+        createPortal(
+          <div
+            ref={pop}
+            role="listbox"
+            tabIndex={-1}
+            onKeyDown={onKey}
+            className={cx("fixed z-[100] max-h-80 overflow-auto rounded-[10px] bg-canvas p-1 text-ink shadow-pop outline-none", width)}
+            style={pos}
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            {searchable ? (
+              <div className="mb-1 flex items-center gap-1.5 border-b border-line px-2 pb-1.5 pt-1">
+                <Search size={13} className="text-ink-3" />
+                <input
+                  autoFocus
+                  value={q}
+                  onChange={(e) => (setQ(e.target.value), setActive(0))}
+                  placeholder="Search…"
+                  className="w-full bg-transparent text-[13px] outline-none"
+                />
+              </div>
+            ) : (
+              <FocusOnMount target={pop} />
+            )}
+            {filtered.map((o, i) => (
+              <button
+                key={o.value}
+                type="button"
+                role="option"
+                aria-selected={value === o.value}
+                onMouseEnter={() => setActive(i)}
+                onClick={(e) => {
+                  e.preventDefault();
+                  choose(o.value);
+                }}
+                className={cx("flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13px]", i === active && "bg-hover")}
+              >
+                {o.icon}
+                <span className="flex-1 truncate">{o.label}</span>
+                {o.hint && <span className="text-[12px] text-ink-3">{o.hint}</span>}
+                {value === o.value && <Check size={14} className="text-accent" />}
+              </button>
+            ))}
+            {!filtered.length && <div className="px-2 py-1.5 text-[13px] text-ink-3">No matches</div>}
+          </div>,
+          document.body,
+        )}
     </div>
   );
+}
+
+function FocusOnMount({ target }: { target: React.RefObject<HTMLElement | null> }) {
+  useEffect(() => target.current?.focus(), [target]);
+  return null;
 }
 
 export function assigneeOptions(members: Member[] | undefined) {

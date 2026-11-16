@@ -2,10 +2,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CalendarDays, CircleDot, Clock, Columns3, FolderKanban, ListTodo, Plus, Signal, Table2, UserRound, Bot, Users, TriangleAlert } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
-import { type Status, type Task, STATUSES, STATUS_LABEL, api } from "../api";
+import { type Priority, type Status, type Task, PRIORITIES, PRIORITY_LABEL, STATUSES, STATUS_LABEL, api } from "../api";
 import {
   Avatar,
   Button,
+  assigneeOptions,
   Chip,
   EmptyState,
   MemberChip,
@@ -199,13 +200,57 @@ const COLS: { key: string; label: string; icon: ReactNode; width: string }[] = [
   { key: "updated", label: "Updated", icon: <Clock size={13} />, width: "w-[110px]" },
 ];
 
+/** Edit a task from a list: optimistic update of every cached task list, then refetch. */
+export function useTaskPatch() {
+  const qc = useQueryClient();
+  const members = useMembers();
+  const projects = useProjects();
+  return useMutation({
+    mutationFn: ({ task, body }: { task: Task; body: Record<string, unknown> }) => api.patch<Task>(`/api/tasks/${task.key}`, body),
+    onMutate: async ({ task, body }) => {
+      await qc.cancelQueries({ queryKey: ["tasks"] });
+      const prev = qc.getQueriesData<Task[]>({ queryKey: ["tasks"] });
+      const next: Partial<Task> = {};
+      if ("status" in body) next.status = body.status as Status;
+      if ("priority" in body) next.priority = body.priority as Priority;
+      if ("due_date" in body) next.due_date = body.due_date as string | null;
+      if ("assignee_id" in body) {
+        const m = members.data?.find((x) => x.id === body.assignee_id);
+        next.assignee = m ? { id: m.id, name: m.name, handle: m.handle, kind: m.kind, avatar_url: m.avatar_url } : null;
+      }
+      if ("project_id" in body) {
+        const p = projects.data?.find((x) => x.id === body.project_id);
+        next.project = p ? { id: p.id, name: p.name } : null;
+      }
+      qc.setQueriesData<Task[]>({ queryKey: ["tasks"] }, (old) => old?.map((t) => (t.id === task.id ? { ...t, ...next } : t)));
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => ctx?.prev.forEach(([key, data]) => qc.setQueryData(key, data)),
+    onSettled: (_d, _e, { task }) => {
+      qc.invalidateQueries({ queryKey: ["tasks"] });
+      qc.invalidateQueries({ queryKey: ["task", task.key] });
+    },
+  });
+}
+
+/** A table cell whose whole area opens an editor; hover shows it's editable. */
+const editCell = "flex h-full w-full items-center gap-1.5 px-3 rounded-none hover:bg-active focus-visible:bg-active";
+
 export function TaskTable({ tasks }: { tasks: Task[] }) {
-  const nav = useNavigate();
-  const order = new Map(STATUSES.map((s, i) => [s, i]));
-  const rows = [...tasks].sort((a, b) => order.get(a.status)! - order.get(b.status)! || b.updated_at.localeCompare(a.updated_at));
-  const cell = "h-10 border-r border-b border-line px-3 text-[13px] whitespace-nowrap";
+  const members = useMembers();
+  const projects = useProjects();
+  const patch = useTaskPatch();
+  const [order] = useState(() => new Map(STATUSES.map((s, i) => [s, i])));
+  const rows = [...tasks].sort((a, b) => order.get(a.status)! - order.get(b.status)! || b.created_at.localeCompare(a.created_at));
+  const cell = "h-10 border-r border-b border-line text-[13px] whitespace-nowrap";
+  const edit = (task: Task, body: Record<string, unknown>) => patch.mutate({ task, body });
   return (
     <div className="min-h-0 flex-1 overflow-auto">
+      {patch.error && (
+        <div className="sticky top-0 left-0 z-20 border-b border-danger-line bg-danger-soft px-4 py-2 text-[13px] text-danger">
+          Couldn't save: {(patch.error as Error).message}
+        </div>
+      )}
       <table className="w-full min-w-[1100px] border-separate border-spacing-0">
         <thead className="sticky top-0 z-10 bg-canvas">
           <tr>
@@ -230,54 +275,113 @@ export function TaskTable({ tasks }: { tasks: Task[] }) {
         <tbody>
           {rows.map((t) => {
             const health = taskHealth(t);
-            const bg = health === "problem" ? "bg-danger-soft" : "group-hover:bg-hover";
             return (
-            <tr
-              key={t.id}
-              onClick={() => nav(`/t/${t.key}`)}
-              className={cx("group cursor-pointer", health === "problem" && "[&>td]:bg-danger-soft [&>td]:border-b-danger-line")}
-              title={health === "problem" ? "Something went wrong with the agent's run. Open the task to see why." : undefined}
-            >
-              <td
-                className={cx(
-                  cell,
-                  "sticky left-0",
-                  health === "problem" ? "bg-danger-soft shadow-[inset_3px_0_0_var(--c-danger)]" : "bg-canvas group-hover:bg-hover",
-                  health === "waiting" && "shadow-[inset_3px_0_0_var(--c-warn)]",
-                )}
+              <tr
+                key={t.id}
+                className={cx("group", health === "problem" && "[&>td]:bg-danger-soft [&>td]:border-b-danger-line")}
+                title={health === "problem" ? "Something went wrong with the agent's run. Open the task to see why." : undefined}
               >
-                <Link to={`/t/${t.key}`} onClick={(e) => e.stopPropagation()} className="flex min-w-0 items-center gap-2">
-                  <span className="w-12 shrink-0 text-[12px] text-ink-3 tabular-nums">{t.key}</span>
-                  <span className="truncate font-medium">{t.title}</span>
-                  <RunBadge task={t} compact />
-                </Link>
-              </td>
-              <td className={cx(cell, "group-hover:bg-hover")}>
-                <StatusTag status={t.status} />
-              </td>
-              <td className={cx(cell, "max-w-[190px] group-hover:bg-hover")}>
-                <MemberChip member={t.assignee} />
-              </td>
-              <td className={cx(cell, "max-w-[170px] group-hover:bg-hover")}>
-                {t.project ? <Tag tone={projectTone(t.project.id)}>{t.project.name}</Tag> : <span className="text-ink-3">—</span>}
-              </td>
-              <td className={cx(cell, "group-hover:bg-hover")}>
-                <span className="flex items-center gap-1.5 text-ink-2">
-                  <PriorityIcon priority={t.priority} />
-                  {t.priority === "none" ? "" : t.priority[0].toUpperCase() + t.priority.slice(1)}
-                </span>
-              </td>
-              <td className={cx(cell, "group-hover:bg-hover", isOverdue(t) ? "font-medium text-danger" : "text-ink-2")}>
-                {t.due_date ? formatDate(t.due_date) : <span className="text-ink-3">—</span>}
-              </td>
-              <td className={cx(cell, "text-ink-3 group-hover:bg-hover")}>{timeAgo(t.updated_at)}</td>
-              <td className={cx("border-b border-line", bg)} />
-            </tr>
+                <td
+                  className={cx(
+                    cell,
+                    "sticky left-0 z-[1] p-0",
+                    health === "problem" ? "bg-danger-soft shadow-[inset_3px_0_0_var(--c-danger)]" : "bg-canvas group-hover:bg-hover",
+                    health === "waiting" && "shadow-[inset_3px_0_0_var(--c-warn)]",
+                  )}
+                >
+                  <Link to={`/t/${t.key}`} className="flex h-full min-w-0 items-center gap-2 px-3" title="Open task">
+                    <span className="w-12 shrink-0 text-[12px] text-ink-3 tabular-nums">{t.key}</span>
+                    <span className="truncate font-medium hover:underline">{t.title}</span>
+                    <RunBadge task={t} compact />
+                  </Link>
+                </td>
+                <td className={cx(cell, "p-0 group-hover:bg-hover")}>
+                  <Menu
+                    label={`Status of ${t.key}`}
+                    className={editCell}
+                    trigger={<StatusTag status={t.status} />}
+                    value={t.status}
+                    onChange={(s: Status) => edit(t, { status: s })}
+                    options={STATUSES.map((s) => ({ value: s, label: STATUS_LABEL[s], icon: <StatusIcon status={s} /> }))}
+                  />
+                </td>
+                <td className={cx(cell, "max-w-[190px] p-0 group-hover:bg-hover")}>
+                  <Menu
+                    label={`Assignee of ${t.key}`}
+                    searchable
+                    className={editCell}
+                    trigger={<MemberChip member={t.assignee} />}
+                    value={t.assignee?.id ?? "none"}
+                    onChange={(id) => edit(t, { assignee_id: id === "none" ? null : id })}
+                    options={assigneeOptions(members.data)}
+                  />
+                </td>
+                <td className={cx(cell, "max-w-[170px] p-0 group-hover:bg-hover")}>
+                  <Menu
+                    label={`Project of ${t.key}`}
+                    searchable
+                    className={editCell}
+                    trigger={t.project ? <Tag tone={projectTone(t.project.id)}>{t.project.name}</Tag> : <span className="text-ink-3">—</span>}
+                    value={t.project?.id ?? "none"}
+                    onChange={(id) => edit(t, { project_id: id === "none" ? null : id })}
+                    options={[
+                      { value: "none", label: "No project" },
+                      ...(projects.data ?? []).filter((p) => p.status === "active").map((p) => ({ value: p.id, label: p.name, icon: <ProjectDot id={p.id} /> })),
+                    ]}
+                  />
+                </td>
+                <td className={cx(cell, "p-0 group-hover:bg-hover")}>
+                  <Menu
+                    label={`Priority of ${t.key}`}
+                    className={editCell}
+                    width="w-48"
+                    trigger={
+                      <span className="flex items-center gap-1.5 text-ink-2">
+                        <PriorityIcon priority={t.priority} />
+                        {t.priority === "none" ? "" : PRIORITY_LABEL[t.priority]}
+                      </span>
+                    }
+                    value={t.priority}
+                    onChange={(p: Priority) => edit(t, { priority: p })}
+                    options={PRIORITIES.map((p) => ({ value: p, label: PRIORITY_LABEL[p], icon: <PriorityIcon priority={p} /> }))}
+                  />
+                </td>
+                <td className={cx(cell, "p-0 group-hover:bg-hover")}>
+                  <DueCell task={t} onChange={(d) => edit(t, { due_date: d })} />
+                </td>
+                <td className={cx(cell, "px-3 text-ink-3 group-hover:bg-hover")}>{timeAgo(t.updated_at)}</td>
+                <td className="border-b border-line group-hover:bg-hover" />
+              </tr>
             );
           })}
         </tbody>
       </table>
     </div>
+  );
+}
+
+/** Due date: shows the date; the native date picker sits on top so a click opens it. */
+function DueCell({ task, onChange }: { task: Task; onChange: (d: string | null) => void }) {
+  return (
+    <label className={cx(editCell, "relative cursor-pointer")} title="Set due date">
+      <span className={cx(isOverdue(task) ? "font-medium text-danger" : task.due_date ? "text-ink-2" : "text-ink-3")}>
+        {task.due_date ? formatDate(task.due_date) : "—"}
+      </span>
+      <input
+        type="date"
+        aria-label={`Due date of ${task.key}`}
+        value={task.due_date ?? ""}
+        onChange={(e) => onChange(e.target.value || null)}
+        onClick={(e) => {
+          try {
+            (e.currentTarget as HTMLInputElement).showPicker?.();
+          } catch {
+            /* older browsers open it on click anyway */
+          }
+        }}
+        className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+      />
+    </label>
   );
 }
 
