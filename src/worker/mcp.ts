@@ -104,6 +104,7 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
       author: a ? `${a.name} (@${a.handle}, ${a.kind})` : e.author_id,
       at: e.created_at,
     };
+    if (e.data?.deleted) return { ...base, deleted: true };
     if (e.body) base.body = e.body;
     if (e.reply_to_id) base.reply_to = e.reply_to_id;
     if (e.type === "system" || e.type.endsWith("_created") || e.type === "attachment_added" || e.type === "question") {

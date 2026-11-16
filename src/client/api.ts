@@ -87,6 +87,7 @@ export interface ChecklistItem {
 export interface Checklist {
   id: string;
   title: string;
+  created_by: string;
   items: ChecklistItem[];
 }
 export interface Attachment {

@@ -556,6 +556,48 @@ try {
   assert.equal(wsInfo.pm_agent_id, null);
   pass("update authored by @writer; acting-as agent can't wake others; PM cleared");
 
+  // ---------- deleting ----------
+  step("Deleting: people delete their own things, admins delete anything, only admins delete tasks");
+  const dt = await alice("POST", "/api/tasks", { title: `Delete me ${runId}` });
+  const note = await alice("POST", `/api/tasks/${dt.key}/notes`, { title: "Scratch", content: "x" });
+  const list = await alice("POST", `/api/tasks/${dt.key}/checklists`, { title: "Steps", items: ["a", "b"] });
+  const aliceMsg = await alice("POST", `/api/tasks/${dt.key}/entries`, { body: "alice says hi" });
+  const bobMsg = await bob2("POST", `/api/tasks/${dt.key}/entries`, { body: "bob says hi" });
+  const fd2 = new FormData();
+  fd2.append("file", new Blob(["hello"], { type: "text/plain" }), "hello.txt");
+  const upRes = await fetch(`${BASE}/api/tasks/${dt.key}/attachments`, { method: "POST", headers: { Cookie: cookieHeader(aliceJar) }, body: fd2 });
+  assert.ok(upRes.ok, `upload ${upRes.status}`);
+  let dd = await alice("GET", `/api/tasks/${dt.key}`);
+  const fileId = dd.attachments[0].id;
+
+  await assert.rejects(bob2("DELETE", `/api/notes/${note.id}`), /403/);
+  await assert.rejects(bob2("DELETE", `/api/entries/${aliceMsg.id}`), /403/);
+  await assert.rejects(bob2("DELETE", `/api/tasks/${dt.key}`), /403/);
+  await bob2("DELETE", `/api/entries/${bobMsg.id}`);
+  pass("Bob can delete his own message but not Alice's note, message or the task");
+
+  await alice("DELETE", `/api/notes/${note.id}`);
+  await alice("DELETE", `/api/checklists/${list.id}`);
+  await alice("DELETE", `/api/attachments/${fileId}`);
+  await alice("DELETE", `/api/entries/${aliceMsg.id}`);
+  dd = await alice("GET", `/api/tasks/${dt.key}`);
+  assert.equal(dd.notes.length, 0);
+  assert.equal(dd.checklists.length, 0);
+  assert.equal(dd.attachments.length, 0);
+  assert.ok(dd.entries.filter((e) => e.data.deleted && e.body === "").length >= 2, "messages blanked and marked deleted");
+  assert.ok(dd.entries.some((e) => e.type === "attachment_added" && e.data.deleted));
+  const gone = await fetch(`${BASE}/api/attachments/${fileId}`, { headers: { Cookie: cookieHeader(aliceJar) } });
+  assert.equal(gone.status, 404);
+  pass("admin deleted note, checklist, file (storage too) and a message");
+
+  await alice("DELETE", `/api/tasks/${dt.key}`);
+  await assert.rejects(alice("GET", `/api/tasks/${dt.key}`), /404/);
+  assert.ok(!(await alice("GET", "/api/tasks")).some((t) => t.key === dt.key));
+  // A task with agent runs, notes and a thread (the earlier agent task) deletes cleanly too.
+  await alice("DELETE", `/api/tasks/${task.key}`);
+  await assert.rejects(alice("GET", `/api/tasks/${task.key}`), /404/);
+  pass("admin deleted tasks, including one with agent runs, files and a full thread");
+
   step("Unreachable agent → run fails and lands in Needs you");
   await alice("PATCH", `/api/members/${agent.id}`, { webhook_url: `http://localhost:${HOOK_PORT}/missing` });
   const t3 = await alice("POST", "/api/tasks", { title: "Will fail", assignee_id: agent.id });

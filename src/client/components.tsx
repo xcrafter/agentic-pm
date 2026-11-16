@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Marked, type Tokens } from "marked";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { Bot, Check, ChevronDown, Menu as MenuIcon, Search, X } from "lucide-react";
+import { Bot, Check, ChevronDown, Menu as MenuIcon, Search, Trash2, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import { Link, useOutletContext } from "react-router";
 import {
@@ -524,7 +524,7 @@ export function Button({ children, variant = "secondary", size = "md", className
         variant === "primary" && "bg-accent text-white shadow-btn hover:bg-accent-hover",
         variant === "secondary" && "border border-line-strong bg-canvas text-ink shadow-btn hover:bg-hover",
         variant === "ghost" && "text-ink-2 hover:bg-hover hover:text-ink",
-        variant === "danger" && "border border-line-strong bg-canvas text-[#c4312b] shadow-btn hover:bg-[#fde9e8] dark:text-[#f28b88] dark:hover:bg-[#ef5350]/10",
+        variant === "danger" && "bg-danger text-white shadow-btn hover:opacity-90",
         className,
       )}
     >
@@ -567,8 +567,12 @@ export function Modal({
     return () => document.removeEventListener("keydown", esc);
   }, [open, onClose]);
   if (!open) return null;
-  return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-[rgba(16,24,40,0.28)] px-4 pt-[10vh] dark:bg-black/60" onMouseDown={onClose}>
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center bg-[rgba(16,24,40,0.28)] px-4 pt-[10vh] dark:bg-black/60"
+      onMouseDown={(e) => (e.stopPropagation(), onClose())}
+      onClick={(e) => e.stopPropagation()}
+    >
       <div
         role="dialog"
         aria-modal
@@ -585,8 +589,111 @@ export function Modal({
         )}
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
+}
+
+/**
+ * A delete control with a confirmation step. `icon` renders a small trash button (shown on hover by the
+ * parent), otherwise a full "Delete" button. Shows the server's error (e.g. not allowed) in the dialog.
+ */
+export function DeleteButton({
+  what,
+  name,
+  detail,
+  onDelete,
+  onDone,
+  icon,
+  className,
+  children,
+}: {
+  what: string;
+  name?: string;
+  detail?: ReactNode;
+  onDelete: () => Promise<unknown>;
+  onDone?: () => void;
+  icon?: boolean;
+  className?: string;
+  children?: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await onDelete();
+      setOpen(false);
+      onDone?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      {children ? (
+        <span onClick={(e) => (e.preventDefault(), e.stopPropagation(), setOpen(true))}>{children}</span>
+      ) : icon ? (
+        <IconButton
+          label={`Delete ${what}`}
+          className={cx("h-6 w-6 hover:text-danger", className)}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setOpen(true);
+          }}
+        >
+          <Trash2 size={13} />
+        </IconButton>
+      ) : (
+        <Button
+          variant="ghost"
+          size="sm"
+          className={cx("hover:text-danger", className)}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setOpen(true);
+          }}
+        >
+          <Trash2 size={13} /> Delete
+        </Button>
+      )}
+      <Modal open={open} onClose={() => !busy && setOpen(false)} title={`Delete ${what}?`}>
+        <div className="space-y-2 px-4 py-4 text-[14px] leading-relaxed">
+          <p>
+            {name ? (
+              <>
+                <b className="font-semibold">{name}</b> will be deleted.
+              </>
+            ) : (
+              `This ${what} will be deleted.`
+            )}{" "}
+            This can't be undone.
+          </p>
+          {detail && <p className="text-[13px] text-ink-2">{detail}</p>}
+          {error && <p className="text-[13px] text-danger">{error}</p>}
+        </div>
+        <ModalFooter>
+          <Button variant="ghost" onClick={() => setOpen(false)} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="danger" onClick={run} disabled={busy} autoFocus>
+            {busy ? "Deleting…" : `Delete ${what}`}
+          </Button>
+        </ModalFooter>
+      </Modal>
+    </>
+  );
+}
+
+/** People can delete what they added; admins can delete anything. Agents never delete. */
+export function canDelete(me: Member | null | undefined, ownerId: string | null | undefined) {
+  return !!me && me.kind === "human" && (me.role === "admin" || ownerId === me.id);
 }
 
 export function ModalFooter({ children, hint }: { children: ReactNode; hint?: ReactNode }) {

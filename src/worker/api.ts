@@ -32,6 +32,7 @@ import {
 import { onAgentTrigger, retryRun, testPing } from "./orchestrator";
 import { type InviteRow, SESSION_COOKIE, createInvite, getSessionMember, needsSetup, uniqueHandle } from "./auth";
 import { canManageAgent, listSubAgents } from "./agents";
+import { deleteAttachment, deleteChecklist, deleteEntry, deleteNote, deleteTask } from "./deletes";
 import { serveLogo, workspaceInfo, workspaceRoutes } from "./workspace";
 import { type AppEnv, HttpError, badRequest, encryptSecret, forbidden, newId, notFound, nowIso, verifySignedValue } from "./util";
 
@@ -429,6 +430,17 @@ api.patch("/api/checklist-items/:id", async (c) => {
   const b = await c.req.json<{ done?: boolean; text?: string }>();
   return c.json(await setChecklistItem(c.env, c.get("ws"), c.get("actor"), c.req.param("id"), b));
 });
+api.delete("/api/tasks/:ref", async (c) => {
+  const ws = c.get("ws");
+  const task = await getTaskByRef(c.env, ws.id, c.req.param("ref"));
+  await deleteTask(c.env, ws, c.get("actor"), task);
+  return c.json({ ok: true });
+});
+api.delete("/api/notes/:id", async (c) => (await deleteNote(c.env, c.get("ws"), c.get("actor"), c.req.param("id")), c.json({ ok: true })));
+api.delete("/api/checklists/:id", async (c) => (await deleteChecklist(c.env, c.get("ws"), c.get("actor"), c.req.param("id")), c.json({ ok: true })));
+api.delete("/api/attachments/:id", async (c) => (await deleteAttachment(c.env, c.get("ws"), c.get("actor"), c.req.param("id")), c.json({ ok: true })));
+api.delete("/api/entries/:id", async (c) => (await deleteEntry(c.env, c.get("ws"), c.get("actor"), c.req.param("id")), c.json({ ok: true })));
+
 api.delete("/api/checklist-items/:id", async (c) => {
   await deleteChecklistItem(c.env, c.get("ws"), c.get("actor"), c.req.param("id"));
   return c.json({ ok: true });

@@ -18,7 +18,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import {
   type Checklist,
   type Entry,
@@ -63,6 +63,8 @@ import {
   useMembers,
   useProjects,
   wakeRoute,
+  DeleteButton,
+  canDelete,
 } from "../components";
 import { type EditorHandle, RichEditor } from "../editor";
 import { ProjectDot } from "./Layout";
@@ -88,6 +90,8 @@ export function TaskPage() {
     },
   });
 
+  const navigate = useNavigate();
+  const meMember = useMe().data?.member;
   const problemAction = useMutation({
     mutationFn: ({ id, action }: { id: string; action: "retry" | "dismiss" }) => api.post(`/api/runs/${id}/${action}`),
     onSuccess: () => {
@@ -98,7 +102,12 @@ export function TaskPage() {
   });
 
   if (q.isLoading) return <div className="p-8 text-[13px] text-ink-3">Loading…</div>;
-  if (q.error || !q.data) return <div className="p-8 text-[13px] text-[#c4312b]">{(q.error as Error)?.message ?? "Task not found"}</div>;
+  if (q.error || !q.data)
+    return (
+      <EmptyState icon={<ListTodo size={18} />} title="Task not found" action={<Link to="/" className="text-[13px] text-accent hover:underline">Back to all tasks</Link>}>
+        It may have been deleted, or the link is wrong.
+      </EmptyState>
+    );
   const { task, entries, notes, checklists, attachments, runs } = q.data;
   const openQuestions = entries.filter((e) => e.type === "question" && e.data.state === "open");
   const problems = runs.filter((r) => (r.status === "failed" || r.status === "stale") && !r.dismissed);
@@ -117,6 +126,21 @@ export function TaskPage() {
             : { label: "All tasks", to: "/", icon: <ListTodo size={15} className="text-ink-3" /> },
           { label: task.key },
         ]}
+        actions={
+          meMember?.role === "admin" && (
+            <DeleteButton
+              what="task"
+              name={`${task.key} ${task.title}`}
+              detail={`Its thread, notes, checklists, files${runs.length ? " and agent run history" : ""} are deleted too. Any agent working on it is stopped.`}
+              onDelete={() => api.del(`/api/tasks/${task.key}`)}
+              onDone={() => {
+                qc.removeQueries({ queryKey: ["task", taskKey] });
+                qc.invalidateQueries({ queryKey: ["tasks"] });
+                navigate(task.project ? `/projects/${task.project.id}` : "/");
+              }}
+            />
+          )
+        }
       />
       <div className="flex min-h-0 flex-1 flex-col overflow-auto lg:flex-row lg:overflow-hidden">
         <div className="flex min-w-0 flex-1 flex-col lg:overflow-auto">
@@ -459,6 +483,9 @@ function RunStatus({ status }: { status: Run["status"] }) {
 
 const SYSTEM_TEXT: Record<string, (d: any, byId: Map<string, Member>) => string> = {
   created: () => "created the task",
+  note_deleted: (d) => `deleted the note “${d.title}”`,
+  checklist_deleted: (d) => `deleted the checklist “${d.title}”`,
+  attachment_deleted: (d) => `deleted the file ${d.filename}`,
   assigned: (d) => `assigned to ${d.to_name ?? "someone"}`,
   unassigned: () => "removed the assignee",
   status_changed: (d) => `moved from ${STATUS_LABEL[d.from as Status] ?? d.from} to ${STATUS_LABEL[d.to as Status] ?? d.to}`,
@@ -483,6 +510,9 @@ function Thread({
   onReply: (e: Entry) => void;
   attachments: TaskDetail["attachments"];
 }) {
+  const me = useMe().data?.member;
+  const qc = useQueryClient();
+  const refresh = () => qc.invalidateQueries({ queryKey: ["task"] });
   const entryById = new Map(entries.map((e) => [e.id, e]));
   const attById = new Map(attachments.map((a) => [a.id, a]));
   return (
@@ -503,7 +533,11 @@ function Thread({
               </span>
               <span className={cx("pt-1", isProblem && "text-[#c4312b]")}>
                 <span className="font-medium text-ink-2">{author?.name ?? "System"}</span>{" "}
-                {e.type === "attachment_added" ? (
+                {e.type === "attachment_added" && e.data.deleted ? (
+                  <>
+                    attached <span className="line-through">{e.data.filename}</span> (deleted)
+                  </>
+                ) : e.type === "attachment_added" ? (
                   <>
                     attached{" "}
                     <a className="font-medium text-accent hover:underline" href={`/api/attachments/${e.data.attachment_id}`} target="_blank" rel="noreferrer">
@@ -517,6 +551,19 @@ function Thread({
                   text
                 )}
                 <span className="ml-1.5">{timeAgo(e.created_at)}</span>
+              </span>
+            </li>
+          );
+        }
+        if (e.data.deleted) {
+          return (
+            <li key={e.id} className="relative flex items-start gap-3 text-[12px] text-ink-3">
+              <span className="relative z-10 flex h-6 w-6 items-center justify-center rounded-full bg-canvas">
+                <Avatar member={author} size={16} />
+              </span>
+              <span className="pt-1 italic">
+                {author?.name ?? "Someone"}'s message was deleted{e.data.deleted_by && e.data.deleted_by !== e.author_id ? ` by ${byId.get(e.data.deleted_by)?.name ?? "an admin"}` : ""}
+                <span className="ml-1.5 not-italic">{timeAgo(e.edited_at ?? e.created_at)}</span>
               </span>
             </li>
           );
@@ -558,11 +605,16 @@ function Thread({
                 )}
                 {isQ && e.data.addressed_to && <div className="mb-1 text-[12px] text-ink-3">For {byId.get(e.data.addressed_to)?.name ?? "someone"}</div>}
                 <Markdown text={e.body} />
-                {(isQ || e.type === "comment" || e.type === "update") && (
-                  <div className="mt-2">
-                    <Button size="sm" variant={open ? "secondary" : "ghost"} className={cx(!open && "-ml-2")} onClick={() => onReply(e)}>
-                      {open ? "Answer" : "Reply"}
-                    </Button>
+                {(isQ || e.type === "comment" || e.type === "update" || e.type === "answer") && (
+                  <div className="mt-2 flex items-center">
+                    {e.type !== "answer" && (
+                      <Button size="sm" variant={open ? "secondary" : "ghost"} className={cx(!open && "-ml-2")} onClick={() => onReply(e)}>
+                        {open ? "Answer" : "Reply"}
+                      </Button>
+                    )}
+                    {canDelete(me, e.author_id) && !open && (
+                      <DeleteButton what="message" className={cx(e.type === "answer" && "-ml-2")} onDelete={() => api.del(`/api/entries/${e.id}`)} onDone={refresh} />
+                    )}
                   </div>
                 )}
               </div>
@@ -713,6 +765,7 @@ function Composer({
 
 function FilesTab({ taskKey, attachments, byId }: { taskKey: string; attachments: TaskDetail["attachments"]; byId: Map<string, Member> }) {
   const qc = useQueryClient();
+  const me = useMe().data?.member;
   const input = useRef<HTMLInputElement>(null);
   const upload = useMutation({
     mutationFn: (files: File[]) => api.upload(`/api/tasks/${taskKey}/attachments`, files),
@@ -747,8 +800,8 @@ function FilesTab({ taskKey, attachments, byId }: { taskKey: string; attachments
       <div className="mb-3 flex justify-end">{picker}</div>
       <ul className="divide-y divide-line overflow-hidden rounded-[10px] border border-line">
         {attachments.map((a) => (
-          <li key={a.id}>
-            <a href={`/api/attachments/${a.id}`} target="_blank" rel="noreferrer" className="flex h-12 items-center gap-3 px-3.5 hover:bg-hover">
+          <li key={a.id} className="group flex items-center hover:bg-hover">
+            <a href={`/api/attachments/${a.id}`} target="_blank" rel="noreferrer" className="flex h-12 min-w-0 flex-1 items-center gap-3 pl-3.5">
               <span className="flex h-7 w-7 items-center justify-center rounded-md border border-line bg-panel text-ink-3">
                 <FileText size={14} />
               </span>
@@ -756,6 +809,18 @@ function FilesTab({ taskKey, attachments, byId }: { taskKey: string; attachments
               <span className="hidden text-[12px] text-ink-3 sm:inline">{byId.get(a.uploaded_by)?.name}</span>
               <span className="w-16 text-right text-[12px] text-ink-3 tabular-nums">{formatBytes(a.size)}</span>
             </a>
+            <span className="flex w-10 justify-center">
+              {canDelete(me, a.uploaded_by) && (
+                <DeleteButton
+                  icon
+                  what="file"
+                  name={a.filename}
+                  className="opacity-0 group-hover:opacity-100 focus:opacity-100"
+                  onDelete={() => api.del(`/api/attachments/${a.id}`)}
+                  onDone={() => qc.invalidateQueries({ queryKey: ["task", taskKey] })}
+                />
+              )}
+            </span>
           </li>
         ))}
       </ul>
@@ -884,6 +949,7 @@ function NoteCard({ note, taskKey, byId }: { note: Note; taskKey: string; byId: 
     },
   });
   const author = byId.get(note.updated_by);
+  const me = useMe().data?.member;
   return (
     <div className="rounded-[10px] border border-line bg-canvas shadow-card">
       <div className="flex h-11 items-center gap-2 border-b border-line px-3.5">
@@ -908,9 +974,14 @@ function NoteCard({ note, taskKey, byId }: { note: Note; taskKey: string; byId: 
             </Button>
           </>
         ) : (
-          <Button variant="ghost" size="sm" onClick={() => (setEditing(true), setCollapsed(false), setTitle(note.title))}>
-            Edit
-          </Button>
+          <>
+            <Button variant="ghost" size="sm" onClick={() => (setEditing(true), setCollapsed(false), setTitle(note.title))}>
+              Edit
+            </Button>
+            {canDelete(me, note.created_by) && (
+              <DeleteButton icon what="note" name={note.title} onDelete={() => api.del(`/api/notes/${note.id}`)} onDone={() => qc.invalidateQueries({ queryKey: ["task", taskKey] })} />
+            )}
+          </>
         )}
       </div>
       {!collapsed && (
@@ -935,6 +1006,7 @@ function ChecklistCard({ checklist, taskKey, byId }: { checklist: Checklist; tas
     onSuccess: () => (setText(""), refresh()),
   });
   const remove = useMutation({ mutationFn: (id: string) => api.del(`/api/checklist-items/${id}`), onSuccess: refresh });
+  const me = useMe().data?.member;
   const doneCount = checklist.items.filter((i) => i.done).length;
   const pct = checklist.items.length ? Math.round((doneCount / checklist.items.length) * 100) : 0;
   return (
@@ -945,6 +1017,16 @@ function ChecklistCard({ checklist, taskKey, byId }: { checklist: Checklist; tas
         <span className="ml-auto text-[12px] text-ink-3 tabular-nums">
           {doneCount} of {checklist.items.length}
         </span>
+        {canDelete(me, checklist.created_by) && (
+          <DeleteButton
+            icon
+            what="checklist"
+            name={checklist.title}
+            detail={checklist.items.length ? `All ${checklist.items.length} items go with it.` : undefined}
+            onDelete={() => api.del(`/api/checklists/${checklist.id}`)}
+            onDone={refresh}
+          />
+        )}
       </div>
       <div className="mt-2.5 h-1 overflow-hidden rounded-full bg-active">
         <div className="h-full rounded-full bg-[#1f9d5c] transition-[width]" style={{ width: `${pct}%` }} />
