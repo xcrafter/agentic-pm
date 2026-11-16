@@ -366,11 +366,12 @@ export function Menu<T extends string>({
       if (!pop.current?.contains(t) && !btn.current?.contains(t)) setOpen(false);
     };
     const onScroll = (e: Event) => !pop.current?.contains(e.target as Node) && setOpen(false);
-    document.addEventListener("mousedown", close);
+    // Capture phase: modals stop mousedown propagation, which would otherwise keep this open.
+    document.addEventListener("mousedown", close, true);
     window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", place);
     return () => {
-      document.removeEventListener("mousedown", close);
+      document.removeEventListener("mousedown", close, true);
       window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", place);
     };
@@ -385,6 +386,7 @@ export function Menu<T extends string>({
   const onKey = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") {
       e.preventDefault();
+      e.stopPropagation(); // close just the menu, not the modal around it
       setOpen(false);
       btn.current?.focus();
     } else if (e.key === "ArrowDown") {
