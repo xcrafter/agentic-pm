@@ -68,6 +68,7 @@ import {
 } from "../components";
 import { type EditorHandle, RichEditor } from "../editor";
 import { ProjectDot } from "./Layout";
+import { ShareTaskButton } from "../ShareTask";
 
 type TabKey = "overview" | "activity" | "files";
 
@@ -127,7 +128,9 @@ export function TaskPage() {
           { label: task.key },
         ]}
         actions={
-          meMember?.role === "admin" && (
+          <>
+          <ShareTaskButton taskKey={task.key} />
+          {meMember?.role === "admin" && (
             <DeleteButton
               what="task"
               name={`${task.key} ${task.title}`}
@@ -139,7 +142,8 @@ export function TaskPage() {
                 navigate(task.project ? `/projects/${task.project.id}` : "/");
               }}
             />
-          )
+          )}
+          </>
         }
       />
       <div className="flex min-h-0 flex-1 flex-col overflow-auto lg:flex-row lg:overflow-hidden">
@@ -595,8 +599,8 @@ function Thread({
             </span>
             <div className="min-w-0 flex-1">
               <div className="mb-1.5 flex flex-wrap items-center gap-1.5 pt-0.5 text-[13px]">
-                <span className="font-semibold">{author?.name ?? "Unknown"}</span>
-                {isAgent && <AgentBadge />}
+                <span className="font-semibold">{e.data.via_share ? e.data.author_name || "External" : (author?.name ?? "Unknown")}</span>
+                {e.data.via_share ? <Tag tone="gray">via share link · {e.data.via_share}</Tag> : isAgent && <AgentBadge />}
                 <span className="text-ink-3">
                   {e.type === "update" ? "posted an update" : isQ ? "asked a question" : e.type === "answer" ? "answered" : "commented"}
                 </span>

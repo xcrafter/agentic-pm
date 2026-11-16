@@ -37,6 +37,7 @@ import { serveLogo, workspaceInfo, workspaceRoutes } from "./workspace";
 import { feedRoutes } from "./feed";
 import { ideaRoutes } from "./ideas";
 import { customerRoutes } from "./customers";
+import { shareRoutes } from "./shares";
 import { type AppEnv, HttpError, badRequest, encryptSecret, forbidden, newId, notFound, nowIso, verifySignedValue } from "./util";
 
 type Vars = { me: MemberRow; ws: WorkspaceRow; actor: Actor };
@@ -110,6 +111,7 @@ api.route("/", workspaceRoutes);
 api.route("/", feedRoutes);
 api.route("/", ideaRoutes);
 api.route("/", customerRoutes);
+api.route("/", shareRoutes);
 
 const requireAdmin = (me: MemberRow) => {
   if (me.role !== "admin") throw forbidden("Admins only");

@@ -1,6 +1,7 @@
 import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
 import { api } from "./api";
+import { sharePublicRoutes } from "./shares";
 import { authRoutes } from "./auth";
 import { handleAuthorize } from "./authorize";
 import { mcpHandler } from "./mcp";
@@ -12,6 +13,7 @@ export { Realtime } from "./realtime";
 const app = new Hono<{ Bindings: AppEnv }>();
 app.get("/authorize", handleAuthorize);
 app.post("/authorize", handleAuthorize);
+app.route("/", sharePublicRoutes);
 app.route("/", authRoutes);
 app.route("/", api);
 app.all("*", (c) => (c.env.ASSETS ? c.env.ASSETS.fetch(c.req.raw) : c.notFound()));

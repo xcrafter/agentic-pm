@@ -747,6 +747,45 @@ try {
   await assert.rejects(alice("GET", `/api/tasks/${task.key}`), /404/);
   pass("admin deleted tasks, including one with agent runs, files and a full thread");
 
+  step("Share links: hand a task to an outside AI tool; reply links post back without waking agents");
+  const st = await alice("POST", "/api/tasks", { title: `Shareable ${runId}`, description: "Write the **launch** post." });
+  await alice("POST", `/api/tasks/${st.key}/entries`, { body: "Keep it under 300 words" });
+  const ro = await alice("POST", `/api/tasks/${st.key}/shares`, { mode: "read", expires_in_days: 1, label: "Reader" });
+  const rw = await alice("POST", `/api/tasks/${st.key}/shares`, { mode: "reply", expires_in_days: 0, label: "Claude" });
+  assert.ok(ro.url.includes("/share/") && rw.expires_at === null);
+  const md = await fetch(`${BASE}/share/${ro.url.split("/share/")[1]}.md`).then((r) => r.text());
+  assert.ok(md.includes(`# ${st.key}: Shareable ${runId}`) && md.includes("Write the **launch** post.") && md.includes("Keep it under 300 words"));
+  assert.ok(!md.includes("Report back"), "read-only link has no reply instructions");
+  const html = await fetch(`${BASE}${new URL(ro.url).pathname}`, { headers: { Accept: "text/html" } });
+  assert.ok(html.headers.get("content-type").includes("text/html") && (await html.text()).includes("Copy for AI"));
+  const rwPath = new URL(rw.url).pathname;
+  assert.ok((await fetch(`${BASE}${rwPath}`).then((r) => r.text())).includes("Report back"), "reply link explains how to post back");
+  const roPost = await fetch(`${BASE}${new URL(ro.url).pathname}/messages`, { method: "POST", body: "hi" });
+  assert.equal(roPost.status, 403);
+  const shareHooksBefore = hookCalls.length;
+  const posted = await fetch(`${BASE}${rwPath}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ body: `Draft done. @${agent.handle} please review`, author: "Claude Code" }),
+  });
+  assert.equal(posted.status, 201);
+  const plain = await fetch(`${BASE}${rwPath}/messages`, { method: "POST", body: "Plain text works too" });
+  assert.equal(plain.status, 201);
+  const sd = await alice("GET", `/api/tasks/${st.key}`);
+  const ext = sd.entries.find((e) => e.body.startsWith("Draft done."));
+  assert.ok(ext && ext.type === "update" && ext.data.via_share === "Claude" && ext.data.author_name === "Claude Code");
+  await new Promise((r) => setTimeout(r, 1500));
+  assert.equal(hookCalls.length, shareHooksBefore, "external messages don't wake agents");
+  const listedShares = await alice("GET", `/api/tasks/${st.key}/shares`);
+  assert.equal(listedShares.length, 2);
+  await assert.rejects(bob2("DELETE", `/api/shares/${rw.id}`), /403/);
+  await alice("DELETE", `/api/shares/${rw.id}`);
+  assert.equal((await fetch(`${BASE}${rwPath}`)).status, 404);
+  assert.equal((await fetch(`${BASE}${rwPath}/messages`, { method: "POST", body: "late" })).status, 404);
+  await alice("DELETE", `/api/tasks/${st.key}`);
+  assert.equal((await fetch(`${BASE}${new URL(ro.url).pathname}`)).status, 404);
+  pass("read link serves Markdown/HTML, reply link posts back as External, revoked and deleted links stop working");
+
   step("Unreachable agent → run fails and lands in Needs you");
   await alice("PATCH", `/api/members/${agent.id}`, { webhook_url: `http://localhost:${HOOK_PORT}/missing` });
   const t3 = await alice("POST", "/api/tasks", { title: "Will fail", assignee_id: agent.id });

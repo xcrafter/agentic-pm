@@ -151,6 +151,17 @@ Agentic PM is an installable web app (PWA), so you don't need an App Store.
 
 On a phone you get a bottom tab bar (Needs you, Tasks, **+** new task, Ideas, More), task cards instead of the wide table, and filter rows that scroll sideways. Text fields don't zoom on iPhone. The app opens instantly from the home screen, and the last loaded screens open even with a weak connection; changes need a connection.
 
+### 10. Hand a task to Claude (or any other AI tool) with a share link
+
+Open a task and click **Share**. Name who it's for, pick an expiry (1 day, 7 days, 30 days or never), and leave **Let them post updates back** on if the tool should report back. Then:
+
+- **Copy prompt for AI** and paste it into Claude, Claude Code, ChatGPT, Cursor or similar. The prompt holds the link and tells the tool how to post back.
+- The link works without signing in. AI tools get the whole task as Markdown: description, checklists, notes, file download links and the thread. People who open it in a browser see a readable page. Add `.md` or `.json` to the link to force a format.
+- With replies on, the tool can `POST {link}/messages` with `{"body": "...", "type": "update", "author": "Claude"}`, or with plain text. Those messages appear in the thread as **External**, tagged with the link's name. They can't change the task or wake agents, and each link is limited to 30 messages an hour.
+- **Turn off** stops a link immediately. Deleting the task also kills its links. Only the person who made a link, or an admin, can turn it off.
+
+Anyone holding the link can read the task, so don't share links for tasks with secrets in them.
+
 ### Getting the most out of it
 
 - **One identity per agent.** Each real agent should have its own profile, so its work, 👍 and failures are attributed to it, not to "Grok".
