@@ -35,6 +35,7 @@ import {
 import { endRunsFor, failRunsFor, touchRun } from "./orchestrator";
 import { POST_KINDS, createPost, listPosts } from "./feed";
 import { IDEA_LABELS, IDEA_STATUSES, createIdea, listIdeas } from "./ideas";
+import { logFeatureRequest } from "./customers";
 import { agentSummary, applyAgentProfile, canOrchestrate, getActableAgent, getSubAgent, isWorkspacePm, listSubAgents, registerSubAgent } from "./agents";
 import type { McpProps } from "./authorize";
 import { type AppEnv, HttpError, encryptSecret, signValue } from "./util";
@@ -632,6 +633,44 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
   );
 
   server.registerTool(
+    "log_feature_request",
+    {
+      description:
+        "Record that a customer asked for a feature. Links the customer to an existing idea (idea_id from list_ideas) or creates a new idea from title/body. " +
+        "Creates the customer if they're new. Asking again for the same feature updates the note instead of double-counting. " +
+        "Check list_ideas first so requests for the same feature land on one idea.",
+      inputSchema: {
+        customer: z.string().min(1).max(120).describe("Customer name, e.g. the brand or store"),
+        customer_domain: z.string().optional().describe("Store or company domain, used only when creating a new customer"),
+        idea_id: z.string().optional().describe("Existing idea this request belongs to"),
+        title: z.string().max(200).optional().describe("New feature in one line (when there's no matching idea)"),
+        body: z.string().max(10000).optional(),
+        note: z.string().max(2000).optional().describe("What the customer said, ideally in their words"),
+        requested_at: z.string().optional().describe("YYYY-MM-DD; defaults to today"),
+      },
+    },
+    (input) =>
+      guard(async () => {
+        const w = await ws();
+        const r = await logFeatureRequest(env, w, actor, {
+          customer: { name: input.customer, domain: input.customer_domain },
+          ideaId: input.idea_id,
+          title: input.title,
+          body: input.body,
+          note: input.note,
+          requestedAt: input.requested_at,
+        });
+        return {
+          idea: { id: r.idea.id, title: r.idea.title, customers_requesting: r.idea.request_count },
+          customer: r.customer.name,
+          customer_created: r.customer_created,
+          idea_created: r.idea_created,
+          already_requested: r.already_requested,
+        };
+      }),
+  );
+
+  server.registerTool(
     "list_ideas",
     {
       description: "List product ideas, optionally filtered by label or status.",
@@ -652,6 +691,7 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
             labels: i.labels,
             status: i.status,
             suggested_owner: i.suggested_owner_id ? `@${names.get(i.suggested_owner_id)?.handle}` : null,
+            ...(i.request_count ? { customers_requesting: i.request_count, requested_by: i.requested_by.map((c) => c.name) } : {}),
             ...(i.task ? { task: i.task.key } : {}),
           }));
       }),

@@ -216,6 +216,28 @@ export async function createIdea(env: AppEnv, ws: WorkspaceRow, actor: Actor, in
   return getIdea(env, ws, id);
 }
 
+type RequestRow = { id: string; idea_id: string; customer_id: string; customer_name: string; plan: string | null; mrr: number | null; note: string; requested_at: string; added_by: string };
+
+async function requestsFor(env: AppEnv, ws: WorkspaceRow, ideaId?: string) {
+  const rows = await env.DB.prepare(
+    `SELECT r.id, r.idea_id, r.customer_id, c.name AS customer_name, c.plan, c.mrr, r.note, r.requested_at, r.added_by
+     FROM idea_requests r JOIN customers c ON c.id = r.customer_id
+     WHERE c.workspace_id = ? ${ideaId ? "AND r.idea_id = ?" : ""} ORDER BY r.requested_at DESC, r.created_at DESC`,
+  )
+    .bind(...(ideaId ? [ws.id, ideaId] : [ws.id]))
+    .all<RequestRow>();
+  const by = new Map<string, RequestRow[]>();
+  for (const r of rows.results) by.set(r.idea_id, [...(by.get(r.idea_id) ?? []), r]);
+  return by;
+}
+
+const requestSummary = (reqs: RequestRow[] = []) => ({
+  request_count: reqs.length,
+  request_mrr: Math.round(reqs.reduce((n, r) => n + (r.mrr ?? 0), 0) * 100) / 100,
+  requested_by: reqs.map((r) => ({ id: r.customer_id, name: r.customer_name })),
+  last_requested_at: reqs[0]?.requested_at ?? null,
+});
+
 export async function getIdea(env: AppEnv, ws: WorkspaceRow, id: string) {
   const r = await env.DB.prepare(
     `SELECT i.*, t.number AS task_number, t.status AS task_status FROM ideas i LEFT JOIN tasks t ON t.id = i.converted_task_id
@@ -224,7 +246,8 @@ export async function getIdea(env: AppEnv, ws: WorkspaceRow, id: string) {
     .bind(id, ws.id)
     .first<IdeaRow & { task_number: number | null; task_status: string | null }>();
   if (!r) throw notFound("Idea");
-  return ideaOut(ws, r);
+  const reqs = (await requestsFor(env, ws, id)).get(id) ?? [];
+  return { ...ideaOut(ws, r), ...requestSummary(reqs), requests: reqs };
 }
 
 function ideaOut(ws: WorkspaceRow, r: IdeaRow & { task_number: number | null; task_status: string | null }) {
@@ -252,7 +275,8 @@ export async function listIdeas(env: AppEnv, ws: WorkspaceRow) {
   )
     .bind(ws.id)
     .all<IdeaRow & { task_number: number | null; task_status: string | null }>();
-  return rows.results.map((r) => ideaOut(ws, r));
+  const reqs = await requestsFor(env, ws);
+  return rows.results.map((r) => ({ ...ideaOut(ws, r), ...requestSummary(reqs.get(r.id)) }));
 }
 
 /** Turn an idea into a task (optionally assigned to the suggested owner, which wakes an agent). */
@@ -260,7 +284,12 @@ export async function convertIdea(env: AppEnv, ws: WorkspaceRow, actor: Actor, i
   const idea = await env.DB.prepare("SELECT * FROM ideas WHERE id = ? AND workspace_id = ?").bind(id, ws.id).first<IdeaRow>();
   if (!idea) throw notFound("Idea");
   if (idea.converted_task_id) throw new HttpError(409, "This idea is already a task");
-  const description = [idea.body, idea.source_url ? `Source: ${idea.source_url}` : "", "_Created from a product idea._"].filter(Boolean).join("\n\n");
+  const reqs = (await requestsFor(env, ws, id)).get(id) ?? [];
+  const asked = reqs.length
+    ? `**Requested by ${reqs.length} customer${reqs.length > 1 ? "s" : ""}:**\n` +
+      reqs.map((r) => `- ${r.customer_name}${r.plan ? ` (${r.plan})` : ""}${r.note ? `: “${r.note.replace(/\s+/g, " ").slice(0, 200)}”` : ""}`).join("\n")
+    : "";
+  const description = [idea.body, asked, idea.source_url ? `Source: ${idea.source_url}` : "", "_Created from a product idea._"].filter(Boolean).join("\n\n");
   const task = await createTask(env, ws, actor, {
     title: idea.title,
     description,
@@ -279,6 +308,8 @@ type Vars = { me: MemberRow; ws: WorkspaceRow; actor: Actor };
 export const ideaRoutes = new Hono<{ Bindings: AppEnv; Variables: Vars }>();
 
 ideaRoutes.get("/api/ideas", async (c) => c.json({ labels: IDEA_LABELS, ideas: await listIdeas(c.env, c.get("ws")) }));
+
+ideaRoutes.get("/api/ideas/:id", async (c) => c.json(await getIdea(c.env, c.get("ws"), c.req.param("id"))));
 
 ideaRoutes.post("/api/ideas", async (c) => {
   const b = await c.req.json<{ title?: string; body?: string; labels?: string[]; owner?: string | null; source_url?: string | null }>();

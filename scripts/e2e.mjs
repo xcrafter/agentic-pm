@@ -653,6 +653,36 @@ try {
   await alice("DELETE", `/api/ideas/${fromAgent.id}`);
   pass(`labels within the fixed set; agent idea kept its labels; converted to ${conv.task_key}; Bob can't delete Alice's idea`);
 
+  // ---------- customers & feature requests ----------
+  step("Feature requests: many customers per idea, one count per customer, carried into the task");
+  const fr1 = await alice("POST", "/api/feature-requests", { customer_name: `Glow Co ${runId}`, title: `Bulk approve gift requests ${runId}`, note: "We get 50 a day" });
+  assert.equal(fr1.customer_created, true);
+  assert.equal(fr1.idea_created, true);
+  const glow = fr1.customer;
+  await alice("PATCH", `/api/customers/${glow.id}`, { plan: "Growth", mrr: 99, domain: "https://glowco.myshopify.com/admin" });
+  const fr2 = await bob2("POST", "/api/feature-requests", { customer_name: `Lumen ${runId}`, idea_id: fr1.idea.id, note: "Blocking our launch" });
+  assert.equal(fr2.idea.request_count, 2);
+  const askedAgain = await alice("POST", `/api/ideas/${fr1.idea.id}/requests`, { customer_id: glow.id, note: "Asked again on a call" });
+  assert.equal(askedAgain.already, true);
+  assert.equal(askedAgain.idea.request_count, 2, "same customer doesn't double count");
+  assert.equal(askedAgain.idea.request_mrr, 99);
+  await assert.rejects(alice("POST", "/api/customers", { name: `glow co ${runId}` }), /409/);
+  const viaAgent = await tool("log_feature_request", { customer: `Glow Co ${runId}`, title: `Instagram story tracking ${runId}`, note: "from support chat" });
+  assert.equal(viaAgent.customer_created, false, "existing customer reused (case-insensitive)");
+  const glowDetail = await alice("GET", `/api/customers/${glow.id}`);
+  assert.equal(glowDetail.domain, "glowco.myshopify.com");
+  assert.equal(glowDetail.requests.length, 2);
+  assert.ok(glowDetail.requests.some((r) => r.note === "Asked again on a call"));
+  const frListed = (await alice("GET", "/api/ideas")).ideas.find((i) => i.id === fr1.idea.id);
+  assert.deepEqual(frListed.requested_by.map((c) => c.name).sort(), [`Glow Co ${runId}`, `Lumen ${runId}`]);
+  const frConv = await alice("POST", `/api/ideas/${fr1.idea.id}/convert`, {});
+  const frTask = await alice("GET", `/api/tasks/${frConv.task_key}`);
+  assert.match(frTask.task.description, /Requested by 2 customers/);
+  assert.match(frTask.task.description, /Blocking our launch/);
+  await alice("DELETE", `/api/customers/${glow.id}`);
+  assert.equal((await alice("GET", `/api/ideas/${fr1.idea.id}`)).request_count, 1, "deleting a customer removes their requests");
+  pass("2 customers on one idea (no double count), agent reused the customer, task lists who asked, delete cascades");
+
   // ---------- views & closing ----------
   step("Saved views are shared; only their creator or an admin can delete them");
   const view = await bob2("POST", "/api/views", { name: "Bob's urgent", config: { priorities: ["urgent"], hideDone: true, layout: "board" } });

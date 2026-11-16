@@ -272,4 +272,44 @@ export interface Idea {
   task: { id: string; key: string; status: string | null } | null;
   created_at: string;
   updated_at: string;
+  request_count: number;
+  request_mrr: number;
+  requested_by: { id: string; name: string }[];
+  last_requested_at: string | null;
+  requests?: IdeaRequest[];
+}
+export interface IdeaRequest {
+  id: string;
+  idea_id: string;
+  customer_id: string;
+  customer_name: string;
+  plan: string | null;
+  mrr: number | null;
+  note: string;
+  requested_at: string;
+  added_by: string;
+}
+export interface Customer {
+  id: string;
+  name: string;
+  domain: string | null;
+  email: string | null;
+  plan: string | null;
+  mrr: number | null;
+  notes: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  requests?: number | CustomerRequest[];
+  last_request?: string | null;
+}
+export interface CustomerRequest {
+  id: string;
+  idea_id: string;
+  note: string;
+  requested_at: string;
+  added_by: string;
+  idea_title: string;
+  idea_status: IdeaStatus;
+  idea_labels: string[];
 }

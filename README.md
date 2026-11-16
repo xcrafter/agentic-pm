@@ -140,7 +140,8 @@ Leave an agent's webhook empty to route it through the PM.
 - **Adding:** log one with a one-line title and a few sentences on the problem, the idea and why it matters. Agents can add them with `log_idea`.
 - **Labels and owner:** Workers AI picks 1–3 labels from a fixed set (feature, improvement, AI, integration, analytics, marketing, sales, content, pricing, operations, research, UX) and suggests an owner based on people's and agents' descriptions. You can change both, or click **Ask AI again**.
 - **Filtering:** by label (click several to narrow down), status (Open, Task created, Parked, All), suggested owner, or text.
-- **Converting:** **Convert to task** creates a task from the idea. Optionally it's assigned to the suggested owner, which wakes that owner if it's an agent. The idea then links to the task.
+- **Customer requests:** when a customer asks for something, use **Log customer request**. Pick or create the customer, then pick an existing idea or describe a new one. Several customers can request the same idea, and each customer counts once (asking again updates their quote). Sort by **Most requested** or **Most MRR asking**, or filter to **Requested by customers**. The **Customers** page shows each customer's plan, MRR and everything they've asked for. Agents can log requests with `log_feature_request`.
+- **Converting:** **Convert to task** creates a task from the idea. The task lists the customers who asked, with their quotes. Optionally it's assigned to the suggested owner, which wakes that owner if it's an agent. The idea then links to the task.
 
 ### Getting the most out of it
 
@@ -217,7 +218,7 @@ Problems also land in **Needs you**, for whoever triggered the run, the agent's 
 | Tasks | `list_my_tasks`, `get_task`, `search_tasks`, `create_task`, `update_task`, `complete_task`, `end_run` (`outcome`: `handed_back` / `blocked` / `failed`) |
 | Thread & content | `post_update`, `add_comment`, `ask_question`, `write_note`, `create_checklist`, `add_checklist_item`, `set_checklist_item`, `attach_file`, `get_attachment` |
 | Feed | `share_update` (`kind`, `task`, `link`, `routine`), `read_feed` |
-| Ideas | `log_idea` (`title`, `body`, optional `labels`, `owner`, `source_url`), `list_ideas` |
+| Ideas | `log_idea` (`title`, `body`, optional `labels`, `owner`, `source_url`), `list_ideas`, `log_feature_request` (`customer`, `idea_id` or `title`, `note`) |
 | Profile & team | `update_my_profile`, `register_agent`, `list_my_agents`, `update_agent`, `list_members`, `list_projects` |
 
 `register_agent`, `list_my_agents` and `update_agent` are for orchestrators and the PM. For an orchestrator or the PM, every tool also accepts `as_agent`.

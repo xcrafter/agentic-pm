@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, ExternalLink, Lightbulb, Plus, Search, Sparkles, Trash2, Wand2, X } from "lucide-react";
+import { ArrowRight, ExternalLink, Lightbulb, MessageSquareQuote, Plus, Search, Sparkles, Trash2, Users, Wand2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { type Idea, type IdeaStatus, type Member, api } from "../api";
@@ -24,6 +24,7 @@ import {
   useMembers,
 } from "../components";
 import { type EditorHandle, RichEditor } from "../editor";
+import { LogRequestModal, RequestsSection, money } from "./Customers";
 
 type Tone = "gray" | "blue" | "green" | "amber" | "orange" | "red" | "violet" | "teal" | "pink";
 const LABEL_TONE: Record<string, Tone> = {
@@ -75,8 +76,11 @@ export function IdeasPage() {
   const labels = labelsParam ? labelsParam.split(",") : [];
   const status = (params.get("status") as StatusFilter) || "open";
   const owner = params.get("owner");
+  const requestedOnly = params.get("requested") === "1";
+  const sort = (params.get("sort") as "new" | "requests" | "mrr") || "new";
   const [q, setQ] = useState("");
   const [adding, setAdding] = useState(false);
+  const [logging, setLogging] = useState(false);
   const members = useMembers();
   const byId = new Map((members.data ?? []).map((m) => [m.id, m]));
   const ideas = useQuery({ queryKey: ["ideas"], queryFn: () => api.get<{ labels: string[]; ideas: Idea[] }>("/api/ideas") });
@@ -95,10 +99,13 @@ export function IdeasPage() {
   const text = q.trim().toLowerCase();
   const list = byStatus.filter(
     (i) =>
+      (!requestedOnly || i.request_count > 0) &&
       (!labels.length || labels.every((l) => i.labels.includes(l))) &&
       (!owner || (owner === "none" ? !i.suggested_owner_id : i.suggested_owner_id === owner)) &&
       (!text || i.title.toLowerCase().includes(text) || i.body.toLowerCase().includes(text)),
   );
+  if (sort === "requests") list.sort((a, b) => b.request_count - a.request_count || b.request_mrr - a.request_mrr);
+  if (sort === "mrr") list.sort((a, b) => b.request_mrr - a.request_mrr || b.request_count - a.request_count);
   const labelCounts = new Map(allLabels.map((l) => [l, byStatus.filter((i) => i.labels.includes(l)).length]));
   const selected = all.find((i) => i.id === selectedId) ?? null;
   const ownerName = owner === "none" ? "No owner" : owner ? byId.get(owner)?.name : null;
@@ -108,11 +115,18 @@ export function IdeasPage() {
       <TopBar
         crumbs={[{ label: "Ideas", icon: <Lightbulb size={15} className="text-ink-3" /> }]}
         actions={
-          <Button variant="primary" onClick={() => setAdding(true)}>
-            <Plus size={15} /> New idea
-          </Button>
+          <>
+            <Button onClick={() => setLogging(true)}>
+              <MessageSquareQuote size={14} /> <span className="hidden sm:inline">Log customer request</span>
+              <span className="sm:hidden">Request</span>
+            </Button>
+            <Button variant="primary" onClick={() => setAdding(true)}>
+              <Plus size={15} /> New idea
+            </Button>
+          </>
         }
       />
+      <LogRequestModal open={logging} onClose={() => setLogging(false)} onLogged={(id) => setParam("idea", id)} />
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="space-y-2 border-b border-line px-3 py-2 md:px-5">
@@ -151,6 +165,33 @@ export function IdeasPage() {
                 value={owner ?? "any"}
                 onChange={(v) => setParam("owner", v === "any" ? null : v)}
                 options={[{ value: "any", label: "Anyone" }, ...assigneeOptions(members.data).map((o) => (o.value === "none" ? { ...o, label: "No owner" } : o))]}
+              />
+              <button
+                aria-pressed={requestedOnly}
+                onClick={() => setParam("requested", requestedOnly ? null : "1")}
+                className={cx(
+                  "inline-flex h-7 items-center gap-1.5 rounded-lg border px-2 text-[12px] font-medium",
+                  requestedOnly ? "border-accent/30 bg-accent-soft text-accent" : "border-line-strong bg-canvas text-ink-2 shadow-btn hover:bg-hover",
+                )}
+              >
+                <Users size={13} /> Requested by customers
+              </button>
+              <Menu
+                label="Sort ideas"
+                align="right"
+                width="w-52"
+                trigger={
+                  <span className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-line-strong bg-canvas px-2 text-[12px] font-medium text-ink-2 shadow-btn hover:bg-hover">
+                    {sort === "requests" ? "Most requested" : sort === "mrr" ? "Most MRR asking" : "Newest"}
+                  </span>
+                }
+                value={sort}
+                onChange={(v) => setParam("sort", v === "new" ? null : v)}
+                options={[
+                  { value: "new", label: "Newest" },
+                  { value: "requests", label: "Most requested" },
+                  { value: "mrr", label: "Most MRR asking" },
+                ]}
               />
               <span className="ml-auto text-[12px] text-ink-3 tabular-nums">
                 {list.length} {list.length === 1 ? "idea" : "ideas"}
@@ -217,6 +258,15 @@ export function IdeasPage() {
                           <div className="flex items-center gap-2">
                             <span className="truncate text-[14px] font-medium">{i.title}</span>
                             {i.status !== "new" && <Tag tone={STATUS[i.status].tone}>{STATUS[i.status].label}</Tag>}
+                            {i.request_count > 0 && (
+                              <span
+                                title={`Requested by ${i.requested_by.map((c) => c.name).join(", ")}`}
+                                className="inline-flex h-[22px] shrink-0 items-center gap-1 rounded-[6px] bg-accent-soft px-1.5 text-[12px] font-medium text-accent"
+                              >
+                                <Users size={12} /> {i.request_count}
+                                {i.request_mrr ? <span className="font-normal opacity-80">· {money(i.request_mrr)}</span> : null}
+                              </span>
+                            )}
                           </div>
                           {i.body && <p className="mt-0.5 line-clamp-2 text-[13px] text-ink-2">{plain(i.body)}</p>}
                           <div className="mt-1.5 flex flex-wrap items-center gap-1">
@@ -448,6 +498,8 @@ function IdeaPanel({ idea, byId, members, labels, onClose }: { idea: Idea; byId:
             )}
           </div>
         </div>
+
+        <RequestsSection idea={idea} />
 
         <div className="mt-5 rounded-xl border border-line bg-panel p-3.5">
           {idea.task ? (
