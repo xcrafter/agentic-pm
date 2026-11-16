@@ -33,6 +33,7 @@ import {
   MAX_ATTACHMENT_BYTES,
 } from "./domain";
 import { endRunsFor, failRunsFor, touchRun } from "./orchestrator";
+import { POST_KINDS, createPost, listPosts } from "./feed";
 import { agentSummary, applyAgentProfile, canOrchestrate, getActableAgent, getSubAgent, isWorkspacePm, listSubAgents, registerSubAgent } from "./agents";
 import type { McpProps } from "./authorize";
 import { type AppEnv, HttpError, encryptSecret, signValue } from "./util";
@@ -68,7 +69,8 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
         `Agentic PM is the team's task tracker and system of record. You are connected as ${connectedAs.name} (@${connectedAs.handle}, ${connectedAs.kind}). ` +
         `Tasks are referenced by key, e.g. IMP-42. Typical loop: get_task → work → post_update as you go → ` +
         `ask_question if you need a human (then stop; you'll be woken when they answer) → complete_task with a summary. ` +
-        `If something goes wrong and you can't continue, call end_run with outcome "failed" (or "blocked") and the reason, so humans see it.` +
+        `If something goes wrong and you can't continue, call end_run with outcome "failed" (or "blocked") and the reason, so humans see it. ` +
+        `When you finish recurring work outside a task (e.g. a daily blog), post one line with share_update (set routine, e.g. "daily-blog", and link the result).` +
         (isPm
           ? ` You are the workspace PM: you're woken for new unassigned tasks (assign each to the best agent; check list_members) ` +
             `and for any agent without its own webhook (the payload's as_agent says which). You can act as any agent by passing as_agent, ` +
@@ -444,7 +446,7 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
         const t = await getTaskByRef(env, w.id, task);
         await postEntry(env, w, actor, t, { type: "update", body: summary });
         const fresh = await getTaskByRef(env, w.id, t.id);
-        await updateTask(env, w, actor, fresh, { status: "done" });
+        await updateTask(env, w, actor, fresh, { status: "done", summary });
         if (me.kind === "agent") await endRunsFor(env, t.id, me.id, "completed");
         return { status: "done" };
       }),
@@ -549,6 +551,61 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
         }),
     );
   }
+
+  server.registerTool(
+    "share_update",
+    {
+      description:
+        "Post a short update to the workspace feed, visible to the whole team. Use it when you finish something worth knowing " +
+        "(\"Published today's blog: <title>\"), ship work outside a task, or hit a blocker. For recurring work, set routine " +
+        "(e.g. \"daily-blog\") so people can see how consistently it happens. Completing a task already posts automatically.",
+      inputSchema: {
+        body: z.string().min(1).max(4000).describe("What happened, in a sentence or two. Markdown is fine."),
+        kind: z.enum(POST_KINDS).optional().describe("update (default), done (finished something) or blocker (stuck)"),
+        task: z.string().optional().describe("Related task key, e.g. IMP-42"),
+        link: z.string().optional().describe("URL of the result, e.g. the published blog post"),
+        routine: z.string().max(40).optional().describe("Name of the recurring job this belongs to, e.g. daily-blog"),
+      },
+    },
+    (input) =>
+      guard(async () => {
+        const w = await ws();
+        const p = await createPost(env, w, actor, { body: input.body, kind: input.kind, taskRef: input.task, link: input.link, routine: input.routine });
+        return { id: p.id, kind: p.kind, routine: p.routine, posted: true };
+      }),
+  );
+
+  server.registerTool(
+    "read_feed",
+    {
+      description: "Read recent workspace feed updates from people and agents (newest first).",
+      inputSchema: {
+        author: z.string().optional().describe("Only this member's updates (handle)"),
+        routine: z.string().optional(),
+        limit: z.number().int().min(1).max(50).optional(),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    (input) =>
+      guard(async () => {
+        const w = await ws();
+        const names = await memberNames();
+        const posts = await listPosts(env, w, me, { author: input.author, routine: input.routine, limit: input.limit ?? 20 });
+        return posts.map((p) => {
+          const a = names.get(p.author_id);
+          return {
+            author: a ? `${a.name} (@${a.handle}, ${a.kind})` : p.author_id,
+            kind: p.kind,
+            body: p.body,
+            at: p.created_at,
+            ...(p.task ? { task: p.task.key } : {}),
+            ...(p.link_url ? { link: p.link_url } : {}),
+            ...(p.routine ? { routine: p.routine } : {}),
+            ...(p.reactions.length ? { reactions: p.reactions.map((r) => `${r.emoji}${r.count}`).join(" ") } : {}),
+          };
+        });
+      }),
+  );
 
   server.registerTool(
     "list_projects",

@@ -578,6 +578,47 @@ try {
   assert.equal(wsInfo.pm_agent_id, null);
   pass("update authored by @writer; acting-as agent can't wake others; PM cleared");
 
+  // ---------- feed & reports ----------
+  step("Feed: completing a task posts automatically; agents share routine updates; people react");
+  let feedPosts = await alice("GET", "/api/posts");
+  const autoDone = feedPosts.find((x) => x.auto && x.kind === "done" && x.task?.key === task.key);
+  assert.ok(autoDone, "complete_task produced a 'done' post");
+  assert.match(autoDone.body, /5 competitors summarised/, "uses the agent's summary");
+  const shared = await tool("share_update", {
+    body: "Published today's blog: *Why agents need a PM*",
+    kind: "done",
+    link: "https://example.com/blog/agents-need-a-pm",
+    routine: "Daily Blog",
+  });
+  assert.equal(shared.routine, "daily-blog");
+  await alice("POST", "/api/posts", { body: "Waiting on design for the pricing page", kind: "blocker" });
+  feedPosts = await alice("GET", "/api/posts?member_kind=agent&routine=daily-blog");
+  assert.equal(feedPosts.length, 1);
+  const blogPost = feedPosts[0];
+  await alice("POST", `/api/posts/${blogPost.id}/reactions`, { emoji: "👍" });
+  await bob2("POST", `/api/posts/${blogPost.id}/reactions`, { emoji: "👍" });
+  await bob2("POST", `/api/posts/${blogPost.id}/reactions`, { emoji: "🎉" });
+  await bob2("POST", `/api/posts/${blogPost.id}/reactions`, { emoji: "🎉" }); // toggles off
+  const reacted = (await alice("GET", "/api/posts?routine=daily-blog"))[0];
+  assert.deepEqual(reacted.reactions.map((r) => `${r.emoji}${r.count}`), ["👍2"]);
+  const aliceBlocker = (await alice("GET", "/api/posts?kind=blocker"))[0];
+  await assert.rejects(bob2("DELETE", `/api/posts/${aliceBlocker.id}`), /403/);
+  const agentFeed = await tool("read_feed", { limit: 5 });
+  assert.ok(agentFeed.some((x) => x.routine === "daily-blog" && x.reactions === "👍2"));
+  pass("auto 'done' post with summary; routine post; reactions toggle; Bob can't delete Alice's post; agents can read the feed");
+
+  step("Reports: per person/agent output, usefulness and routine consistency");
+  const report = await alice("GET", "/api/reports?days=7");
+  const agentRow = report.people.find((x) => x.id === agent.id);
+  assert.ok(agentRow.tasks_done >= 1, "agent's completed task counted");
+  assert.equal(agentRow.useful, 2, "two people found it useful");
+  assert.ok(agentRow.updates >= 1);
+  const routineRow = report.routines.find((r) => r.routine === "daily-blog");
+  assert.equal(routineRow.author_id, agent.id);
+  assert.equal(routineRow.days.length, 1);
+  await assert.rejects(alice("GET", "/api/reports?days=12"), /400/);
+  pass(`@${agent.handle}: ${agentRow.tasks_done} done, ${agentRow.useful} 👍, routine daily-blog on ${routineRow.days.length} day(s)`);
+
   // ---------- views & closing ----------
   step("Saved views are shared; only their creator or an admin can delete them");
   const view = await bob2("POST", "/api/views", { name: "Bob's urgent", config: { priorities: ["urgent"], hideDone: true, layout: "board" } });

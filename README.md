@@ -1,93 +1,203 @@
 # Agentic PM
 
-A lightweight task tracker where **people and AI agents are both members**. Every task is a conversation: updates, notes, checklists, attachments, and questions from agents with answers from humans. The platform is the team's **system of record** and the **orchestrator** that wakes agents (e.g. xAI's Grok Bot) when there's work for them.
+A task tracker where **people and AI agents are both members of the team**. Every task is a conversation: updates, notes, checklists, files, and questions from agents with answers from people. Agentic PM is the team's **system of record**, and it **wakes agents** (for example xAI's Grok Bot) when there's work for them.
 
-Design: [`docs/superpowers/specs/2026-11-15-agentic-pm-design.md`](docs/superpowers/specs/2026-11-15-agentic-pm-design.md)
+- **Tasks:** table or board, filters, saved views, one-click "hide completed".
+- **Agents:** connect over MCP, are woken by webhook, ask questions and wait for answers, and are flagged red when something goes wrong.
+- **PM agent:** one Grok "PM" can receive every wake-up and route each one to the right agent.
+- **Feed:** short "what I did / what's blocking me" updates from people and agents, including recurring routines like "daily blog".
+- **Reports:** who is actually moving work forward: tasks done, speed, 👍 from people, failed runs, and how consistently each routine runs.
 
-## How the agent loop works
+Design notes: [`docs/superpowers/specs/2026-11-15-agentic-pm-design.md`](docs/superpowers/specs/2026-11-15-agentic-pm-design.md)
+
+---
+
+## Onboarding guide
+
+Follow these steps in order. Steps 1–2 take about 15 minutes. Steps 3–7 take about 30 minutes, most of it writing good agent descriptions.
+
+### 1. Deploy to Cloudflare
+
+You need a Cloudflare account and Node 20+. Everything runs in one Worker, with D1 (database), R2 (files), KV (sign-in tokens), Queues (wake-ups), Cron (health checks) and a Durable Object (live updates).
+
+```bash
+git clone git@github.com:impulze-ai/agentic-pm.git && cd agentic-pm
+npm install
+npx wrangler login
+
+# Create the resources (once per account)
+npx wrangler d1 create agentic-pm             # copy the database_id
+npx wrangler kv namespace create OAUTH_KV     # copy the id
+npx wrangler r2 bucket create agentic-pm-files
+npx wrangler queues create agentic-pm-dispatch
+```
+
+Then edit `wrangler.jsonc`:
+
+| Field | Set it to |
+|---|---|
+| `account_id` | your Cloudflare account ID (`npx wrangler whoami`) |
+| `d1_databases[0].database_id` | the D1 id from above |
+| `kv_namespaces[0].id` | the KV id from above |
+| `vars.PUBLIC_URL` | the address people will use, e.g. `https://agentic-pm.<your-subdomain>.workers.dev` or your own domain. You can deploy once to learn the workers.dev address, then set it and deploy again |
+| `vars.WORKSPACE_NAME`, `vars.WORKSPACE_KEY` | your team name and task-key prefix (`IMP` gives `IMP-42`) |
+| `vars.ALLOWED_EMAIL_DOMAINS` | your email domain(s), e.g. `impulze.ai`; you can change this later in the app |
+
+Set the two secrets (random values; never commit them), apply the database schema, and deploy:
+
+```bash
+openssl rand -base64 32 | npx wrangler secret put SESSION_SECRET
+openssl rand -base64 32 | npx wrangler secret put WEBHOOK_KEY_ENCRYPTION_KEY
+npm run db:migrate:remote
+npm run deploy
+```
+
+Google sign-in is optional. To turn it on, set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` as secrets and add `https://<your-domain>/auth/google/callback` as a redirect URI in Google Cloud. Without them, people sign in with email and password.
+
+**Updating later:** pull, then run `npm run db:migrate:remote && npm run deploy`. Migrations only add things, and Cloudflare D1 keeps 30 days of point-in-time restore.
+
+### 2. Create the admin account and invite your team
+
+1. Open your `PUBLIC_URL`. The first visitor sees **Set up your workspace** and becomes the admin. Do this right after deploying.
+2. Go to **Workspace settings**:
+   - **Website:** type your domain and save. The logo is picked up from the site automatically, or you can upload one.
+   - **Allowed email domains:** only these addresses can be invited or sign in.
+3. Go to **Members & agents → Invite person** for each teammate. You get a one-time sign-up link (valid 7 days) to send them. Use **Reset password** on a person's page for a 24-hour reset link.
+
+### 3. Connect Grok (or any MCP + webhook assistant)
+
+An agent has no password. It gets in through an MCP connection that a signed-in person approves.
+
+1. In Grok, add a **custom MCP server** with the URL `https://<your-domain>/mcp`, and sign in when asked.
+2. On the approval screen, choose **A new agent** and name it, e.g. "Grok PM". Make sure you approve the connection as the **same agent you'll pick as PM in step 4**, because work is recorded under the identity Grok connects as.
+3. In Grok, create a **routine** with a **Webhook** trigger and an instruction like:
+
+   > You work for the Impulze team through Agentic PM. When this webhook fires, follow the `instruction` in the request using the Agentic PM tools. If the request has `as_agent`, pass it on every tool call. Read the task with `get_task` first, post progress with `post_update`, ask with `ask_question` when you need a person, and finish with `complete_task` and a short summary. If you can't continue, call `end_run` with outcome `failed` or `blocked` and say why.
+
+4. Copy the routine's **webhook URL** and **key**. You'll paste them in step 4.
+
+### 4. Make Grok the PM, so one webhook serves every agent
+
+In **Workspace settings → Agent dispatch**:
+
+1. Pick your Grok agent as the **PM agent**.
+2. Paste the routine's webhook URL and key under **Workspace webhook**, then **Send test ping**. You should see "The PM accepted the ping".
+3. Leave **Also wake the PM for new unassigned tasks** off, unless you want Grok to assign every new task. You can still ask for that on any single task (see step 6).
+
+From now on, any agent **without its own webhook** is woken through the PM, and the request says which agent the work is for. To wake an agent directly instead, give that agent its own webhook on its profile; that overrides the PM for that agent.
+
+### 5. Add your agents, with descriptions that say what each one is for
+
+The PM decides who gets what mostly from **agent descriptions**, and people read them when choosing an assignee. Make them specific:
+
+| Weak | Strong |
+|---|---|
+| "Marketing agent" | "Writes and publishes one SEO blog post a day on influencer marketing; also drafts LinkedIn posts from published blogs." |
+| "Research" | "Finds and qualifies B2B accounts (US/UK/India), outputs CSVs with company, domain, size and the right contact." |
+
+Two ways to add agents:
+- **Ask Grok:** "Register these agents in Agentic PM with `register_agent`: …" with name, description and (optionally) webhook. They appear as "via @your-grok".
+- **Yourself:** **Members & agents → Add agent**.
+
+Leave an agent's webhook empty to route it through the PM.
+
+### 6. Day-to-day workflow
+
+- **Hand work to an agent:** create a task with a clear title and a description saying what done looks like, then assign the agent. It's woken right away.
+- **Not sure who should do it?** Leave it unassigned and tick **Ask Grok PM to pick an assignee**, or press **Ask Grok PM to assign** on the task later.
+- **Pull an agent into a task:** type `@` in a comment and pick it from the suggestions. Mentioning an agent wakes it.
+- **Answer questions:** **Needs you** in the sidebar lists open questions, failed runs and mentions. Your answer reaches the agent immediately.
+- **Watch for red:** a red row, card or banner means an agent run failed, was blocked, or went quiet. Open the task to see why, then **Wake again** or **Dismiss**. Orange means an agent is waiting on your answer.
+- **Close the loop:** marking a task **Done** (or the agent calling `complete_task`) closes the agent's run and posts a "Done" update to the Feed.
+
+### 7. Routines, the Feed and Reports
+
+- **Recurring agent work** (e.g. a daily blog) should end with one `share_update` call:
+  `share_update(body: "Published: <title>", kind: "done", link: "<url>", routine: "daily-blog")`.
+  Add that line to the routine's instruction in Grok.
+- **The Feed** shows updates from people and agents. React with 👍 when an update was genuinely useful: that's the human quality signal in Reports.
+- **Reports** (sidebar → Reports) shows, for 7, 30 or 90 days:
+  - per person and agent: tasks done, average time to done, updates shared, 👍 from people, open and overdue tasks, questions asked, blockers and failed runs;
+  - per routine: a day-by-day strip showing whether it ran.
+
+### Getting the most out of it
+
+- **One identity per agent.** Each real agent should have its own profile, so its work, 👍 and failures are attributed to it, not to "Grok".
+- **Write tasks agents can finish.** A one-line goal, the inputs and links, and what "done" looks like. Put long context in a **note** on the task.
+- **Prefer questions to guesses.** Tell agents (in the routine instruction) to use `ask_question` when unsure. The task turns orange and waits for you instead of going off track.
+- **Save views for your rituals:** e.g. "Agents' work" for a daily check, or "Needs attention" for triage. Saved views are shared and appear in the sidebar.
+- **Keep the PM idle by default.** It wakes only when an agent is assigned or @mentioned, or when you ask it to triage. That keeps costs and noise down.
+- **Review Reports weekly.** Agents with many failed runs or no 👍 need better instructions or descriptions, and routines with gaps need fixing in Grok.
+
+---
+
+## How it works
+
+### The agent loop
 
 ```
-Human assigns task ──► platform POSTs agent's webhook ──► Grok Bot routine starts
-                                                           │
-       ◄── updates, notes, checklists, files (MCP) ────────┤
-       ◄── ask_question → task "Waiting on human" ─────────┘
-Human answers ──► platform POSTs webhook again (event=answered) ──► agent continues ──► complete_task
+Person assigns task ──► platform POSTs the agent's webhook ──► Grok routine starts
+                                                              │
+       ◄── updates, notes, checklists, files (MCP) ───────────┤
+       ◄── ask_question → task "Waiting on human" ────────────┘
+Person answers ──► webhook again (event=answered) ──► agent continues ──► complete_task ──► Feed "Done"
 ```
 
-Agents are woken by **human** actions: assignment, answering the agent's question, an `@mention`, or the "Wake" button. The one exception is an **orchestrator** agent waking its own sub-agents (below). Sub-agents never wake anyone, so wake-ups can't loop. While a run is open, new triggers are queued and delivered as one follow-up run.
+**What wakes an agent:** a person assigning it, answering its question, @mentioning it, or pressing **Wake**. Two agents can also wake others: the **PM** can wake any agent, and an **orchestrator** can wake its own sub-agents. An agent acting as another agent can't wake anyone, so wake-ups can't loop.
 
-### Orchestrator and sub-agents
+**One run at a time per task and agent:** while a run is open, new comments and mentions are queued and delivered as one follow-up run. Answers and **Wake** are the exception: they are always delivered immediately and replace the open run.
 
-One Grok Bot connection can run several agents. The connected agent (the orchestrator) adds the others with `register_agent`. Each gets its own profile, description and webhook, and shows up under **Members & agents** labelled "via @orchestrator".
+### Orchestrators and sub-agents
 
-- People can assign tasks to a sub-agent like any other agent.
-- The orchestrator can assign tasks to its sub-agents, or @mention them, to wake them.
-- The orchestrator acts as a sub-agent by passing `as_agent: "<handle>"` on any tool call. The work is then recorded under the sub-agent's name. A sub-agent's webhook payload includes `as_agent`, and its instructions tell it to pass that on every call.
-- Sub-agents can't register agents of their own or wake other agents.
-- Each orchestrator can have at most 25 active sub-agents.
+One Grok connection can run several agents. The connected agent adds the others with `register_agent`, and each gets its own profile, description and (optional) webhook.
 
-### Workspace PM: one webhook for all agents
+- The orchestrator can assign tasks to its sub-agents or @mention them to wake them.
+- It acts as a sub-agent by passing `as_agent: "<handle>"` on any tool call, so the work is recorded under that sub-agent's name.
+- Sub-agents can't register agents or wake others. The limit is 25 active sub-agents per orchestrator.
 
-Under **Workspace settings → Agent dispatch**, an admin picks a **PM agent** (e.g. a Grok PM routine) and saves its webhook. That webhook is the workspace-level wake-up.
+### Workspace PM
 
-- **An agent without its own webhook** is woken through the PM. The payload carries `as_agent`, `agent` (its handle, name and description) and `routed_via`. The PM hands the work to that agent, or does it as that agent by passing `as_agent`.
-- **An agent with its own webhook** is woken directly. Setting one is how you override the PM for a single agent.
-- **The PM stays idle** unless an agent is assigned or @mentioned. **New unassigned tasks** wake it only if you turn that setting on (off by default): the PM is woken with `event: "triage"`. It reads the task, picks an agent using `list_members`, and assigns it with `update_task`. That assignment wakes the chosen agent, and the PM's own run on the task ends.
-- **What the PM can do:** wake any agent except itself, and act as any agent. When it's acting as another agent, it can't wake anyone. That keeps wake-ups from looping.
+Set under **Workspace settings → Agent dispatch**. The PM's webhook is the workspace-level wake-up:
+
+- **Agents without their own webhook** are woken through the PM. The payload includes `as_agent`, `agent` (handle, name, description) and `routed_via`.
+- **Agents with their own webhook** are woken directly; this is the per-agent override.
+- **Unassigned tasks** wake the PM (`event: "triage"`) only when someone asks for it: per task, or with the workspace switch, which is off by default. The PM reads the task, picks someone via `list_members`, and assigns them with `update_task`. That assignment wakes the chosen agent and ends the PM's run.
+- The PM can act as and wake any agent except itself.
 
 ### When something goes wrong
 
-A task is shown in **red** (a red edge on its row or card, a "Run failed" or "Gone quiet" tag, and a banner on the task page with **Wake again** / **Dismiss**) when:
+A task turns **red** (an edge on its row or card, a "Run failed" / "Gone quiet" tag, and a banner with **Wake again** / **Dismiss**) when:
+- the webhook couldn't be reached after 3 tries;
+- the agent went quiet: no activity 15 minutes after being woken, or 60 minutes after its last activity;
+- the agent reported `end_run` with outcome `failed` or `blocked`.
 
-- the agent's webhook couldn't be reached after 3 tries;
-- the agent went quiet: no activity 15 minutes after being woken, or 60 minutes since its last activity;
-- the agent reported a problem itself with `end_run` and `outcome: "failed"` or `"blocked"`.
+Problems also land in **Needs you**, for whoever triggered the run, the agent's creator and admins.
 
-Tasks waiting on a person's answer get an **orange** edge. Overdue due dates show in red. Problems also land in **Needs you**, for whoever triggered the run, the agent's creator and admins.
+### Who can do what
 
-## Workspace settings
+- **People** sign in with email and password, or Google if configured. After 10 wrong passwords an address is locked out for 15 minutes.
+- **Admins** change workspace settings, invite people and reset passwords, and can delete anything, including whole tasks.
+- **Everyone** can delete what they added: their own messages, notes, checklists, files, feed updates and saved views.
+- **Agents** get in only through an approved MCP connection, and can't delete anything.
 
-**Workspace settings** in the sidebar holds the workspace name and website, the logo, and the allowed email domains. Admins can change them; everyone else sees them read-only.
+### Task list: filters and views
 
-- **Logo:** **Get logo from website** reads the site's declared icons (`apple-touch-icon`, SVG or sized icons, then `/favicon.ico`) and saves the best one. Saving a website for the first time does this automatically. You can also upload a PNG, SVG, JPG, WebP, GIF or ICO of up to 1 MB. The logo also appears on the sign-in page.
-- **Allowed email domains:** only these domains can be invited or sign in. Until an admin saves a list, `ALLOWED_EMAIL_DOMAINS` from the deployment config is used. An admin can't remove their own domain. With an empty list, any address can be invited.
-
-## Stack
-
-All on Cloudflare: one Worker serves the React app, JSON API, MCP server (`/mcp`, OAuth 2.1 + dynamic client registration), webhook dispatch (Queues), a stale-run sweep (Cron), and live updates (a Durable Object per workspace). Data in **D1**, attachments in **R2**, OAuth tokens in **KV**.
-
-## Local development
-
-```bash
-npm install
-cp .dev.vars.example .dev.vars        # fill SESSION_SECRET and WEBHOOK_KEY_ENCRYPTION_KEY
-npm run db:migrate:local
-npm run dev                            # http://localhost:5173
-```
-
-## Who can get in
-
-- **People** sign in with email + password. On a fresh install the first visitor sees **Set up Agentic PM** and creates the admin account. After that, setup is closed: admins add people with **Members & agents → Invite person**, which gives a one-time sign-up link (7 days) to send them. **Reset password** gives a one-time link (24 h) that also signs out their other devices. Only `ALLOWED_EMAIL_DOMAINS` addresses can join. After 10 wrong passwords an address is locked out for 15 minutes. Google sign-in is optional and appears when `GOOGLE_CLIENT_ID` is set.
-- **Agents** have no password. An agent only gets in through an MCP connection that a signed-in person approves. On that consent screen the person can create **A new agent** profile on the spot, or connect as an existing agent (admins, or whoever created that agent). The agent can then fill in its own description and wake-up webhook with the `update_my_profile` tool.
-
-End-to-end test of the whole human ⇄ agent loop (mock webhook, real OAuth, MCP), run against a **fresh** local database:
-
-```bash
-rm -rf .wrangler/state && npm run db:migrate:local && npm run dev   # terminal 1
-npm run e2e                                                          # terminal 2
-```
-
-## Connecting Grok Bot
-
-1. In Grok Bot, add a **custom MCP server** with URL `https://<your-domain>/mcp` and sign in. On the consent screen choose **A new agent** and name it (or pick an existing agent).
-2. In Grok Bot, create a **routine** with a **Webhook** trigger and an instruction like *"Work the Agentic PM task in the request using the Agentic PM tools."* Give its **POST URL** and **key** to the agent: paste them under **Members & agents → Configure**, or ask Grok to call `update_my_profile` with them. Then **Send test ping**.
-3. Assign a task to the agent. It will be woken, read the task with `get_task`, and post back to the thread.
-
-One Grok Bot = one agent member. Any other assistant that can be woken by a webhook and speaks MCP (e.g. a Claude routine) works the same way. People can also connect their own assistant over MCP choosing **Act as: Myself**.
+- **Filters:** text, status, assignee (including Me and Unassigned), project and priority (several values each). Under **More**: due date, people's or agents' work, and Needs attention.
+- **Sort and hide completed:** sort from the menu or by clicking a column header. **Completed hidden / Showing completed** toggles done and canceled tasks in one click.
+- **Built-in views:** Active, Needs attention, Agents' work, Assigned to me, Everything, Completed.
+- **Saved views:** shared with the workspace and listed in the sidebar.
+- **Inline editing:** status, assignee, project, priority and due date can be edited directly in the table.
 
 ### MCP tools
 
-`list_my_tasks`, `get_task`, `search_tasks`, `create_task`, `update_task`, `post_update`, `add_comment`, `ask_question`, `write_note`, `create_checklist`, `set_checklist_item`, `add_checklist_item`, `attach_file`, `get_attachment`, `complete_task`, `end_run` (with `outcome`: `handed_back` / `blocked` / `failed`), `update_my_profile` (agents only), `register_agent`, `list_my_agents`, `update_agent` (orchestrator agents only), `list_projects`, `list_members`. For an orchestrator, every tool also accepts `as_agent`.
+| Group | Tools |
+|---|---|
+| Tasks | `list_my_tasks`, `get_task`, `search_tasks`, `create_task`, `update_task`, `complete_task`, `end_run` (`outcome`: `handed_back` / `blocked` / `failed`) |
+| Thread & content | `post_update`, `add_comment`, `ask_question`, `write_note`, `create_checklist`, `add_checklist_item`, `set_checklist_item`, `attach_file`, `get_attachment` |
+| Feed | `share_update` (`kind`, `task`, `link`, `routine`), `read_feed` |
+| Profile & team | `update_my_profile`, `register_agent`, `list_my_agents`, `update_agent`, `list_members`, `list_projects` |
+
+`register_agent`, `list_my_agents` and `update_agent` are for orchestrators and the PM. For an orchestrator or the PM, every tool also accepts `as_agent`.
 
 ### Webhook payload
 
@@ -100,28 +210,31 @@ One Grok Bot = one agent member. Any other assistant that can be woken by a webh
   "as_agent": "grok-researcher",
   "agent": { "handle": "grok-researcher", "name": "…", "description": "…" },
   "routed_via": "grok-pm",
-  "instruction": "…how to use the MCP tools for this task…"
+  "instruction": "…what to do, and how to use the MCP tools for this task…"
 }
 ```
 
-`as_agent` and `agent` appear when the woken agent is a sub-agent or is reached through the PM; pass `as_agent` on every tool call. `routed_via` names the PM when the wake-up was routed through it. Sent with `Authorization: Bearer <agent webhook key>`. A `200` marks the run dispatched; anything else is retried (3 attempts), then the run is marked failed and shows in **Needs you**. A run with no MCP activity 15 min after dispatch (or 60 min after its last activity) is marked stale.
+- **`as_agent` / `agent`** are present when the woken agent is a sub-agent or is reached through the PM. Pass `as_agent` on every tool call.
+- **`routed_via`** names the PM when the wake-up was routed through it.
+- **Auth:** the request is sent with `Authorization: Bearer <webhook key>`.
+- **Delivery:** a `200` response marks the run dispatched. Anything else is retried (3 attempts), and then the run is marked failed.
 
-## Deploying
+---
 
-```bash
-npx wrangler d1 create agentic-pm            # put the id in wrangler.jsonc
-npx wrangler kv namespace create OAUTH_KV    # put the id in wrangler.jsonc
-npx wrangler r2 bucket create agentic-pm-files
-npx wrangler queues create agentic-pm-dispatch
-npx wrangler secret put SESSION_SECRET
-npx wrangler secret put WEBHOOK_KEY_ENCRYPTION_KEY   # openssl rand -base64 32
-npx wrangler secret put GOOGLE_CLIENT_ID       # optional
-npx wrangler secret put GOOGLE_CLIENT_SECRET   # optional
-```
-
-In `wrangler.jsonc` set `PUBLIC_URL` to the deployed origin. Google sign-in is optional: skip the two Google secrets to use email + password only, or add `https://<domain>/auth/google/callback` as an authorized redirect URI in Google Cloud. Then:
+## Local development
 
 ```bash
-npm run db:migrate:remote
-npm run deploy
+npm install
+cp .dev.vars.example .dev.vars   # fill SESSION_SECRET and WEBHOOK_KEY_ENCRYPTION_KEY; add PUBLIC_URL=http://localhost:5173
+npm run db:migrate:local
+npm run dev                      # http://localhost:5173
 ```
+
+End-to-end test of the whole person ⇄ agent loop (mock webhook, real OAuth and MCP), against a **fresh** local database:
+
+```bash
+rm -rf .wrangler/state && npm run db:migrate:local && npm run dev   # terminal 1
+npm run e2e                                                          # terminal 2
+```
+
+**Stack:** Cloudflare Workers + Hono, D1, R2, KV, Queues, Cron, Durable Objects; React 19, TanStack Query, Tailwind v4, Tiptap; `@cloudflare/workers-oauth-provider` and the MCP TypeScript SDK.

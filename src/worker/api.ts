@@ -34,6 +34,7 @@ import { type InviteRow, SESSION_COOKIE, createInvite, getSessionMember, needsSe
 import { canManageAgent, listSubAgents } from "./agents";
 import { deleteAttachment, deleteChecklist, deleteEntry, deleteNote, deleteTask } from "./deletes";
 import { serveLogo, workspaceInfo, workspaceRoutes } from "./workspace";
+import { feedRoutes } from "./feed";
 import { type AppEnv, HttpError, badRequest, encryptSecret, forbidden, newId, notFound, nowIso, verifySignedValue } from "./util";
 
 type Vars = { me: MemberRow; ws: WorkspaceRow; actor: Actor };
@@ -104,6 +105,7 @@ api.use("/api/*", async (c, next) => {
 });
 
 api.route("/", workspaceRoutes);
+api.route("/", feedRoutes);
 
 const requireAdmin = (me: MemberRow) => {
   if (me.role !== "admin") throw forbidden("Admins only");

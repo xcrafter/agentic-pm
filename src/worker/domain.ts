@@ -6,6 +6,7 @@
 import { type AppEnv, HttpError, badRequest, forbidden, newId, notFound, nowIso, parseJson } from "./util";
 import { onAgentTrigger, touchRun, endRunsFor } from "./orchestrator";
 import { canWake } from "./agents";
+import { postTaskCompleted } from "./feed";
 
 // ---------- Types ----------
 
@@ -413,6 +414,8 @@ export interface UpdateTaskInput {
   projectId?: string | null;
   dueDate?: string | null;
   position?: number;
+  /** Shown in the automatic feed post when this change completes the task. */
+  summary?: string;
 }
 
 export async function updateTask(
@@ -535,6 +538,7 @@ export async function updateTask(
       .bind(task.id)
       .all<{ agent_id: string }>();
     for (const r of open.results) await endRunsFor(env, task.id, r.agent_id, "completed");
+    if (statusChange.to === "done") await postTaskCompleted(env, ws, actor, next, patch.summary);
   } else if (actor.member.kind === "agent") {
     await touchRun(env, next.id, actor.member.id);
   }

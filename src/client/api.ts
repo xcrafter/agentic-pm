@@ -218,3 +218,41 @@ export interface MemberRecord {
     task_title: string;
   })[];
 }
+
+export type PostKind = "update" | "done" | "blocker";
+export interface Post {
+  id: string;
+  author_id: string;
+  kind: PostKind;
+  body: string;
+  link_url: string | null;
+  routine: string | null;
+  auto: boolean;
+  created_at: string;
+  task: { id: string; key: string; title: string | null; status: string | null } | null;
+  reactions: { emoji: string; count: number; mine: boolean; by: string[] }[];
+}
+export interface ReportPerson {
+  id: string;
+  name: string;
+  handle: string;
+  kind: MemberKind;
+  avatar_url: string | null;
+  tasks_done: number;
+  avg_hours_to_done: number | null;
+  open_tasks: number;
+  overdue: number;
+  updates: number;
+  blockers: number;
+  useful: number;
+  questions: number;
+  runs: number;
+  failed_runs: number;
+  last_active: string | null;
+}
+export interface Report {
+  days: number;
+  since: string;
+  people: ReportPerson[];
+  routines: { routine: string; author_id: string; posts: number; last_at: string; days: string[] }[];
+}
