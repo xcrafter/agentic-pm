@@ -358,6 +358,8 @@ function DocPane({ id, all }: { id: string; all: PolicyMeta[] }) {
   const lastSaved = useRef<string | null>(null);
   const latest = useRef<string | null>(null);
   const [revision, setRevision] = useState<string | null>(null);
+  const [showReaders, setShowReaders] = useState(false);
+  const [showVersions, setShowVersions] = useState(false);
 
   const p = q.data;
   useEffect(() => {
@@ -385,6 +387,7 @@ function DocPane({ id, all }: { id: string; all: PolicyMeta[] }) {
 
   const followers = p.audience === "all" ? agents : p.audience === "agents" ? agents.filter((a) => p.agent_ids.includes(a.id)) : [];
   const readOf = new Map(p.reads.map((r) => [r.member_id, r]));
+  const upToDate = followers.filter((a) => (readOf.get(a.id)?.version ?? 0) >= p.version).length;
   const name = (mid: string) => members.find((m) => m.id === mid)?.name ?? "someone";
 
   return (
@@ -496,11 +499,23 @@ function DocPane({ id, all }: { id: string; all: PolicyMeta[] }) {
 
       {p.audience !== "reference" && (
         <section className="mt-6">
-          <h2 className="mb-2 flex items-center gap-1.5 text-[13px] font-medium">
-            <Bot size={14} className="text-ink-3" /> Agents following this
-          </h2>
-          {followers.length ? (
-            <ul className="divide-y divide-line rounded-[10px] border border-line">
+          <button
+            type="button"
+            aria-expanded={showReaders}
+            onClick={() => setShowReaders((v) => !v)}
+            className="-mx-1.5 flex w-[calc(100%+12px)] items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[13px] hover:bg-hover"
+          >
+            {showReaders ? <ChevronDown size={14} className="text-ink-3" /> : <ChevronRight size={14} className="text-ink-3" />}
+            <Bot size={14} className="text-ink-3" />
+            <span className="font-medium">Agents following this</span>
+            <span className="text-ink-3">
+              {followers.length
+                ? `· ${upToDate} of ${followers.length} read the latest version`
+                : "· none picked yet"}
+            </span>
+          </button>
+          {!showReaders ? null : followers.length ? (
+            <ul className="mt-2 divide-y divide-line rounded-[10px] border border-line">
               {followers.map((a) => {
                 const r = readOf.get(a.id);
                 return (
@@ -519,17 +534,26 @@ function DocPane({ id, all }: { id: string; all: PolicyMeta[] }) {
               })}
             </ul>
           ) : (
-            <p className="text-[13px] text-ink-3">No agents picked yet.</p>
+            <p className="mt-1 text-[13px] text-ink-3">No agents picked yet.</p>
           )}
         </section>
       )}
 
       {!!p.revisions.length && (
         <section className="mt-6">
-          <h2 className="mb-2 flex items-center gap-1.5 text-[13px] font-medium">
-            <History size={14} className="text-ink-3" /> Earlier versions
-          </h2>
-          <ul className="flex flex-col gap-0.5">
+          <button
+            type="button"
+            aria-expanded={showVersions}
+            onClick={() => setShowVersions((v) => !v)}
+            className="-mx-1.5 flex w-[calc(100%+12px)] items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[13px] hover:bg-hover"
+          >
+            {showVersions ? <ChevronDown size={14} className="text-ink-3" /> : <ChevronRight size={14} className="text-ink-3" />}
+            <History size={14} className="text-ink-3" />
+            <span className="font-medium">Earlier versions</span>
+            <span className="text-ink-3">· {p.revisions.length}</span>
+          </button>
+          {showVersions && (
+          <ul className="mt-1 flex flex-col gap-0.5">
             {p.revisions.map((r) => (
               <li key={r.id}>
                 <button type="button" onClick={() => setRevision(r.id)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] hover:bg-hover">
@@ -542,6 +566,7 @@ function DocPane({ id, all }: { id: string; all: PolicyMeta[] }) {
               </li>
             ))}
           </ul>
+          )}
         </section>
       )}
       <RevisionModal id={revision} onClose={() => setRevision(null)} />
