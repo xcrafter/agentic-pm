@@ -1,7 +1,11 @@
 import { ulid } from "ulid";
 import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 
-export type AppEnv = Env & { OAUTH_PROVIDER: OAuthHelpers };
+export type AppEnv = Env & {
+  OAUTH_PROVIDER: OAuthHelpers;
+  /** Seconds between webhook retries (×attempt). Default 30; tests set 1 in .dev.vars. */
+  WEBHOOK_RETRY_SECONDS?: string;
+};
 
 export const newId = () => ulid();
 export const nowIso = () => new Date().toISOString();

@@ -2,3 +2,6 @@ SESSION_SECRET=<openssl rand -hex 32>
 WEBHOOK_KEY_ENCRYPTION_KEY=<openssl rand -base64 32>
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
+PUBLIC_URL=http://localhost:5173
+# Optional: faster webhook retries for local testing (production uses 30)
+WEBHOOK_RETRY_SECONDS=1

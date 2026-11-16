@@ -686,7 +686,7 @@ try {
   step("Unreachable agent → run fails and lands in Needs you");
   await alice("PATCH", `/api/members/${agent.id}`, { webhook_url: `http://localhost:${HOOK_PORT}/missing` });
   const t3 = await alice("POST", "/api/tasks", { title: "Will fail", assignee_id: agent.id });
-  console.log("  … waiting for retries (≈1–2 min in dev)");
+  console.log("  … waiting for 3 failed delivery attempts (seconds with WEBHOOK_RETRY_SECONDS=1, ~2 min otherwise)");
   const deadline = Date.now() + 180_000;
   let failed = false;
   while (Date.now() < deadline) {

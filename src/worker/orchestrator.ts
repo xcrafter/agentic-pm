@@ -243,7 +243,8 @@ export async function handleDispatch(env: AppEnv, msg: Message<DispatchMessage>)
     msg.ack();
   } else {
     await env.DB.prepare("UPDATE agent_runs SET attempts = ?, last_error = ? WHERE id = ?").bind(attempts, error, run.id).run();
-    msg.retry({ delaySeconds: 30 * attempts });
+    const base = Math.min(Math.max(Number(env.WEBHOOK_RETRY_SECONDS) || 30, 1), 300);
+    msg.retry({ delaySeconds: base * attempts });
   }
 }
 
