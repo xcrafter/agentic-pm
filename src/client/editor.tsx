@@ -110,7 +110,9 @@ export const RichEditor = forwardRef<
 
   const editor = useEditor({
     extensions: [
-      StarterKit.configure({ link: { openOnClick: false, autolink: true } }),
+      StarterKit.configure({
+        link: { openOnClick: false, autolink: true, HTMLAttributes: { target: "_blank", rel: "noopener noreferrer nofollow" } },
+      }),
       TaskList,
       TaskItem.configure({ nested: true }),
       Placeholder.configure({ placeholder: placeholder ?? "Write something… (Markdown shortcuts work)" }),
@@ -126,6 +128,16 @@ export const RichEditor = forwardRef<
     onSelectionUpdate: ({ editor }) => refresh(editor),
     onBlur: () => setTimeout(() => setMention(null), 120),
     editorProps: {
+      // Links open in a new tab on click (the text stays editable by selecting it or with the keyboard).
+      handleClick: (view, _pos, event) => {
+        const a = (event.target as HTMLElement | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
+        if (!a || !view.dom.contains(a) || event.button !== 0 || !view.state.selection.empty) return false;
+        const href = a.getAttribute("href") ?? "";
+        if (!/^(https?:|mailto:)/i.test(href)) return false;
+        event.preventDefault();
+        window.open(href, "_blank", "noopener,noreferrer");
+        return true;
+      },
       handleKeyDown: (_view, event) => {
         const { mention, options, active, onSubmit } = live.current;
         if (mention && options.length) {

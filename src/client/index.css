@@ -131,7 +131,7 @@ body {
 .tiptap code { background: var(--c-hover); border-radius: 4px; padding: 0.05em 0.3em; font-size: 0.88em; }
 .tiptap pre { background: var(--c-subtle); border: 1px solid var(--c-line); border-radius: 8px; padding: 12px; }
 .tiptap blockquote { border-left: 2px solid var(--c-line-strong); padding-left: 12px; }
-.tiptap a { color: var(--c-accent); text-decoration: underline; }
+.tiptap a { color: var(--c-accent); text-decoration: underline; cursor: pointer; }
 .tiptap p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
   float: left; height: 0; pointer-events: none; color: var(--c-ink-3);
