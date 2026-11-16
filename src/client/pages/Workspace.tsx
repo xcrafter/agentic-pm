@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Activity, Building2, Users, Zap } from "lucide-react";
 import { Link } from "react-router";
 import { type Overview, type Status, STATUS_LABEL, api } from "../api";
-import { AgentBadge, EmptyState, MemberChip, SectionTitle, Tag, TopBar, cx, timeAgo, useMembers } from "../components";
+import { AgentBadge, EmptyState, MemberChip, SectionTitle, Tag, TopBar, WorkspaceLogo, cx, timeAgo, useMe, useMembers } from "../components";
 import { FeedList } from "./Feed";
 
 const BAR: { status: Status; color: string }[] = [
@@ -17,6 +17,7 @@ const BAR: { status: Status; color: string }[] = [
 export function WorkspacePage() {
   const q = useQuery({ queryKey: ["overview"], queryFn: () => api.get<Overview>("/api/overview"), refetchInterval: 30_000 });
   const members = useMembers();
+  const me = useMe();
   const byId = new Map((members.data ?? []).map((m) => [m.id, m]));
   if (q.isLoading || !q.data) return <div className="p-8 text-[13px] text-ink-3">Loading…</div>;
   const o = q.data;
@@ -37,7 +38,7 @@ export function WorkspacePage() {
       <div className="min-h-0 flex-1 overflow-auto">
         <div className="mx-auto max-w-6xl px-4 py-6 md:px-6">
           <div className="flex items-center gap-3.5">
-            <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-ink text-[18px] font-semibold text-canvas">{o.workspace.name.slice(0, 1)}</span>
+            <WorkspaceLogo name={o.workspace.name} logoUrl={me.data?.workspace?.logo_url} size={44} />
             <div>
               <h1 className="text-[22px] font-semibold tracking-[-0.015em]">{o.workspace.name}</h1>
               <p className="text-[13px] text-ink-3">

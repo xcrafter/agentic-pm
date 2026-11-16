@@ -68,7 +68,7 @@ export function InboxPage() {
               {data.runs.map((r) => (
                 <li key={r.id} className="px-4 py-3">
                   <div className="flex flex-wrap items-center gap-2 text-[13px]">
-                    <Tag tone={r.status === "failed" ? "red" : "amber"}>{r.status === "failed" ? "Unreachable" : "Gone quiet"}</Tag>
+                    <Tag tone="red">{r.status === "failed" ? "Failed" : "Gone quiet"}</Tag>
                     <span className="font-semibold">{r.agent_name}</span>
                     <Link to={`/t/${r.task_key}`} className="truncate text-ink-2 hover:underline">
                       {r.task_key} · {r.task_title}

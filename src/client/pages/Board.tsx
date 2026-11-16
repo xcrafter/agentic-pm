@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarDays, CircleDot, Clock, Columns3, FolderKanban, ListTodo, Plus, Signal, Table2, UserRound, Bot, Users } from "lucide-react";
+import { CalendarDays, CircleDot, Clock, Columns3, FolderKanban, ListTodo, Plus, Signal, Table2, UserRound, Bot, Users, TriangleAlert } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { type Status, type Task, STATUSES, STATUS_LABEL, api } from "../api";
@@ -228,9 +228,24 @@ export function TaskTable({ tasks }: { tasks: Task[] }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map((t) => (
-            <tr key={t.id} onClick={() => nav(`/t/${t.key}`)} className="group cursor-pointer">
-              <td className={cx(cell, "sticky left-0 bg-canvas group-hover:bg-hover")}>
+          {rows.map((t) => {
+            const health = taskHealth(t);
+            const bg = health === "problem" ? "bg-danger-soft" : "group-hover:bg-hover";
+            return (
+            <tr
+              key={t.id}
+              onClick={() => nav(`/t/${t.key}`)}
+              className={cx("group cursor-pointer", health === "problem" && "[&>td]:bg-danger-soft [&>td]:border-b-danger-line")}
+              title={health === "problem" ? "Something went wrong with the agent's run. Open the task to see why." : undefined}
+            >
+              <td
+                className={cx(
+                  cell,
+                  "sticky left-0",
+                  health === "problem" ? "bg-danger-soft shadow-[inset_3px_0_0_var(--c-danger)]" : "bg-canvas group-hover:bg-hover",
+                  health === "waiting" && "shadow-[inset_3px_0_0_var(--c-warn)]",
+                )}
+              >
                 <Link to={`/t/${t.key}`} onClick={(e) => e.stopPropagation()} className="flex min-w-0 items-center gap-2">
                   <span className="w-12 shrink-0 text-[12px] text-ink-3 tabular-nums">{t.key}</span>
                   <span className="truncate font-medium">{t.title}</span>
@@ -252,11 +267,14 @@ export function TaskTable({ tasks }: { tasks: Task[] }) {
                   {t.priority === "none" ? "" : t.priority[0].toUpperCase() + t.priority.slice(1)}
                 </span>
               </td>
-              <td className={cx(cell, "text-ink-2 group-hover:bg-hover")}>{t.due_date ? formatDate(t.due_date) : <span className="text-ink-3">—</span>}</td>
+              <td className={cx(cell, "group-hover:bg-hover", isOverdue(t) ? "font-medium text-danger" : "text-ink-2")}>
+                {t.due_date ? formatDate(t.due_date) : <span className="text-ink-3">—</span>}
+              </td>
               <td className={cx(cell, "text-ink-3 group-hover:bg-hover")}>{timeAgo(t.updated_at)}</td>
-              <td className="border-b border-line group-hover:bg-hover" />
+              <td className={cx("border-b border-line", bg)} />
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -299,38 +317,68 @@ function Column({ status, tasks, onDrop, onAdd }: { status: Status; tasks: Task[
   );
 }
 
+/**
+ * How a task is doing, for color coding: "problem" when an agent run failed, was blocked or went quiet
+ * (red), "waiting" when an agent is waiting on a human answer (orange).
+ */
+export type TaskHealth = "problem" | "waiting" | "ok";
+export function taskHealth(task: Pick<Task, "run_status" | "open_questions">): TaskHealth {
+  if (task.run_status === "failed" || task.run_status === "stale") return "problem";
+  if (task.open_questions > 0) return "waiting";
+  return "ok";
+}
+
 export function RunBadge({ task, compact }: { task: Task; compact?: boolean }) {
-  if (task.open_questions > 0)
-    return (
-      <Tag tone="orange" className="shrink-0">
-        {compact ? `${task.open_questions} question${task.open_questions > 1 ? "s" : ""}` : `Waiting on you · ${task.open_questions}`}
-      </Tag>
-    );
-  if (!task.run_status) return null;
+  const problem = taskHealth(task) === "problem";
   const map: Record<string, [string, "gray" | "violet" | "red" | "amber"]> = {
     queued: ["Waking", "gray"],
     dispatched: ["Starting", "violet"],
     active: ["Working", "violet"],
-    failed: ["Unreachable", "red"],
-    stale: ["Gone quiet", "amber"],
+    failed: ["Run failed", "red"],
+    stale: ["Gone quiet", "red"],
   };
-  const m = map[task.run_status];
-  if (!m) return null;
+  const run = task.run_status ? map[task.run_status] : undefined;
   return (
-    <Tag tone={m[1]} className="shrink-0">
-      {task.run_status === "active" && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" />}
-      {m[0]}
-    </Tag>
+    <>
+      {problem && run && (
+        <Tag tone="red" className="shrink-0">
+          <TriangleAlert size={12} />
+          {run[0]}
+        </Tag>
+      )}
+      {task.open_questions > 0 && (
+        <Tag tone="orange" className="shrink-0">
+          {compact ? `${task.open_questions} question${task.open_questions > 1 ? "s" : ""}` : `Waiting on you · ${task.open_questions}`}
+        </Tag>
+      )}
+      {!problem && !task.open_questions && run && (
+        <Tag tone={run[1]} className="shrink-0">
+          {task.run_status === "active" && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" />}
+          {run[0]}
+        </Tag>
+      )}
+    </>
   );
 }
 
+const isOverdue = (t: Task) => !!t.due_date && t.status !== "done" && t.status !== "canceled" && t.due_date < new Date().toISOString().slice(0, 10);
+
 function Card({ task }: { task: Task }) {
+  const health = taskHealth(task);
   return (
     <Link
       to={`/t/${task.key}`}
       draggable
       onDragStart={(e) => e.dataTransfer.setData("text/task-key", task.key)}
-      className="block rounded-[10px] border border-line-strong bg-canvas p-3 shadow-card hover:border-ink-3/40"
+      className={cx(
+        "block rounded-[10px] border p-3 shadow-card",
+        health === "problem"
+          ? "border-danger-line bg-danger-soft shadow-[inset_3px_0_0_var(--c-danger)] hover:border-danger"
+          : health === "waiting"
+            ? "border-line-strong bg-canvas shadow-[inset_3px_0_0_var(--c-warn)] hover:border-ink-3/40"
+            : "border-line-strong bg-canvas hover:border-ink-3/40",
+      )}
+      title={health === "problem" ? "Something went wrong with the agent's run. Open the task to see why." : undefined}
     >
       <div className="text-[13px] leading-snug font-medium">{task.title}</div>
       <div className="mt-2.5 space-y-1.5 text-[12px]">

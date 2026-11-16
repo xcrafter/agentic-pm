@@ -127,9 +127,19 @@ export interface Project {
   task_count: number;
   done_count: number;
 }
+export interface WorkspaceInfo {
+  id: string;
+  name: string;
+  key_prefix: string;
+  website: string | null;
+  logo_url: string | null;
+  allowed_domains: string[];
+  allowed_domains_source: "workspace" | "default";
+}
 export interface Me {
   member: Member | null;
-  workspace: { id: string; name: string; key_prefix: string } | null;
+  workspace: WorkspaceInfo | null;
+  brand: { name: string; logo_url: string | null };
   auth: { google: boolean; setup: boolean };
 }
 export interface Inbox {
@@ -196,6 +206,8 @@ export interface Overview {
 export interface MemberRecord {
   member: Member;
   created_by: MemberRef | null;
+  sub_agents: Member[];
+  can_manage: boolean;
   stats: { open: number; waiting: number; done: number; done_7d: number; created: number };
   recent: FeedEntry[];
   runs: (Pick<Run, "id" | "status" | "trigger" | "attempts" | "last_error" | "created_at" | "dispatched_at" | "last_activity_at" | "ended_at"> & {

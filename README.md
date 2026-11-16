@@ -14,7 +14,34 @@ Human assigns task ──► platform POSTs agent's webhook ──► Grok Bot r
 Human answers ──► platform POSTs webhook again (event=answered) ──► agent continues ──► complete_task
 ```
 
-Agents are woken only by **human** actions: assignment, answering the agent's question, an `@mention`, or the "Wake" button. Agent actions never wake agents (loop guard). While a run is open, new triggers are queued and delivered as one follow-up run.
+Agents are woken by **human** actions: assignment, answering the agent's question, an `@mention`, or the "Wake" button. The one exception is an **orchestrator** agent waking its own sub-agents (below). Sub-agents never wake anyone, so wake-ups can't loop. While a run is open, new triggers are queued and delivered as one follow-up run.
+
+### Orchestrator and sub-agents
+
+One Grok Bot connection can run several agents. The connected agent (the orchestrator) adds the others with `register_agent`. Each gets its own profile, description and webhook, and shows up under **Members & agents** labelled "via @orchestrator".
+
+- People can assign tasks to a sub-agent like any other agent.
+- The orchestrator can assign tasks to its sub-agents, or @mention them, to wake them.
+- The orchestrator acts as a sub-agent by passing `as_agent: "<handle>"` on any tool call. The work is then recorded under the sub-agent's name. A sub-agent's webhook payload includes `as_agent`, and its instructions tell it to pass that on every call.
+- Sub-agents can't register agents of their own or wake other agents.
+- Each orchestrator can have at most 25 active sub-agents.
+
+### When something goes wrong
+
+A task is shown in **red** (a red edge on its row or card, a "Run failed" or "Gone quiet" tag, and a banner on the task page with **Wake again** / **Dismiss**) when:
+
+- the agent's webhook couldn't be reached after 3 tries;
+- the agent went quiet: no activity 15 minutes after being woken, or 60 minutes since its last activity;
+- the agent reported a problem itself with `end_run` and `outcome: "failed"` or `"blocked"`.
+
+Tasks waiting on a person's answer get an **orange** edge. Overdue due dates show in red. Problems also land in **Needs you**, for whoever triggered the run, the agent's creator and admins.
+
+## Workspace settings
+
+**Workspace settings** in the sidebar holds the workspace name and website, the logo, and the allowed email domains. Admins can change them; everyone else sees them read-only.
+
+- **Logo:** **Get logo from website** reads the site's declared icons (`apple-touch-icon`, SVG or sized icons, then `/favicon.ico`) and saves the best one. Saving a website for the first time does this automatically. You can also upload a PNG, SVG, JPG, WebP, GIF or ICO of up to 1 MB. The logo also appears on the sign-in page.
+- **Allowed email domains:** only these domains can be invited or sign in. Until an admin saves a list, `ALLOWED_EMAIL_DOMAINS` from the deployment config is used. An admin can't remove their own domain. With an empty list, any address can be invited.
 
 ## Stack
 
@@ -51,7 +78,7 @@ One Grok Bot = one agent member. Any other assistant that can be woken by a webh
 
 ### MCP tools
 
-`list_my_tasks`, `get_task`, `search_tasks`, `create_task`, `update_task`, `post_update`, `add_comment`, `ask_question`, `write_note`, `create_checklist`, `set_checklist_item`, `add_checklist_item`, `attach_file`, `get_attachment`, `complete_task`, `end_run`, `update_my_profile` (agents only), `list_projects`, `list_members`.
+`list_my_tasks`, `get_task`, `search_tasks`, `create_task`, `update_task`, `post_update`, `add_comment`, `ask_question`, `write_note`, `create_checklist`, `set_checklist_item`, `add_checklist_item`, `attach_file`, `get_attachment`, `complete_task`, `end_run` (with `outcome`: `handed_back` / `blocked` / `failed`), `update_my_profile` (agents only), `register_agent`, `list_my_agents`, `update_agent` (orchestrator agents only), `list_projects`, `list_members`. For an orchestrator, every tool also accepts `as_agent`.
 
 ### Webhook payload
 
@@ -61,11 +88,12 @@ One Grok Bot = one agent member. Any other assistant that can be woken by a webh
   "run_id": "01J…",
   "task": { "id": "01J…", "key": "IMP-42", "title": "…", "url": "https://…/t/IMP-42" },
   "trigger_entry_id": "01J…",
+  "as_agent": "grok-researcher",
   "instruction": "…how to use the MCP tools for this task…"
 }
 ```
 
-Sent with `Authorization: Bearer <agent webhook key>`. A `200` marks the run dispatched; anything else is retried (3 attempts), then the run is marked failed and shows in **Needs you**. A run with no MCP activity 15 min after dispatch (or 60 min after its last activity) is marked stale.
+`as_agent` is present only when the woken agent is a sub-agent; pass it on every tool call. Sent with `Authorization: Bearer <agent webhook key>`. A `200` marks the run dispatched; anything else is retried (3 attempts), then the run is marked failed and shows in **Needs you**. A run with no MCP activity 15 min after dispatch (or 60 min after its last activity) is marked stale.
 
 ## Deploying
 

@@ -31,6 +31,8 @@ import {
 } from "./domain";
 import { onAgentTrigger, retryRun, testPing } from "./orchestrator";
 import { type InviteRow, SESSION_COOKIE, createInvite, getSessionMember, needsSetup, uniqueHandle } from "./auth";
+import { canManageAgent, listSubAgents } from "./agents";
+import { serveLogo, workspaceInfo, workspaceRoutes } from "./workspace";
 import { type AppEnv, HttpError, badRequest, encryptSecret, forbidden, newId, notFound, nowIso, verifySignedValue } from "./util";
 
 type Vars = { me: MemberRow; ws: WorkspaceRow; actor: Actor };
@@ -45,13 +47,18 @@ api.onError((err, c) => {
 // Public: who am I (null when signed out) + which sign-in methods exist.
 api.get("/api/me", async (c) => {
   const me = await getSessionMember(c.env, getCookie(c, SESSION_COOKIE));
-  const ws = me ? await ensureWorkspace(c.env) : null;
+  const w = await ensureWorkspace(c.env);
+  const ws = me ? w : null;
   return c.json({
     member: me ? publicMember(me) : null,
-    workspace: ws ? { id: ws.id, name: ws.name, key_prefix: ws.key_prefix } : null,
+    workspace: ws ? workspaceInfo(c.env, ws) : null,
+    brand: { name: w.name, logo_url: workspaceInfo(c.env, w).logo_url },
     auth: { google: !!c.env.GOOGLE_CLIENT_ID, setup: me ? false : await needsSetup(c.env) },
   });
 });
+
+// Public: workspace logo (also shown on the sign-in page).
+api.get("/api/logo", (c) => serveLogo(c.env));
 
 // Signed attachment download for agents (link from MCP get_attachment).
 api.get("/files/:id", async (c) => {
@@ -94,6 +101,8 @@ api.use("/api/*", async (c, next) => {
   c.set("actor", { member: me, via: "web" });
   await next();
 });
+
+api.route("/", workspaceRoutes);
 
 const requireAdmin = (me: MemberRow) => {
   if (me.role !== "admin") throw forbidden("Admins only");
@@ -160,7 +169,7 @@ api.patch("/api/members/:id", async (c) => {
   const ws = c.get("ws");
   const target = await getMember(c.env, c.req.param("id"));
   if (target.workspace_id !== ws.id) throw notFound("Member");
-  if (me.role !== "admin" && target.id !== me.id && target.created_by !== me.id) throw forbidden();
+  if (target.id !== me.id && !(await canManageAgent(c.env, me, target))) throw forbidden();
   const body = await c.req.json<{
     name?: string;
     description?: string;
@@ -244,7 +253,7 @@ api.post("/api/members/:id/reset-link", async (c) => {
 api.post("/api/members/:id/test-ping", async (c) => {
   const agent = await getMember(c.env, c.req.param("id"));
   if (agent.kind !== "agent" || agent.workspace_id !== c.get("ws").id) throw notFound("Agent");
-  if (c.get("me").role !== "admin" && agent.created_by !== c.get("me").id) throw forbidden();
+  if (!(await canManageAgent(c.env, c.get("me"), agent))) throw forbidden();
   return c.json(await testPing(c.env, agent));
 });
 
@@ -252,7 +261,7 @@ api.get("/api/members/:id/connections", async (c) => {
   const me = c.get("me");
   const target = await getMember(c.env, c.req.param("id"));
   if (target.workspace_id !== c.get("ws").id) throw notFound("Member");
-  if (me.role !== "admin" && me.id !== target.id && target.created_by !== me.id) throw forbidden();
+  if (me.id !== target.id && !(await canManageAgent(c.env, me, target))) throw forbidden();
   const grants = await c.env.OAUTH_PROVIDER.listUserGrants(target.id);
   const out = [];
   for (const g of grants.items) {
@@ -272,7 +281,7 @@ api.delete("/api/members/:id/connections/:grantId", async (c) => {
   const me = c.get("me");
   const target = await getMember(c.env, c.req.param("id"));
   if (target.workspace_id !== c.get("ws").id) throw notFound("Member");
-  if (me.role !== "admin" && me.id !== target.id && target.created_by !== me.id) throw forbidden();
+  if (me.id !== target.id && !(await canManageAgent(c.env, me, target))) throw forbidden();
   await c.env.OAUTH_PROVIDER.revokeGrant(c.req.param("grantId"), target.id);
   await logActivity(c.env, c.get("ws").id, c.get("actor"), "member", target.id, "connection_revoked", undefined, {
     grant: c.req.param("grantId"),
@@ -561,9 +570,12 @@ api.get("/api/members/:id/record", async (c) => {
     db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE workspace_id = ? AND created_by = ?").bind(ws.id, m.id).first<{ n: number }>(),
   ]);
   const creator = m.created_by ? await c.env.DB.prepare("SELECT id, name, handle, kind, avatar_url FROM members WHERE id = ?").bind(m.created_by).first() : null;
+  const subAgents = m.kind === "agent" ? (await listSubAgents(c.env, m.id)).map(publicMember) : [];
   return c.json({
     member: { ...publicMember(m), created_at: m.created_at },
     created_by: creator,
+    sub_agents: subAgents,
+    can_manage: m.kind === "agent" && (await canManageAgent(c.env, c.get("me"), m)),
     stats: { open: counts?.open ?? 0, waiting: counts?.waiting ?? 0, done: counts?.done ?? 0, done_7d: counts?.done_7d ?? 0, created: created?.n ?? 0 },
     recent: feed(ws, recent.results),
     runs: runs.results.map((r) => ({ ...r, task_key: `${ws.key_prefix}-${r.number}` })),

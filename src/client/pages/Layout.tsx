@@ -10,6 +10,7 @@ import {
   Plus,
   Search,
   Users,
+  Settings,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router";
@@ -27,6 +28,7 @@ import {
   useMembers,
   useProjects,
   useRealtime,
+  WorkspaceLogo,
 } from "../components";
 import { CreateTaskModal } from "./CreateTask";
 
@@ -125,9 +127,7 @@ function Sidebar({ shell }: { shell: ShellContext }) {
           className="flex h-9 w-full items-center gap-2 rounded-lg px-1.5 text-left hover:bg-hover"
           title="Open the workspace record"
         >
-          <span className="flex h-6 w-6 items-center justify-center rounded-md bg-ink text-[12px] font-semibold text-canvas">
-            {me.workspace?.name.slice(0, 1)}
-          </span>
+          <WorkspaceLogo name={me.workspace?.name ?? ""} logoUrl={me.workspace?.logo_url} size={24} />
           <span className="flex-1 truncate text-[14px] font-semibold">{me.workspace?.name}</span>
         </button>
         <div className="mt-2 flex flex-col gap-0.5">
@@ -170,6 +170,9 @@ function Sidebar({ shell }: { shell: ShellContext }) {
           </NavItem>
           <NavItem to="/projects" end icon={<FolderKanban size={15} />}>
             Projects
+          </NavItem>
+          <NavItem to="/settings" icon={<Settings size={15} />}>
+            Workspace settings
           </NavItem>
         </nav>
 
@@ -263,6 +266,7 @@ function CommandPalette({ onClose, onCreate }: { onClose: () => void; onCreate: 
       { id: "my", label: "My tasks", icon: <CircleUser size={15} />, run: go("/my") },
       { id: "all", label: "All tasks", icon: <ListTodo size={15} />, run: go("/") },
       { id: "ws", label: "Team overview", icon: <Building2 size={15} />, run: go("/workspace") },
+      { id: "settings", label: "Workspace settings", icon: <Settings size={15} />, run: go("/settings") },
       { id: "team", label: "Members & agents", icon: <Users size={15} />, run: go("/team") },
       { id: "projects", label: "Projects", icon: <FolderKanban size={15} />, run: go("/projects") },
     ].filter((p) => match(p.label));
@@ -336,10 +340,13 @@ function afterSignIn() {
 }
 
 export function AuthCard({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) {
+  const brand = useMe().data?.brand;
   return (
     <div className="flex min-h-full items-center justify-center bg-panel px-4 py-10">
       <div className="w-full max-w-[380px]">
-        <div className="mb-6 flex h-9 w-9 items-center justify-center rounded-[10px] bg-ink text-[15px] font-semibold text-canvas">A</div>
+        <div className="mb-6">
+          <WorkspaceLogo name={brand?.name ?? "A"} logoUrl={brand?.logo_url} size={36} />
+        </div>
         <h1 className="text-[22px] font-semibold tracking-[-0.015em]">{title}</h1>
         <p className="mt-1.5 mb-7 text-[14px] leading-relaxed text-ink-2">{subtitle}</p>
         {children}
@@ -358,6 +365,7 @@ export function AuthField({ label, ...props }: { label: string } & React.InputHT
 }
 
 function Login({ google, setup }: { google: boolean; setup: boolean }) {
+  const brandName = useMe().data?.brand.name ?? "Agentic PM";
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -380,7 +388,7 @@ function Login({ google, setup }: { google: boolean; setup: boolean }) {
 
   return (
     <AuthCard
-      title={setup ? "Set up your workspace" : "Sign in to Agentic PM"}
+      title={setup ? "Set up your workspace" : `Sign in to ${brandName}`}
       subtitle={
         setup
           ? "Create the first account. You'll be the admin and can invite your team and connect agents."

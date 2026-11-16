@@ -86,7 +86,7 @@ export async function onAgentTrigger(
   return run;
 }
 
-export function buildPayload(publicUrl: string, run: RunRow, task: TaskRow, key: string) {
+export function buildPayload(publicUrl: string, run: RunRow, task: TaskRow, key: string, asAgent?: { handle: string; name: string }) {
   const event = run.trigger === "followup" ? "followup" : run.trigger;
   const why: Record<string, string> = {
     assigned: "This task was assigned to you.",
@@ -100,13 +100,17 @@ export function buildPayload(publicUrl: string, run: RunRow, task: TaskRow, key:
     run_id: run.id,
     task: { id: task.id, key, title: task.title, url: `${publicUrl.replace(/\/$/, "")}/t/${key}` },
     trigger_entry_id: run.trigger_entry_id,
+    ...(asAgent ? { as_agent: asAgent.handle } : {}),
     instruction:
+      (asAgent
+        ? `You are acting as the agent ${asAgent.name} (@${asAgent.handle}). Pass as_agent: "${asAgent.handle}" on EVERY Agentic PM tool call for this task. `
+        : "") +
       `${why[event]} You are working task ${key} in Agentic PM. Use the Agentic PM MCP tools: ` +
       `call get_task("${key}") first to read the task and its thread (new activity is listed under "unread"). ` +
       `Post progress with post_update as you work. If you need a decision or information from a human, ` +
       `use ask_question and stop: you will be woken again when they answer. ` +
       `When the work is finished, call complete_task with a short summary. ` +
-      `If you stop without finishing, call end_run with the reason.`,
+      `If you stop without finishing, call end_run with the reason (outcome "failed" or "blocked" if something went wrong).`,
   };
 }
 
@@ -151,7 +155,10 @@ export async function handleDispatch(env: AppEnv, msg: Message<DispatchMessage>)
   }
 
   const ws = await getWorkspace(env, task.workspace_id);
-  const payload = buildPayload(env.PUBLIC_URL, run, task, taskKey(ws, task));
+  const parent = agent.created_by
+    ? await env.DB.prepare("SELECT id FROM members WHERE id = ? AND kind = 'agent'").bind(agent.created_by).first()
+    : null;
+  const payload = buildPayload(env.PUBLIC_URL, run, task, taskKey(ws, task), parent ? { handle: agent.handle, name: agent.name } : undefined);
   const attempts = run.attempts + 1;
   let result: { ok: boolean; status: number; body: string };
   try {
@@ -229,6 +236,41 @@ export async function endRunsFor(env: AppEnv, taskId: string, agentId: string, r
     const agent = await getMember(env, agentId);
     const last = runs.results[0];
     if (task) await onAgentTrigger(env, { task, agent, trigger: "followup", triggeredBy: last.triggered_by });
+  }
+}
+
+/** The agent reports its run went wrong (failed or blocked): flag it for humans like a failed dispatch. */
+export async function failRunsFor(env: AppEnv, taskId: string, agentId: string, error: string) {
+  const runs = await env.DB.prepare(
+    `SELECT * FROM agent_runs WHERE task_id = ? AND agent_id = ? AND status IN ('queued','dispatched','active','stale')`,
+  )
+    .bind(taskId, agentId)
+    .all<RunRow>();
+  const task = await env.DB.prepare("SELECT * FROM tasks WHERE id = ?").bind(taskId).first<TaskRow>();
+  const agent = await getMember(env, agentId);
+  const now = nowIso();
+  let runId: string;
+  if (runs.results.length) {
+    runId = runs.results[0].id;
+    await env.DB.prepare(
+      `UPDATE agent_runs SET status = 'failed', last_error = ?, ended_at = ?, dismissed = 0
+       WHERE task_id = ? AND agent_id = ? AND status IN ('queued','dispatched','active','stale')`,
+    )
+      .bind(error.slice(0, 500), now, taskId, agentId)
+      .run();
+  } else {
+    // No open run (e.g. the agent picked the task up on its own): record one so the problem is visible.
+    runId = newId();
+    await env.DB.prepare(
+      `INSERT INTO agent_runs (id, task_id, agent_id, trigger, status, last_error, created_at, ended_at)
+       VALUES (?,?,?,?,?,?,?,?)`,
+    )
+      .bind(runId, taskId, agentId, "manual", "failed", error.slice(0, 500), now, now)
+      .run();
+  }
+  if (task) {
+    await addSystemEntry(env, task, agent, "run_failed", { run_id: runId, agent_name: agent.name, error, reported_by_agent: true });
+    await notify(env, task.workspace_id, { type: "task", task_id: taskId });
   }
 }
 

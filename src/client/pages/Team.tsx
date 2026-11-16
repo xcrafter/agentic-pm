@@ -62,6 +62,7 @@ export function TeamPage() {
   const [adding, setAdding] = useState(false);
   const [inviting, setInviting] = useState(false);
   const isAdmin = me.role === "admin";
+  const byId = new Map((members.data ?? []).map((x) => [x.id, x]));
   const rows = [...(members.data ?? [])].sort((a, b) => Number(b.active) - Number(a.active) || a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
   const cell = "h-11 border-r border-b border-line px-3 text-[13px] whitespace-nowrap";
   const head = (icon: ReactNode, label: string, w = "") => (
@@ -96,7 +97,7 @@ export function TeamPage() {
             <thead className="sticky top-0 z-10 bg-canvas">
               <tr>
                 {head(<UserRound size={13} />, "Name", "w-[30%]")}
-                {head(<Shield size={13} />, "Type", "w-[140px]")}
+                {head(<Shield size={13} />, "Type", "w-[170px]")}
                 {head(<AtSign size={13} />, "Handle", "w-[160px]")}
                 {head(<Mail size={13} />, "Email or wake-up", "w-[240px]")}
                 {head(<CalendarDays size={13} />, "Joined", "w-[110px]")}
@@ -113,7 +114,18 @@ export function TeamPage() {
                       {!m.active && <Tag>Deactivated</Tag>}
                     </span>
                   </td>
-                  <td className={cx(cell, "group-hover:bg-hover")}>{m.kind === "agent" ? <AgentBadge /> : <Tag tone={m.role === "admin" ? "blue" : "gray"}>{m.role === "admin" ? "Admin" : "Member"}</Tag>}</td>
+                  <td className={cx(cell, "group-hover:bg-hover")}>
+                    {m.kind === "agent" ? (
+                      <span className="flex items-center gap-1.5">
+                        <AgentBadge />
+                        {m.created_by && byId.get(m.created_by)?.kind === "agent" && (
+                          <span className="truncate text-[12px] text-ink-3">via @{byId.get(m.created_by)!.handle}</span>
+                        )}
+                      </span>
+                    ) : (
+                      <Tag tone={m.role === "admin" ? "blue" : "gray"}>{m.role === "admin" ? "Admin" : "Member"}</Tag>
+                    )}
+                  </td>
                   <td className={cx(cell, "text-ink-2 group-hover:bg-hover")}>@{m.handle}</td>
                   <td className={cx(cell, "max-w-[240px] truncate group-hover:bg-hover")}>
                     {m.kind === "human" ? (
@@ -310,7 +322,9 @@ export function MemberPage() {
   if (!q.data || !m) return <div className="p-8 text-[13px] text-[#c4312b]">{(q.error as Error)?.message ?? "Member not found"}</div>;
   const { stats } = q.data;
   const isAgent = m.kind === "agent";
-  const canManage = me.role === "admin" || (isAgent && m.created_by === me.id) || m.id === me.id;
+  const canManage = q.data.can_manage || me.role === "admin" || m.id === me.id;
+  const parent = isAgent && q.data.created_by?.kind === "agent" ? q.data.created_by : null;
+  const subAgents = q.data.sub_agents ?? [];
   const stat = (label: string, value: number, tone?: string) => (
     <div className="min-w-[120px] flex-1 border-r border-line px-4 py-3 last:border-r-0">
       <div className="text-[12px] text-ink-3">{label}</div>
@@ -407,15 +421,55 @@ export function MemberPage() {
                 <AttrRow icon={<Gauge size={14} />} label="Rate limit">
                   <span className="px-1.5 text-ink-2">{m.max_runs_per_hour} runs / hour</span>
                 </AttrRow>
-                <AttrRow icon={<UserRound size={14} />} label="Created by">
-                  <span className="px-1.5">{q.data.created_by ? <MemberChip member={q.data.created_by} /> : <span className="text-ink-3">—</span>}</span>
+                <AttrRow icon={<UserRound size={14} />} label={parent ? "Managed by" : "Created by"}>
+                  <span className="px-1.5">
+                    {q.data.created_by ? (
+                      <Link to={`/team/${q.data.created_by.handle}`} className="hover:underline">
+                        <MemberChip member={q.data.created_by} />
+                      </Link>
+                    ) : (
+                      <span className="text-ink-3">—</span>
+                    )}
+                  </span>
                 </AttrRow>
+                {parent && (
+                  <p className="mt-2 rounded-lg bg-agent-soft px-2.5 py-2 text-[12px] leading-relaxed text-ink-2">
+                    A sub-agent run by <b className="font-medium text-ink">{parent.name}</b>. {parent.name} can assign it tasks and act as it. It can't wake other agents.
+                  </p>
+                )}
               </>
             )}
             <AttrRow icon={<CalendarDays size={14} />} label="Joined">
               <span className="px-1.5 text-ink-2">{new Date(m.created_at).toLocaleDateString(undefined, { dateStyle: "medium" })}</span>
             </AttrRow>
           </div>
+          {isAgent && !parent && (
+            <div className="border-t border-line px-4 py-4">
+              <SectionTitle>Sub-agents</SectionTitle>
+              {subAgents.length ? (
+                <ul className="-mx-1.5 space-y-0.5">
+                  {subAgents.map((a) => (
+                    <li key={a.id}>
+                      <Link to={`/team/${a.handle}`} className={cx("flex items-center gap-2 rounded-md px-1.5 py-1.5 hover:bg-hover", !a.active && "opacity-50")}>
+                        <Avatar member={a} size={20} />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[13px] font-medium">{a.name}</span>
+                          {a.description && <span className="block truncate text-[12px] text-ink-3">{a.description}</span>}
+                        </span>
+                        {!a.has_webhook && <Tag tone="amber">No webhook</Tag>}
+                        {!a.active && <Tag>Off</Tag>}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-[12px] leading-relaxed text-ink-3">
+                  None yet. When connected over MCP, {m.name} can add the other agents it runs with the <code className="text-ink-2">register_agent</code> tool. Each gets its own profile
+                  and webhook, and {m.name} can assign them tasks.
+                </p>
+              )}
+            </div>
+          )}
           {canManage && (
             <div className="border-t border-line px-4 py-4">
               <SectionTitle>Connected assistants</SectionTitle>
@@ -444,8 +498,8 @@ function RunsTable({ runs }: { runs: MemberRecord["runs"] }) {
         A run starts each time this agent is woken: when it's assigned a task, gets an answer, or is @mentioned.
       </EmptyState>
     );
-  const tone = { queued: "gray", dispatched: "violet", active: "violet", ended: "gray", failed: "red", stale: "amber" } as const;
-  const label = { queued: "Queued", dispatched: "Starting", active: "Working", ended: "Finished", failed: "Unreachable", stale: "Gone quiet" };
+  const tone = { queued: "gray", dispatched: "violet", active: "violet", ended: "gray", failed: "red", stale: "red" } as const;
+  const label = { queued: "Queued", dispatched: "Starting", active: "Working", ended: "Finished", failed: "Failed", stale: "Gone quiet" };
   const cell = "h-10 border-r border-b border-line px-3 text-[13px] whitespace-nowrap";
   return (
     <div className="overflow-x-auto">

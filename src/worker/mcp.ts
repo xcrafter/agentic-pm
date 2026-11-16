@@ -32,7 +32,8 @@ import {
   writeNote,
   MAX_ATTACHMENT_BYTES,
 } from "./domain";
-import { endRunsFor, touchRun } from "./orchestrator";
+import { endRunsFor, failRunsFor, touchRun } from "./orchestrator";
+import { agentSummary, applyAgentProfile, canOrchestrate, getSubAgent, listSubAgents, registerSubAgent } from "./agents";
 import type { McpProps } from "./authorize";
 import { type AppEnv, HttpError, encryptSecret, signValue } from "./util";
 
@@ -52,18 +53,36 @@ async function guard(fn: () => Promise<unknown>): Promise<ToolResult> {
   }
 }
 
-function buildServer(env: AppEnv, props: McpProps, me: MemberRow) {
+const AS_AGENT_HELP =
+  "Optional. Handle of one of your registered agents (see list_my_agents) to act as for this call. " +
+  "When a webhook wakes one of your agents, its payload includes as_agent: pass that value on every call for that task.";
+
+function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: boolean, connectedAs: MemberRow) {
   const actor: Actor = { member: me, via: "mcp" };
   const ws = () => getWorkspace(env, props.workspaceId);
+  const acting = connectedAs.id !== me.id;
   const server = new McpServer(
     { name: "agentic-pm", version: "1.0.0" },
     {
       instructions:
-        `Agentic PM is the team's task tracker and system of record. You are connected as ${me.name} (@${me.handle}, ${me.kind}). ` +
+        `Agentic PM is the team's task tracker and system of record. You are connected as ${connectedAs.name} (@${connectedAs.handle}, ${connectedAs.kind}). ` +
         `Tasks are referenced by key, e.g. IMP-42. Typical loop: get_task → work → post_update as you go → ` +
-        `ask_question if you need a human (then stop; you'll be woken when they answer) → complete_task with a summary.`,
+        `ask_question if you need a human (then stop; you'll be woken when they answer) → complete_task with a summary. ` +
+        `If something goes wrong and you can't continue, call end_run with outcome "failed" (or "blocked") and the reason, so humans see it.` +
+        (orchestrate || acting
+          ? ` You are an orchestrator: register the other agents you run with register_agent (each gets its own webhook), ` +
+            `assign tasks to them or @mention them to wake them, and act as one of them by passing as_agent on any tool call.`
+          : ""),
     },
   );
+
+  // Orchestrators may act as one of their sub-agents on any call: add `as_agent` to every tool's input.
+  // (The identity switch itself happens in mcpHandler before this server is built.)
+  if (orchestrate || acting) {
+    const register = server.registerTool.bind(server) as (...args: any[]) => unknown;
+    (server as any).registerTool = (name: string, config: any, cb: any) =>
+      register(name, { ...config, inputSchema: { ...(config.inputSchema ?? {}), as_agent: z.string().optional().describe(AS_AGENT_HELP) } }, cb);
+  }
 
   const memberNames = async () => {
     const rows = await env.DB.prepare("SELECT id, name, handle, kind FROM members WHERE workspace_id = ?")
@@ -428,16 +447,26 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow) {
   server.registerTool(
     "end_run",
     {
-      description: "End your current run on a task without completing it (e.g. blocked, handed back). Posts the reason.",
-      inputSchema: { task: z.string(), reason: z.string() },
+      description:
+        "End your current run on a task without completing it. Posts the reason. Use outcome \"failed\" when something went wrong " +
+        "(error, missing access, a tool broke) or \"blocked\" when you can't proceed: both flag the task in red for humans. " +
+        "Use \"handed_back\" (default) for a normal stop.",
+      inputSchema: {
+        task: z.string(),
+        reason: z.string(),
+        outcome: z.enum(["handed_back", "blocked", "failed"]).optional(),
+      },
     },
-    ({ task, reason }) =>
+    ({ task, reason, outcome }) =>
       guard(async () => {
         const w = await ws();
         const t = await getTaskByRef(env, w.id, task);
         await postEntry(env, w, actor, t, { type: "update", body: reason });
-        if (me.kind === "agent") await endRunsFor(env, t.id, me.id, "ended_by_agent");
-        return { ended: true };
+        if (me.kind === "agent") {
+          if (outcome === "failed" || outcome === "blocked") await failRunsFor(env, t.id, me.id, `${outcome === "failed" ? "Failed" : "Blocked"}: ${reason}`);
+          else await endRunsFor(env, t.id, me.id, "ended_by_agent");
+        }
+        return { ended: true, flagged: outcome === "failed" || outcome === "blocked" };
       }),
   );
 
@@ -459,27 +488,58 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow) {
       },
       (input) =>
         guard(async () => {
-          const sets: string[] = [];
-          const binds: unknown[] = [];
-          const set = (col: string, v: unknown) => (sets.push(`${col} = ?`), binds.push(v));
-          if (input.name) set("name", input.name.trim());
-          if (input.description !== undefined) set("description", input.description);
-          if (input.webhook_url !== undefined) {
-            if (input.webhook_url && !/^https?:\/\//.test(input.webhook_url)) throw new HttpError(400, "Webhook URL must be http(s)");
-            set("webhook_url", input.webhook_url || null);
-          }
-          if (input.webhook_key) set("webhook_key_encrypted", await encryptSecret(env, input.webhook_key));
-          if (input.wake_on_mention !== undefined) set("wake_on_mention", input.wake_on_mention ? 1 : 0);
-          if (sets.length) {
-            await env.DB.prepare(`UPDATE members SET ${sets.join(", ")} WHERE id = ?`).bind(...binds, me.id).run();
-            await logActivity(env, props.workspaceId, actor, "member", me.id, "updated", undefined, {
-              ...input,
-              webhook_key: input.webhook_key ? "***" : undefined,
-            });
-            await notify(env, props.workspaceId, { type: "members" });
-          }
-          const fresh = publicMember((await env.DB.prepare("SELECT * FROM members WHERE id = ?").bind(me.id).first<MemberRow>())!);
-          return { name: fresh.name, handle: fresh.handle, description: fresh.description, webhook_set: fresh.has_webhook, wake_on_mention: fresh.wake_on_mention };
+          const fresh = await applyAgentProfile(env, actor, me, input);
+          return agentSummary(fresh);
+        }),
+    );
+  }
+
+  if (orchestrate && !acting) {
+    const profileFields = {
+      description: z.string().max(500).optional().describe("What this agent is good at; shown to humans picking an assignee"),
+      webhook_url: z.string().optional().describe("https URL that wakes this agent (e.g. its Grok Bot routine webhook)"),
+      webhook_key: z.string().min(8).optional().describe("Sent as Authorization: Bearer <key>"),
+      wake_on_mention: z.boolean().optional(),
+    };
+    server.registerTool(
+      "register_agent",
+      {
+        description:
+          "Add one of the agents you run (e.g. another Grok Bot agent or routine) as a member of this workspace, managed by you. " +
+          "Humans can then assign it tasks; you can assign it tasks or @mention it to wake it, and act as it with as_agent. " +
+          "Give it its own webhook so the platform can wake it directly.",
+        inputSchema: {
+          name: z.string().min(1).max(60),
+          handle: z.string().max(40).optional().describe("Preferred @handle; made unique if taken"),
+          ...profileFields,
+        },
+      },
+      (input) =>
+        guard(async () => {
+          const agent = await registerSubAgent(env, me, input);
+          return agentSummary(agent);
+        }),
+    );
+    server.registerTool(
+      "list_my_agents",
+      { description: "List the agents you've registered (your sub-agents).", annotations: { readOnlyHint: true } },
+      () => guard(async () => (await listSubAgents(env, me.id)).map(agentSummary)),
+    );
+    server.registerTool(
+      "update_agent",
+      {
+        description: "Change one of your registered agents: name, description, webhook, wake on mention, or deactivate it (active: false).",
+        inputSchema: {
+          agent: z.string().describe("Handle of one of your agents"),
+          name: z.string().min(1).max(60).optional(),
+          active: z.boolean().optional(),
+          ...profileFields,
+        },
+      },
+      ({ agent, ...input }) =>
+        guard(async () => {
+          const target = await getSubAgent(env, me, agent);
+          return agentSummary(await applyAgentProfile(env, actor, target, input));
         }),
     );
   }
@@ -520,9 +580,46 @@ export const mcpHandler = {
       // Stateless server: no standalone SSE stream.
       return new Response("Method not allowed", { status: 405, headers: { Allow: "POST" } });
     }
-    const server = buildServer(env, props, me);
+    // An orchestrator agent can act as one of its sub-agents: `as_agent` on a tools/call.
+    let actingAs = me;
+    let forward: Request = request;
+    if (me.kind === "agent" && request.method === "POST") {
+      const text = await request.text();
+      forward = new Request(request, { body: text });
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = null;
+      }
+      const msgs = (Array.isArray(parsed) ? parsed : [parsed]) as { method?: string; params?: { arguments?: Record<string, unknown> } }[];
+      const refs = new Set(
+        msgs
+          .filter((m) => m?.method === "tools/call" && typeof m.params?.arguments?.as_agent === "string" && m.params.arguments.as_agent)
+          .map((m) => String(m.params!.arguments!.as_agent).replace(/^@/, "").toLowerCase()),
+      );
+      refs.delete(me.handle);
+      if (refs.size > 1) return Response.json({ jsonrpc: "2.0", id: null, error: { code: -32602, message: "One as_agent per request" } }, { status: 400 });
+      if (refs.size === 1) {
+        const ref = [...refs][0];
+        try {
+          actingAs = await getSubAgent(env, me, ref);
+        } catch (err) {
+          return Response.json(
+            { jsonrpc: "2.0", id: (msgs[0] as any)?.id ?? null, result: { content: [{ type: "text", text: `Error: ${(err as Error).message}` }], isError: true } },
+          );
+        }
+        if (!actingAs.active) {
+          return Response.json(
+            { jsonrpc: "2.0", id: (msgs[0] as any)?.id ?? null, result: { content: [{ type: "text", text: `Error: @${actingAs.handle} is deactivated` }], isError: true } },
+          );
+        }
+      }
+    }
+    const orchestrate = await canOrchestrate(env, me);
+    const server = buildServer(env, props, actingAs, orchestrate, me);
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     await server.connect(transport);
-    return transport.handleRequest(request);
+    return transport.handleRequest(forward);
   },
 };

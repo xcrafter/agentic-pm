@@ -46,6 +46,8 @@ export function useRealtime(enabled: boolean) {
           if (msg.task_id) qc.invalidateQueries({ queryKey: ["task"] });
           if (msg.type === "members") qc.invalidateQueries({ queryKey: ["members"] });
           if (msg.type === "projects") qc.invalidateQueries({ queryKey: ["projects"] });
+          if (msg.type === "workspace") qc.invalidateQueries({ queryKey: ["me"] });
+          if (msg.type === "members") qc.invalidateQueries({ queryKey: ["member-record"] });
         } catch {
           /* ignore */
         }
@@ -106,6 +108,26 @@ export function Avatar({ member, size = 20 }: { member: MemberRef | Member | nul
           {isAgent ? <Bot size={size * 0.62} strokeWidth={2} /> : member.name.slice(0, 1).toUpperCase()}
         </span>
       )}
+    </span>
+  );
+}
+
+/** Workspace logo, or its first letter when there's no logo. */
+export function WorkspaceLogo({ name, logoUrl, size = 24 }: { name: string; logoUrl: string | null | undefined; size?: number }) {
+  const [broken, setBroken] = useState(false);
+  const radius = size > 28 ? "rounded-[10px]" : "rounded-md";
+  if (logoUrl && !broken)
+    return (
+      <span className={cx("inline-flex shrink-0 items-center justify-center overflow-hidden border border-line bg-canvas", radius)} style={{ width: size, height: size }}>
+        <img src={logoUrl} alt="" className="h-full w-full object-contain" onError={() => setBroken(true)} />
+      </span>
+    );
+  return (
+    <span
+      className={cx("inline-flex shrink-0 items-center justify-center bg-ink font-semibold text-canvas", radius)}
+      style={{ width: size, height: size, fontSize: size * 0.48 }}
+    >
+      {name.slice(0, 1).toUpperCase()}
     </span>
   );
 }

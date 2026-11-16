@@ -5,6 +5,7 @@
  */
 import { type AppEnv, HttpError, badRequest, forbidden, newId, notFound, nowIso, parseJson } from "./util";
 import { onAgentTrigger, touchRun, endRunsFor } from "./orchestrator";
+import { canWake } from "./agents";
 
 // ---------- Types ----------
 
@@ -36,6 +37,10 @@ export interface WorkspaceRow {
   key_prefix: string;
   next_task_number: number;
   created_at: string;
+  website: string | null;
+  logo_key: string | null;
+  logo_updated_at: string | null;
+  allowed_domains: string | null;
 }
 
 export const TASK_STATUSES = ["backlog", "todo", "in_progress", "waiting_on_human", "done", "canceled"] as const;
@@ -117,6 +122,10 @@ export async function ensureWorkspace(env: AppEnv): Promise<WorkspaceRow> {
     key_prefix: (env.WORKSPACE_KEY || "TASK").toUpperCase(),
     next_task_number: 1,
     created_at: nowIso(),
+    website: null,
+    logo_key: null,
+    logo_updated_at: null,
+    allowed_domains: null,
   };
   await env.DB.prepare("INSERT INTO workspaces (id, name, key_prefix, next_task_number, created_at) VALUES (?,?,?,?,?)")
     .bind(row.id, row.name, row.key_prefix, 1, row.created_at)
@@ -377,7 +386,7 @@ export async function createTask(env: AppEnv, ws: WorkspaceRow, actor: Actor, in
   if (task.assignee_id) {
     const assignee = await getMember(env, task.assignee_id);
     await addSystemEntry(env, task, actor.member, "assigned", { to: assignee.id, to_name: assignee.name });
-    if (assignee.kind === "agent" && actor.member.kind === "human") {
+    if (canWake(actor, assignee)) {
       await onAgentTrigger(env, { task, agent: assignee, trigger: "assigned", triggeredBy: actor.member.id });
     }
   }
@@ -489,7 +498,7 @@ export async function updateTask(
     }
   }
 
-  // Wake a newly assigned agent (only humans can wake agents: loop guard).
+  // Wake a newly assigned agent (humans wake any agent; an orchestrator only its own sub-agents: loop guard).
   const assigneeChange = changes.find((c) => c.field === "assignee");
   if (assigneeChange) {
     if (assigneeChange.from) {
@@ -498,7 +507,7 @@ export async function updateTask(
     }
     if (assigneeChange.to) {
       const agent = await getMember(env, assigneeChange.to as string);
-      if (agent.kind === "agent" && actor.member.kind === "human") {
+      if (canWake(actor, agent)) {
         await onAgentTrigger(env, { task: next, agent, trigger: "assigned", triggeredBy: actor.member.id });
       }
     }
@@ -639,11 +648,12 @@ export async function postEntry(
   if (actor.member.kind === "agent") {
     await touchRun(env, task.id, actor.member.id);
     if (type === "question") await endRunsFor(env, task.id, actor.member.id, "asked_question");
-  } else {
-    // Human-originated triggers only (loop guard).
+  }
+  // Wake-ups: humans can wake any agent; an orchestrator agent only its own sub-agents (loop guard).
+  {
     if (type === "answer" && replyTo) {
       const asker = await getMember(env, replyTo.author_id);
-      if (asker.kind === "agent" && asker.active) {
+      if (asker.active && canWake(actor, asker)) {
         await onAgentTrigger(env, {
           task,
           agent: asker,
@@ -662,6 +672,7 @@ export async function postEntry(
         .bind(ws.id, ...handles)
         .all<MemberRow>();
       for (const agent of mentioned.results) {
+        if (!canWake(actor, agent)) continue;
         await onAgentTrigger(env, {
           task,
           agent,
@@ -949,11 +960,15 @@ export async function getInbox(env: AppEnv, ws: WorkspaceRow, me: MemberRow) {
   const runs = await env.DB.prepare(
     `SELECT r.*, t.number, t.title AS task_title, m.name AS agent_name FROM agent_runs r
      JOIN tasks t ON t.id = r.task_id JOIN members m ON m.id = r.agent_id
+     LEFT JOIN members tb ON tb.id = r.triggered_by
      WHERE t.workspace_id = ? AND r.status IN ('failed','stale') AND r.dismissed = 0
-     AND (r.triggered_by = ? OR (r.triggered_by IS NULL AND ? = 'admin'))
+     AND (r.triggered_by = ?
+          OR (? = 'admin' AND (r.triggered_by IS NULL OR tb.kind = 'agent'))
+          OR (tb.kind = 'agent' AND tb.created_by = ?)
+          OR m.created_by = ?)
      ORDER BY r.created_at DESC LIMIT 100`,
   )
-    .bind(ws.id, me.id, me.role)
+    .bind(ws.id, me.id, me.role, me.id, me.id)
     .all<{ number: number }>();
 
   const mentions = await env.DB.prepare(

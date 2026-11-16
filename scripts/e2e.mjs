@@ -406,6 +406,95 @@ try {
   assert.equal(bad.status, 403);
   pass("signed URL works; tampered URL is rejected");
 
+  // ---------- workspace settings ----------
+  step("Workspace settings: only admins change them; allowed domains are enforced");
+  await assert.rejects(bob2("PATCH", "/api/workspace", { name: "Hijacked" }), /403/);
+  await assert.rejects(alice("PATCH", "/api/workspace", { allowed_domains: ["example.org"] }), /block your own address/);
+  let wsInfo = await alice("PATCH", "/api/workspace", { name: "Impulze", allowed_domains: ["impulze.ai", "partner.io"] });
+  assert.deepEqual(wsInfo.allowed_domains, ["impulze.ai", "partner.io"]);
+  assert.equal(wsInfo.allowed_domains_source, "workspace");
+  const partnerInvite = await alice("POST", "/api/invites", { email: `dana-${runId}@partner.io`, name: "Dana" });
+  assert.ok(partnerInvite.url);
+  await assert.rejects(alice("POST", "/api/invites", { email: `eve-${runId}@other.com` }), /403/);
+  pass("non-admin blocked; admin can't lock themselves out; new domain accepted, others rejected");
+
+  step("Workspace logo upload is served publicly (sign-in page)");
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAKElEQVR42mNkYPj/n4EIwDiqgWE0DBhGw4BhNAwYRsOAYTQMGEbDAACJ0B/xMzq+6wAAAABJRU5ErkJggg==",
+    "base64",
+  );
+  const fd = new FormData();
+  fd.append("file", new Blob([png], { type: "image/png" }), "logo.png");
+  const up = await fetch(`${BASE}/api/workspace/logo`, { method: "POST", headers: { Cookie: cookieHeader(aliceJar) }, body: fd });
+  assert.equal(up.status, 200, await up.clone().text());
+  const logoRes = await fetch(`${BASE}/api/logo`);
+  assert.equal(logoRes.status, 200);
+  assert.equal(logoRes.headers.get("content-type"), "image/png");
+  const signedOut = await (await fetch(`${BASE}/api/me`)).json();
+  assert.ok(signedOut.brand.logo_url, "brand logo visible when signed out");
+  const notImage = new FormData();
+  notImage.append("file", new Blob(["<script>alert(1)</script>"], { type: "image/png" }), "x.png");
+  const badUp = await fetch(`${BASE}/api/workspace/logo`, { method: "POST", headers: { Cookie: cookieHeader(aliceJar) }, body: notImage });
+  assert.equal(badUp.status, 400);
+  wsInfo = await alice("PATCH", "/api/workspace", { allowed_domains: null });
+  assert.equal(wsInfo.allowed_domains_source, "default");
+  pass("PNG logo stored and served; non-images rejected; domains reset to default");
+
+  // ---------- orchestrator + sub-agents ----------
+  step("Orchestrator agent registers a sub-agent over MCP");
+  const toolList = (await mcp("tools/list", {})).tools;
+  assert.ok(toolList.some((t) => t.name === "register_agent"));
+  assert.ok(toolList.find((t) => t.name === "get_task").inputSchema.properties.as_agent, "as_agent on every tool");
+  const sub = await tool("register_agent", {
+    name: `Grok Researcher ${runId}`,
+    description: "Deep web research",
+    webhook_url: `http://localhost:${HOOK_PORT}/hook`,
+    webhook_key: HOOK_KEY,
+  });
+  assert.equal(sub.webhook_set, true);
+  assert.ok((await tool("list_my_agents")).some((a) => a.handle === sub.handle));
+  const orchRecord = await alice("GET", `/api/members/${agent.handle}/record`);
+  assert.ok(orchRecord.sub_agents.some((a) => a.handle === sub.handle));
+  const subRecord = await alice("GET", `/api/members/${sub.handle}/record`);
+  assert.equal(subRecord.created_by.id, agent.id);
+  pass(`@${sub.handle} registered and managed by @${agent.handle}`);
+
+  step("Orchestrator assigns a task to its sub-agent → the sub-agent is woken with as_agent");
+  const subTask = await tool("create_task", { title: `Research for ${runId}`, assignee: sub.handle });
+  const subHook = await waitForHook((c) => c.body?.event === "assigned" && c.body.task.key === subTask.key);
+  assert.equal(subHook.body.as_agent, sub.handle);
+  assert.match(subHook.body.instruction, /as_agent/);
+  pass("webhook carries as_agent and tells the agent to pass it");
+
+  step("Orchestrator acts as the sub-agent");
+  await tool("get_task", { task: subTask.key, as_agent: sub.handle });
+  await tool("post_update", { task: subTask.key, body: "Starting research.", as_agent: sub.handle });
+  let subDetail = await alice("GET", `/api/tasks/${subTask.key}`);
+  assert.equal(subDetail.runs[0].status, "active");
+  assert.equal(subDetail.task.status, "in_progress");
+  const subMember = (await alice("GET", "/api/members")).find((m) => m.handle === sub.handle);
+  assert.ok(subDetail.entries.some((e) => e.type === "update" && e.author_id === subMember.id), "update authored by the sub-agent");
+  pass("update is authored by the sub-agent and its run is active");
+
+  step("Sub-agents can't register agents or wake anyone; strangers' agents are off-limits");
+  await assert.rejects(tool("register_agent", { name: "Nested", as_agent: sub.handle }));
+  await assert.rejects(tool("get_task", { task: subTask.key, as_agent: bobsAgent.handle }), /isn't one of your agents/);
+  const hooksBefore = hookCalls.length;
+  await tool("create_task", { title: "Sub tries to wake orchestrator", assignee: agent.handle, as_agent: sub.handle });
+  await new Promise((r) => setTimeout(r, 2500));
+  assert.equal(hookCalls.length, hooksBefore);
+  pass("nested registration refused, other owners' agents refused, no wake from a sub-agent");
+
+  step("Agent reports a failure → task flagged red (run failed) and in Needs you");
+  await tool("end_run", { task: subTask.key, reason: "The search API returned 401.", outcome: "failed", as_agent: sub.handle });
+  const listed = (await alice("GET", "/api/tasks")).find((t) => t.key === subTask.key);
+  assert.equal(listed.run_status, "failed");
+  subDetail = await alice("GET", `/api/tasks/${subTask.key}`);
+  assert.match(subDetail.runs[0].last_error, /Failed: The search API returned 401/);
+  const inbox3 = await alice("GET", "/api/inbox");
+  assert.ok(inbox3.runs.some((r) => r.task_key === subTask.key));
+  pass("run_status=failed on the task list; problem shows in Needs you");
+
   step("Unreachable agent → run fails and lands in Needs you");
   await alice("PATCH", `/api/members/${agent.id}`, { webhook_url: `http://localhost:${HOOK_PORT}/missing` });
   const t3 = await alice("POST", "/api/tasks", { title: "Will fail", assignee_id: agent.id });

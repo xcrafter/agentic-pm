@@ -37,11 +37,14 @@ async function createSession(env: AppEnv, memberId: string) {
   return token;
 }
 
-function allowedDomains(env: AppEnv) {
-  return (env.ALLOWED_EMAIL_DOMAINS || "")
-    .split(",")
-    .map((d) => d.trim().toLowerCase())
-    .filter(Boolean);
+export function parseDomains(raw: string | null | undefined) {
+  return [...new Set((raw || "").split(/[\s,]+/).map((d) => d.trim().toLowerCase().replace(/^@/, "")).filter(Boolean))];
+}
+
+/** Sign-in domains: the workspace setting when an admin has saved one, else ALLOWED_EMAIL_DOMAINS. */
+export async function allowedDomains(env: AppEnv) {
+  const ws = await ensureWorkspace(env);
+  return parseDomains(ws.allowed_domains ?? env.ALLOWED_EMAIL_DOMAINS);
 }
 
 async function uniqueHandle(env: AppEnv, workspaceId: string, base: string) {
@@ -60,7 +63,7 @@ export async function loginHuman(
   profile: { email: string; name: string; avatarUrl?: string | null; googleSub?: string | null },
 ): Promise<MemberRow> {
   const email = profile.email.trim().toLowerCase();
-  const domains = allowedDomains(env);
+  const domains = await allowedDomains(env);
   const domain = email.split("@")[1] ?? "";
   if (domains.length && !domains.includes(domain)) {
     throw new HttpError(403, `Sign-in is limited to: ${domains.join(", ")}`);
@@ -112,7 +115,7 @@ authRoutes.get("/auth/google", async (c) => {
     state,
     prompt: "select_account",
   });
-  const hd = allowedDomains(c.env);
+  const hd = await allowedDomains(c.env);
   if (hd.length === 1) params.set("hd", hd[0]);
   return c.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
 });
@@ -201,10 +204,10 @@ function checkPassword(password: unknown): string {
   return password;
 }
 
-function checkEmail(env: AppEnv, raw: unknown): string {
+async function checkEmail(env: AppEnv, raw: unknown): Promise<string> {
   const email = String(raw ?? "").trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new HttpError(400, "Enter a valid email address");
-  const domains = allowedDomains(env);
+  const domains = await allowedDomains(env);
   if (domains.length && !domains.includes(email.split("@")[1])) {
     throw new HttpError(403, `Only ${domains.map((d) => "@" + d).join(", ")} addresses can join`);
   }
@@ -257,7 +260,7 @@ authRoutes.post("/auth/setup", async (c) => {
   const body = await jsonBody<{ name?: string; email?: string; password?: string }>(c);
   const ws = await ensureWorkspace(c.env);
   if ((await humanCount(c.env, ws.id)) > 0) throw new HttpError(403, "This workspace is already set up. Ask an admin for an invite.");
-  const email = checkEmail(c.env, body.email);
+  const email = await checkEmail(c.env, body.email);
   const member = await insertHuman(c.env, ws.id, {
     email,
     name: String(body.name ?? "").trim(),
@@ -310,7 +313,7 @@ export async function createInvite(
   by: MemberRow,
   p: { email: string; name?: string | null; role?: "admin" | "member"; memberId?: string | null },
 ) {
-  const email = p.memberId ? p.email : checkEmail(env, p.email);
+  const email = p.memberId ? p.email : await checkEmail(env, p.email);
   if (!p.memberId) {
     const exists = await env.DB.prepare("SELECT 1 FROM members WHERE workspace_id = ? AND email = ?").bind(by.workspace_id, email).first();
     if (exists) throw new HttpError(409, "That person is already a member. Use “Reset password” instead.");

@@ -15,6 +15,7 @@ import {
   UserRound,
   X,
   Zap,
+  TriangleAlert,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
@@ -86,10 +87,20 @@ export function TaskPage() {
     },
   });
 
+  const problemAction = useMutation({
+    mutationFn: ({ id, action }: { id: string; action: "retry" | "dismiss" }) => api.post(`/api/runs/${id}/${action}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["task", taskKey] });
+      qc.invalidateQueries({ queryKey: ["tasks"] });
+      qc.invalidateQueries({ queryKey: ["inbox"] });
+    },
+  });
+
   if (q.isLoading) return <div className="p-8 text-[13px] text-ink-3">Loading…</div>;
   if (q.error || !q.data) return <div className="p-8 text-[13px] text-[#c4312b]">{(q.error as Error)?.message ?? "Task not found"}</div>;
   const { task, entries, notes, checklists, attachments, runs } = q.data;
   const openQuestions = entries.filter((e) => e.type === "question" && e.data.state === "open");
+  const problems = runs.filter((r) => (r.status === "failed" || r.status === "stale") && !r.dismissed);
   const conversation = entries.filter((e) => e.type !== "system").length;
   const answer = (e: Entry) => {
     setReplyTo(e);
@@ -124,6 +135,34 @@ export function TaskPage() {
                 </div>
               </div>
             </div>
+            {problems.map((r) => (
+              <div
+                key={r.id}
+                role="alert"
+                className="mt-5 flex flex-wrap items-center gap-3 rounded-[10px] border border-danger-line bg-danger-soft px-3.5 py-2.5 shadow-[inset_3px_0_0_var(--c-danger)]"
+              >
+                <TriangleAlert size={16} className="shrink-0 text-danger" />
+                <div className="min-w-0 flex-1 text-[13px]">
+                  <div className="font-medium text-danger">
+                    {byId.get(r.agent_id)?.name ?? "The agent"}{" "}
+                    {r.status === "stale" ? "has gone quiet on this task" : r.last_error?.match(/^(Failed|Blocked):/) ? "reported a problem" : "couldn't be reached"}
+                  </div>
+                  {(r.last_error || r.status === "stale") && (
+                    <div className="mt-0.5 line-clamp-2 text-ink-2" title={r.last_error ?? undefined}>
+                      {r.status === "stale" ? "No activity since it was woken. It may have crashed or lost access." : r.last_error}
+                    </div>
+                  )}
+                </div>
+                <div className="flex gap-1.5">
+                  <Button size="sm" onClick={() => problemAction.mutate({ id: r.id, action: "retry" })} disabled={problemAction.isPending}>
+                    Wake again
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => problemAction.mutate({ id: r.id, action: "dismiss" })} disabled={problemAction.isPending}>
+                    Dismiss
+                  </Button>
+                </div>
+              </div>
+            ))}
             {openQuestions.length > 0 && (
               <div className="mt-5 flex flex-wrap items-center gap-3 rounded-[10px] border border-[#f5c99a] bg-[#fef6ee] px-3.5 py-2.5 dark:border-[#e5791d]/40 dark:bg-[#e5791d]/10">
                 <MessageSquare size={16} className="text-[#e5791d]" />
@@ -396,8 +435,8 @@ function RunStatus({ status }: { status: Run["status"] }) {
     dispatched: ["Starting", "violet"],
     active: ["Working", "violet"],
     ended: ["Finished", "gray"],
-    failed: ["Unreachable", "red"],
-    stale: ["Gone quiet", "amber"],
+    failed: ["Failed", "red"],
+    stale: ["Gone quiet", "red"],
   };
   const [label, tone] = map[status];
   return (
@@ -421,7 +460,7 @@ const SYSTEM_TEXT: Record<string, (d: any, byId: Map<string, Member>) => string>
   due_date_changed: (d) => (d.to ? `set due date to ${d.to}` : "cleared the due date"),
   agent_woken: (d) => `was woken (${d.trigger})`,
   agent_not_configured: () => "couldn't be woken: no webhook configured",
-  run_failed: (d) => `couldn't be reached: ${d.error ?? "unknown error"}`,
+  run_failed: (d) => (d.reported_by_agent ? `reported a problem: ${d.error ?? ""}` : `couldn't be reached: ${d.error ?? "unknown error"}`),
   run_stale: (d) => `has gone quiet (${d.reason})`,
 };
 

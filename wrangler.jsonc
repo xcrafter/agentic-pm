@@ -2,6 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "agentic-pm",
   "main": "src/worker/index.ts",
+  "account_id": "d925fab4ad3655b38f23ae59b0a09ccc",
   "compatibility_date": "2026-11-01",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "observability": { "enabled": true },
@@ -11,15 +12,15 @@
     "run_worker_first": ["/api/*", "/auth/*", "/mcp", "/mcp/*", "/authorize", "/oauth/*", "/.well-known/*", "/ws", "/files/*"]
   },
   "vars": {
-    "PUBLIC_URL": "http://localhost:5173",
+    "PUBLIC_URL": "https://agentic-pm.impulze.workers.dev",
     "WORKSPACE_NAME": "Impulze",
     "WORKSPACE_KEY": "IMP",
     "ALLOWED_EMAIL_DOMAINS": "impulze.ai"
   },
   "d1_databases": [
-    { "binding": "DB", "database_name": "agentic-pm", "database_id": "local", "migrations_dir": "migrations" }
+    { "binding": "DB", "database_name": "agentic-pm", "database_id": "17bc5e5f-d88d-47d4-97ac-746b729a1380", "migrations_dir": "migrations" }
   ],
-  "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "local" }],
+  "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "51b42fc9ffae4da089b181647a5a93f9" }],
   "r2_buckets": [{ "binding": "FILES", "bucket_name": "agentic-pm-files" }],
   "queues": {
     "producers": [{ "binding": "DISPATCH_QUEUE", "queue": "agentic-pm-dispatch" }],

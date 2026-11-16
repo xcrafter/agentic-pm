@@ -21,6 +21,11 @@
   --c-agent: #7047eb;
   --c-agent-soft: #f2eefe;
   --c-focus: rgba(43, 111, 235, 0.28);
+  --c-danger: #d93a32;
+  --c-danger-soft: #fdf2f1;
+  --c-danger-line: #f3c9c5;
+  --c-warn: #e5791d;
+  --c-warn-soft: #fef6ee;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -41,6 +46,11 @@
     --c-agent: #a08bf5;
     --c-agent-soft: rgba(160, 139, 245, 0.14);
     --c-focus: rgba(77, 134, 240, 0.4);
+    --c-danger: #f0645c;
+    --c-danger-soft: rgba(240, 100, 92, 0.1);
+    --c-danger-line: rgba(240, 100, 92, 0.45);
+    --c-warn: #f09a4d;
+    --c-warn-soft: rgba(240, 154, 77, 0.1);
     color-scheme: dark;
   }
 }
@@ -62,6 +72,11 @@
   --color-accent-soft: var(--c-accent-soft);
   --color-agent: var(--c-agent);
   --color-agent-soft: var(--c-agent-soft);
+  --color-danger: var(--c-danger);
+  --color-danger-soft: var(--c-danger-soft);
+  --color-danger-line: var(--c-danger-line);
+  --color-warn: var(--c-warn);
+  --color-warn-soft: var(--c-warn-soft);
   --shadow-btn: 0 1px 2px rgba(16, 24, 40, 0.05);
   --shadow-pop: 0 0 0 1px rgba(16, 24, 40, 0.06), 0 10px 28px -8px rgba(16, 24, 40, 0.2);
   --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04);
