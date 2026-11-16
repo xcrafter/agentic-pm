@@ -130,7 +130,7 @@ export function IdeasPage() {
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="space-y-2 border-b border-line px-3 py-2 md:px-5">
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="scroll-row flex flex-wrap items-center gap-2">
               <div className="flex rounded-lg border border-line-strong bg-subtle p-0.5">
                 {(
                   [
@@ -193,11 +193,11 @@ export function IdeasPage() {
                   { value: "mrr", label: "Most MRR asking" },
                 ]}
               />
-              <span className="ml-auto text-[12px] text-ink-3 tabular-nums">
+              <span className="text-[12px] text-ink-3 tabular-nums md:ml-auto">
                 {list.length} {list.length === 1 ? "idea" : "ideas"}
               </span>
             </div>
-            <div className="flex flex-wrap items-center gap-1.5">
+            <div className="scroll-row flex flex-wrap items-center gap-1.5">
               {allLabels.map((l) => {
                 const on = labels.includes(l);
                 const n = labelCounts.get(l) ?? 0;

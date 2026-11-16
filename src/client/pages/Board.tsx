@@ -169,7 +169,7 @@ export function BoardPage({ mine }: { mine?: boolean }) {
       <TopBar
         crumbs={crumbs}
         actions={
-          <Button variant="primary" onClick={shell.createTask}>
+          <Button variant="primary" onClick={shell.createTask} className="hidden md:inline-flex">
             <Plus size={15} /> New task
           </Button>
         }
@@ -274,7 +274,7 @@ function Toolbar(p: {
 
   return (
     <div className="border-b border-line">
-      <div className="flex flex-wrap items-center gap-2 px-3 py-2 md:px-5">
+      <div className="scroll-row flex flex-wrap items-center gap-2 px-3 py-2 md:px-5">
         {/* Views */}
         <Popover
           label="Views"
@@ -493,7 +493,7 @@ function Toolbar(p: {
           </button>
         )}
 
-        <div className="ml-auto flex items-center gap-2">
+        <div className="flex items-center gap-2 md:ml-auto">
           <button
             type="button"
             role="switch"
@@ -654,7 +654,42 @@ export function TaskTable({ tasks, sort, onSort }: { tasks: Task[]; sort?: SortK
           Couldn't save: {(patch.error as Error).message}
         </div>
       )}
-      <table className="w-full min-w-[1100px] border-separate border-spacing-0">
+      {/* Phones: compact cards (tap to open). */}
+      <ul className="divide-y divide-line md:hidden">
+        {rows.map((t) => {
+          const health = taskHealth(t);
+          return (
+            <li key={t.id}>
+              <Link
+                to={`/t/${t.key}`}
+                className={cx(
+                  "block px-4 py-3 active:bg-hover",
+                  health === "problem" && "bg-danger-soft shadow-[inset_3px_0_0_var(--c-danger)]",
+                  health === "waiting" && "shadow-[inset_3px_0_0_var(--c-warn)]",
+                )}
+              >
+                <div className="flex items-start gap-2">
+                  <StatusIcon status={t.status} />
+                  <span className="min-w-0 flex-1 text-[15px] leading-snug font-medium">{t.title}</span>
+                </div>
+                <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 pl-6 text-[12px] text-ink-3">
+                  <span className="tabular-nums">{t.key}</span>
+                  {t.assignee && <MemberChip member={t.assignee} size={14} muted />}
+                  {t.priority !== "none" && (
+                    <span className="flex items-center gap-1">
+                      <PriorityIcon priority={t.priority} /> {PRIORITY_LABEL[t.priority]}
+                    </span>
+                  )}
+                  {t.due_date && <span className={cx(isOverdue(t) && "font-medium text-danger")}>Due {formatDate(t.due_date)}</span>}
+                  {t.project && <span className="truncate">{t.project.name}</span>}
+                  <RunBadge task={t} compact />
+                </div>
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+      <table className="hidden w-full min-w-[1100px] border-separate border-spacing-0 md:table">
         <thead className="sticky top-0 z-10 bg-canvas">
           <tr>
             {COLS.map((c, i) => (

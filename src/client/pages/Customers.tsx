@@ -272,11 +272,11 @@ export function CustomersPage() {
         crumbs={[{ label: "Customers", icon: <Users size={15} className="text-ink-3" /> }]}
         actions={
           <>
-            <Button onClick={() => setLogging(true)}>
-              <MessageSquareQuote size={14} /> Log request
+            <Button onClick={() => setLogging(true)} aria-label="Log request">
+              <MessageSquareQuote size={14} /> <span className="hidden sm:inline">Log request</span>
             </Button>
-            <Button variant="primary" onClick={() => setAdding(true)}>
-              <Plus size={15} /> Add customer
+            <Button variant="primary" onClick={() => setAdding(true)} aria-label="Add customer">
+              <Plus size={15} /> <span className="hidden sm:inline">Add customer</span>
             </Button>
           </>
         }

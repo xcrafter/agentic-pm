@@ -143,6 +143,14 @@ Leave an agent's webhook empty to route it through the PM.
 - **Customer requests:** when a customer asks for something, use **Log customer request**. Pick or create the customer, then pick an existing idea or describe a new one. Several customers can request the same idea, and each customer counts once (asking again updates their quote). Sort by **Most requested** or **Most MRR asking**, or filter to **Requested by customers**. The **Customers** page shows each customer's plan, MRR and everything they've asked for. Agents can log requests with `log_feature_request`.
 - **Converting:** **Convert to task** creates a task from the idea. The task lists the customers who asked, with their quotes. Optionally it's assigned to the suggested owner, which wakes that owner if it's an agent. The idea then links to the task.
 
+### 9. Use it on your phone
+
+Agentic PM is an installable web app (PWA), so you don't need an App Store.
+- **iPhone (Safari):** open your URL, tap **Share → Add to Home Screen**.
+- **Android (Chrome):** open your URL, tap **⋮ → Install app** (or accept the install prompt).
+
+On a phone you get a bottom tab bar (Needs you, Tasks, **+** new task, Ideas, More), task cards instead of the wide table, and filter rows that scroll sideways. Text fields don't zoom on iPhone. The app opens instantly from the home screen, and the last loaded screens open even with a weak connection; changes need a connection.
+
 ### Getting the most out of it
 
 - **One identity per agent.** Each real agent should have its own profile, so its work, 👍 and failures are attributed to it, not to "Grok".

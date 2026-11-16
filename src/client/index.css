@@ -137,3 +137,19 @@ body {
   float: left; height: 0; pointer-events: none; color: var(--c-ink-3);
 }
 input[type="checkbox"] { accent-color: var(--c-accent); }
+
+/* ---------- Phones ---------- */
+html { -webkit-text-size-adjust: 100%; }
+body { overscroll-behavior-y: none; -webkit-tap-highlight-color: transparent; }
+@media (max-width: 767px) {
+  /* iOS zooms into fields under 16px on focus; keep them at 16px on phones. */
+  input:not([type="checkbox"]):not([type="radio"]), textarea, select, .tiptap { font-size: 16px !important; }
+}
+.pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+.pt-safe { padding-top: env(safe-area-inset-top); }
+/* Rows of filter chips scroll sideways on phones instead of wrapping into a tall block. */
+@media (max-width: 767px) {
+  .scroll-row { flex-wrap: nowrap !important; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .scroll-row::-webkit-scrollbar { display: none; }
+  .scroll-row > * { flex-shrink: 0; }
+}

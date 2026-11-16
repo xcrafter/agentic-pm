@@ -16,6 +16,7 @@ import {
   BarChart3,
   Lightbulb,
   Building,
+  MoreHorizontal,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router";
@@ -88,12 +89,50 @@ export function Layout() {
           </div>
         </div>
       )}
-      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+      <main className="flex min-w-0 flex-1 flex-col overflow-hidden pb-[calc(56px+env(safe-area-inset-bottom))] md:pb-0">
         <Outlet context={shell} />
       </main>
+      <MobileTabs shell={shell} />
       <CreateTaskModal open={creating} onClose={() => setCreating(false)} defaultProjectId={projectMatch?.[1]} />
       {searching && <CommandPalette onClose={() => setSearching(false)} onCreate={() => (setSearching(false), setCreating(true))} />}
     </div>
+  );
+}
+
+/** Bottom tab bar on phones: the screens people open most, plus quick task creation. */
+function MobileTabs({ shell }: { shell: ShellContext }) {
+  const inbox = useQuery({ queryKey: ["inbox"], queryFn: () => api.get<Inbox>("/api/inbox") });
+  const count = (inbox.data?.questions.length ?? 0) + (inbox.data?.runs.length ?? 0) + (inbox.data?.mentions.length ?? 0);
+  const tab = (to: string, label: string, icon: ReactNode, end?: boolean, badge?: number) => (
+    <NavLink
+      to={to}
+      end={end}
+      className={({ isActive }) => cx("relative flex flex-1 flex-col items-center justify-center gap-0.5 text-[11px] font-medium", isActive ? "text-accent" : "text-ink-3")}
+    >
+      {icon}
+      {label}
+      {!!badge && (
+        <span className="absolute top-1 left-1/2 ml-2 min-w-4 rounded-full bg-[#e5791d] px-1 text-center text-[10px] leading-4 font-semibold text-white">{badge > 99 ? "99+" : badge}</span>
+      )}
+    </NavLink>
+  );
+  return (
+    <nav className="pb-safe fixed inset-x-0 bottom-0 z-30 border-t border-line bg-canvas/95 backdrop-blur md:hidden" aria-label="Main">
+      <div className="flex h-14 items-stretch">
+        {tab("/inbox", "Needs you", <InboxIcon size={20} />, false, count)}
+        {tab("/", "Tasks", <ListTodo size={20} />, true)}
+        <button onClick={shell.createTask} className="flex flex-1 items-center justify-center" aria-label="New task">
+          <span className="flex h-10 w-10 items-center justify-center rounded-full bg-accent text-white shadow-pop">
+            <Plus size={20} />
+          </span>
+        </button>
+        {tab("/ideas", "Ideas", <Lightbulb size={20} />)}
+        <button onClick={shell.openNav} className="flex flex-1 flex-col items-center justify-center gap-0.5 text-[11px] font-medium text-ink-3" aria-label="More">
+          <MoreHorizontal size={20} />
+          More
+        </button>
+      </div>
+    </nav>
   );
 }
 
