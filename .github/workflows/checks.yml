@@ -1,0 +1,60 @@
+# Checks on every push and pull request: typecheck, build, and the end-to-end test against a
+# throwaway local copy. Deploys are done by Cloudflare Workers Builds (connected to this repo),
+# which applies D1 migrations and deploys on every push to main.
+name: Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch cancels the older check.
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Typecheck, build and end-to-end test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+
+      - name: Local secrets for the test server (random, throwaway)
+        run: |
+          {
+            echo "SESSION_SECRET=$(openssl rand -hex 32)"
+            echo "WEBHOOK_KEY_ENCRYPTION_KEY=$(openssl rand -base64 32)"
+            echo "PUBLIC_URL=http://localhost:5173"
+          } > .dev.vars
+
+      - name: Fresh local database
+        run: npm run db:migrate:local
+
+      - name: Start the app locally
+        run: |
+          nohup npx vite --port 5173 --strictPort > vite.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf -o /dev/null http://localhost:5173/api/me; then echo "up after ${i}s"; exit 0; fi
+            sleep 1
+          done
+          echo "app did not start"; cat vite.log; exit 1
+
+      - name: End-to-end test (people, agents, MCP, webhooks)
+        run: npm run e2e
+
+      - name: Server log
+        if: failure()
+        run: tail -n 200 vite.log

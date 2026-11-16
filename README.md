@@ -56,21 +56,18 @@ Google sign-in is optional. To turn it on, set `GOOGLE_CLIENT_ID` and `GOOGLE_CL
 
 **Updating later:** pull, then run `npm run db:migrate:remote && npm run deploy`. Migrations only add things, and Cloudflare D1 keeps 30 days of point-in-time restore.
 
-### 1b. Turn on automatic deploys (GitHub Actions)
+### 1b. Turn on automatic deploys (Cloudflare Workers Builds)
 
-`.github/workflows/deploy.yml` runs on every push to `main`:
-1. **Check:** typecheck, build, then the full end-to-end test against a throwaway local copy.
-2. **Deploy**, only if the check passes: apply D1 migrations, deploy the Worker, and check the live site.
+Connect the repo once, and Cloudflare deploys every push to `main`. You don't need an API token.
 
-Pull requests run the check only. Runs are listed under the repo's **Actions** tab.
+1. Open the Cloudflare dashboard: **Workers & Pages → agentic-pm → Settings → Builds → Connect**. Authorize GitHub for this repo.
+2. Set **Branch** to `main` and **Build command** to `npm run build`.
+3. Set **Deploy command** to `npx wrangler d1 migrations apply DB --remote && npx wrangler deploy`.
+4. If the first build fails on the migration step with a permission error, add **D1 → Edit** to the build token on the same page.
 
-The deploy step needs one GitHub secret, `CLOUDFLARE_API_TOKEN`:
+Build logs are under the Worker's **Deployments** tab.
 
-1. In Cloudflare, go to **My Profile → API Tokens → Create Token**, start from the **Edit Cloudflare Workers** template, then add **Account → D1 → Edit** and **Account → Queues → Edit**. Limit it to your account.
-2. Save it in the repo without pasting it anywhere else: run `gh secret set CLOUDFLARE_API_TOKEN --repo <owner>/agentic-pm` and paste it at the prompt. Or use **Settings → Secrets and variables → Actions** on GitHub.
-3. Re-run the latest workflow, or push a commit.
-
-The account ID comes from `wrangler.jsonc`. Production secrets (`SESSION_SECRET`, etc.) stay in Cloudflare and are never needed in CI. If you deploy to a different address, update the URL at the bottom of the workflow file.
+GitHub Actions (`.github/workflows/checks.yml`) runs the checks on every push and pull request: typecheck, build, and the full end-to-end test against a throwaway local copy. Look at its result on the commit or PR. A failing check doesn't block Cloudflare's deploy, so fix it promptly or revert.
 
 ### 2. Create the admin account and invite your team
 
