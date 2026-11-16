@@ -41,6 +41,7 @@ import {
   timeAgo,
   useMe,
   useMembers,
+  wakeRoute,
 } from "../components";
 import { TaskTable } from "./Board";
 import { FeedList } from "./Feed";
@@ -63,6 +64,7 @@ export function TeamPage() {
   const [inviting, setInviting] = useState(false);
   const isAdmin = me.role === "admin";
   const byId = new Map((members.data ?? []).map((x) => [x.id, x]));
+  const pmId = useMe().data?.workspace?.pm_agent_id;
   const rows = [...(members.data ?? [])].sort((a, b) => Number(b.active) - Number(a.active) || a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
   const cell = "h-11 border-r border-b border-line px-3 text-[13px] whitespace-nowrap";
   const head = (icon: ReactNode, label: string, w = "") => (
@@ -118,6 +120,7 @@ export function TeamPage() {
                     {m.kind === "agent" ? (
                       <span className="flex items-center gap-1.5">
                         <AgentBadge />
+                        {m.id === pmId && <Tag tone="violet">PM</Tag>}
                         {m.created_by && byId.get(m.created_by)?.kind === "agent" && (
                           <span className="truncate text-[12px] text-ink-3">via @{byId.get(m.created_by)!.handle}</span>
                         )}
@@ -130,10 +133,8 @@ export function TeamPage() {
                   <td className={cx(cell, "max-w-[240px] truncate group-hover:bg-hover")}>
                     {m.kind === "human" ? (
                       <span className="text-ink-2">{m.email}</span>
-                    ) : m.has_webhook ? (
-                      <Tag tone="green">Webhook set</Tag>
                     ) : (
-                      <Tag tone="amber">No webhook yet</Tag>
+                      <WakeTag agent={m} />
                     )}
                   </td>
                   <td className={cx(cell, "text-ink-3 group-hover:bg-hover")}>{timeAgo(m.created_at)}</td>
@@ -413,7 +414,9 @@ export function MemberPage() {
             {isAgent && (
               <>
                 <AttrRow icon={<Webhook size={14} />} label="Wake-up">
-                  <span className="px-1.5">{m.has_webhook ? <Tag tone="green">Webhook set</Tag> : <Tag tone="amber">Not set up</Tag>}</span>
+                  <span className="px-1.5">
+                    <WakeTag agent={m} />
+                  </span>
                 </AttrRow>
                 <AttrRow icon={<AtSign size={14} />} label="On mention">
                   <span className="px-1.5 text-ink-2">{m.wake_on_mention ? "Wakes up" : "Stays asleep"}</span>
@@ -456,7 +459,7 @@ export function MemberPage() {
                           <span className="block truncate text-[13px] font-medium">{a.name}</span>
                           {a.description && <span className="block truncate text-[12px] text-ink-3">{a.description}</span>}
                         </span>
-                        {!a.has_webhook && <Tag tone="amber">No webhook</Tag>}
+                        {!a.has_webhook && <WakeTag agent={a} />}
                         {!a.active && <Tag>Off</Tag>}
                       </Link>
                     </li>
@@ -489,6 +492,18 @@ export function MemberPage() {
       )}
     </div>
   );
+}
+
+/** How this agent gets woken: own webhook (override), via the workspace PM, or not yet. */
+export function WakeTag({ agent }: { agent: Member }) {
+  const me = useMe().data;
+  const members = useMembers().data;
+  if (me?.workspace?.pm_agent_id === agent.id)
+    return <Tag tone={agent.has_webhook ? "violet" : "amber"}>{agent.has_webhook ? "PM · workspace webhook" : "PM · no webhook yet"}</Tag>;
+  const r = wakeRoute(agent, members, me);
+  if (r.kind === "own") return <Tag tone="green">Own webhook</Tag>;
+  if (r.kind === "pm") return <Tag tone="blue">Via PM @{r.pm!.handle}</Tag>;
+  return <Tag tone="amber">No webhook yet</Tag>;
 }
 
 function RunsTable({ runs }: { runs: MemberRecord["runs"] }) {
@@ -640,6 +655,9 @@ export function AgentModal({ agent, onClose }: { agent: Member | null; onClose: 
     mutationFn: () => api.post<{ ok: boolean; status: number; body: string }>(`/api/members/${agent!.id}/test-ping`),
     onSuccess: setPing,
   });
+  const meData = useMe().data;
+  const allMembers = useMembers().data;
+  const pmAgent = allMembers?.find((x) => x.id === meData?.workspace?.pm_agent_id) ?? null;
   const toggleActive = useMutation({
     mutationFn: () => api.patch(`/api/members/${agent!.id}`, { active: !agent!.active }),
     onSuccess: () => {
@@ -681,9 +699,16 @@ export function AgentModal({ agent, onClose }: { agent: Member | null; onClose: 
             <input className={inputClass} value={avatar} onChange={(e) => setAvatar(e.target.value)} />
           </Field>
           <div className="rounded-[10px] border border-line bg-panel p-4">
-            <div className="mb-3 flex items-center gap-2 text-[13px] font-semibold">
+            <div className="mb-1 flex items-center gap-2 text-[13px] font-semibold">
               <Webhook size={14} className="text-ink-3" /> Wake-up webhook
             </div>
+            <p className="mb-3 text-[12px] leading-relaxed text-ink-3">
+              {pmAgent && pmAgent.id !== agent?.id
+                ? `Optional. Leave it empty and wake-ups for this agent go to the workspace PM, @${pmAgent.handle}, which hands the work over. Set one to wake this agent directly instead.`
+                : pmAgent && pmAgent.id === agent?.id
+                  ? "This agent is the workspace PM: this webhook also wakes every agent that doesn't have its own."
+                  : "Where the platform sends a request to wake this agent. You can also set a workspace-wide one under Workspace settings → Agent dispatch."}
+            </p>
             <div className="space-y-3">
               <Field label="Webhook URL">
                 <input className={inputClass} value={webhookUrl} onChange={(e) => setWebhookUrl(e.target.value)} placeholder="https://…" />

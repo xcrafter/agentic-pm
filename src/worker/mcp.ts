@@ -33,7 +33,7 @@ import {
   MAX_ATTACHMENT_BYTES,
 } from "./domain";
 import { endRunsFor, failRunsFor, touchRun } from "./orchestrator";
-import { agentSummary, applyAgentProfile, canOrchestrate, getSubAgent, listSubAgents, registerSubAgent } from "./agents";
+import { agentSummary, applyAgentProfile, canOrchestrate, getActableAgent, getSubAgent, isWorkspacePm, listSubAgents, registerSubAgent } from "./agents";
 import type { McpProps } from "./authorize";
 import { type AppEnv, HttpError, encryptSecret, signValue } from "./util";
 
@@ -57,7 +57,7 @@ const AS_AGENT_HELP =
   "Optional. Handle of one of your registered agents (see list_my_agents) to act as for this call. " +
   "When a webhook wakes one of your agents, its payload includes as_agent: pass that value on every call for that task.";
 
-function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: boolean, connectedAs: MemberRow) {
+function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: boolean, connectedAs: MemberRow, isPm = false) {
   const actor: Actor = { member: me, via: "mcp" };
   const ws = () => getWorkspace(env, props.workspaceId);
   const acting = connectedAs.id !== me.id;
@@ -69,6 +69,11 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
         `Tasks are referenced by key, e.g. IMP-42. Typical loop: get_task → work → post_update as you go → ` +
         `ask_question if you need a human (then stop; you'll be woken when they answer) → complete_task with a summary. ` +
         `If something goes wrong and you can't continue, call end_run with outcome "failed" (or "blocked") and the reason, so humans see it.` +
+        (isPm
+          ? ` You are the workspace PM: you're woken for new unassigned tasks (assign each to the best agent; check list_members) ` +
+            `and for any agent without its own webhook (the payload's as_agent says which). You can act as any agent by passing as_agent, ` +
+            `and assigning a task to an agent wakes it.`
+          : "") +
         (orchestrate || acting
           ? ` You are an orchestrator: register the other agents you run with register_agent (each gets its own webhook), ` +
             `assign tasks to them or @mention them to wake them, and act as one of them by passing as_agent on any tool call.`
@@ -603,7 +608,7 @@ export const mcpHandler = {
       if (refs.size === 1) {
         const ref = [...refs][0];
         try {
-          actingAs = await getSubAgent(env, me, ref);
+          actingAs = await getActableAgent(env, me, ref);
         } catch (err) {
           return Response.json(
             { jsonrpc: "2.0", id: (msgs[0] as any)?.id ?? null, result: { content: [{ type: "text", text: `Error: ${(err as Error).message}` }], isError: true } },
@@ -616,8 +621,9 @@ export const mcpHandler = {
         }
       }
     }
-    const orchestrate = await canOrchestrate(env, me);
-    const server = buildServer(env, props, actingAs, orchestrate, me);
+    const isPm = await isWorkspacePm(env, me);
+    const orchestrate = isPm || (await canOrchestrate(env, me));
+    const server = buildServer(env, props, actingAs, orchestrate, me, isPm);
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     await server.connect(transport);
     return transport.handleRequest(forward);

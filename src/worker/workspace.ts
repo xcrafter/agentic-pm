@@ -2,7 +2,9 @@
  * Workspace settings: name, website, logo (found on the website or uploaded) and allowed sign-in domains.
  */
 import { Hono } from "hono";
-import { type MemberRow, type WorkspaceRow, ensureWorkspace, logActivity, notify } from "./domain";
+import { type MemberRow, type WorkspaceRow, ensureWorkspace, logActivity, notify, publicMember } from "./domain";
+import { applyAgentProfile } from "./agents";
+import { testPing } from "./orchestrator";
 import { parseDomains } from "./auth";
 import { type AppEnv, HttpError, badRequest, forbidden, nowIso } from "./util";
 
@@ -20,6 +22,8 @@ export function workspaceInfo(env: AppEnv, ws: WorkspaceRow) {
     logo_url: ws.logo_key ? `/api/logo?v=${encodeURIComponent(ws.logo_updated_at ?? "")}` : null,
     allowed_domains: parseDomains(custom ? ws.allowed_domains : env.ALLOWED_EMAIL_DOMAINS),
     allowed_domains_source: custom ? ("workspace" as const) : ("default" as const),
+    pm_agent_id: ws.pm_agent_id,
+    pm_triage: !!ws.pm_triage,
   };
 }
 
@@ -171,7 +175,13 @@ workspaceRoutes.patch("/api/workspace", async (c) => {
   const me = c.get("me");
   requireAdmin(me);
   let ws = c.get("ws");
-  const body = await c.req.json<{ name?: string; website?: string | null; allowed_domains?: string[] | string | null }>();
+  const body = await c.req.json<{
+    name?: string;
+    website?: string | null;
+    allowed_domains?: string[] | string | null;
+    pm_agent_id?: string | null;
+    pm_triage?: boolean;
+  }>();
   const sets: string[] = [];
   const binds: unknown[] = [];
   const before: Record<string, unknown> = {};
@@ -209,6 +219,16 @@ workspaceRoutes.patch("/api/workspace", async (c) => {
       set("allowed_domains", list.join(","));
     }
   }
+  if (body.pm_agent_id !== undefined) {
+    if (body.pm_agent_id) {
+      const pm = await c.env.DB.prepare("SELECT id FROM members WHERE id = ? AND workspace_id = ? AND kind = 'agent' AND active = 1")
+        .bind(body.pm_agent_id, ws.id)
+        .first();
+      if (!pm) throw badRequest("Choose an active agent as the PM");
+    }
+    set("pm_agent_id", body.pm_agent_id || null);
+  }
+  if (body.pm_triage !== undefined) set("pm_triage", body.pm_triage ? 1 : 0);
   if (sets.length) {
     await c.env.DB.prepare(`UPDATE workspaces SET ${sets.join(", ")} WHERE id = ?`).bind(...binds, ws.id).run();
     await logActivity(c.env, ws.id, { member: me, via: "web" }, "workspace", ws.id, "updated", before, after);
@@ -227,6 +247,35 @@ workspaceRoutes.patch("/api/workspace", async (c) => {
   }
   await notify(c.env, ws.id, { type: "workspace" });
   return c.json({ ...workspaceInfo(c.env, ws), logo });
+});
+
+/** The workspace-level webhook is the PM agent's webhook: read and set it here. */
+async function getPm(c: { env: AppEnv; get: (k: "ws") => WorkspaceRow }) {
+  const ws = c.get("ws");
+  if (!ws.pm_agent_id) throw badRequest("Choose a PM agent first");
+  const pm = await c.env.DB.prepare("SELECT * FROM members WHERE id = ?").bind(ws.pm_agent_id).first<MemberRow>();
+  if (!pm) throw badRequest("Choose a PM agent first");
+  return pm;
+}
+
+workspaceRoutes.patch("/api/workspace/pm-webhook", async (c) => {
+  const me = c.get("me");
+  requireAdmin(me);
+  const pm = await getPm(c);
+  const body = await c.req.json<{ webhook_url?: string; webhook_key?: string }>();
+  if (body.webhook_url && !/^https:\/\//.test(body.webhook_url) && !/^http:\/\/(localhost|127\.0\.0\.1)[:/]/.test(body.webhook_url)) {
+    throw badRequest("Webhook URL must start with https://");
+  }
+  const fresh = await applyAgentProfile(c.env, { member: me, via: "web" }, pm, {
+    webhook_url: body.webhook_url,
+    webhook_key: body.webhook_key || undefined,
+  });
+  return c.json(publicMember(fresh));
+});
+
+workspaceRoutes.post("/api/workspace/pm-webhook/test", async (c) => {
+  requireAdmin(c.get("me"));
+  return c.json(await testPing(c.env, await getPm(c)));
 });
 
 workspaceRoutes.post("/api/workspace/logo/fetch", async (c) => {

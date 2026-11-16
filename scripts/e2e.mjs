@@ -495,6 +495,67 @@ try {
   assert.ok(inbox3.runs.some((r) => r.task_key === subTask.key));
   pass("run_status=failed on the task list; problem shows in Needs you");
 
+  // ---------- workspace PM (dispatcher) ----------
+  step("Admin picks a PM agent and sets the workspace webhook (the PM's)");
+  const pmAgent = await alice("POST", "/api/members/agents", { name: `Grok PM ${runId}`, description: "Routes work to the right agent" });
+  const writer = await alice("POST", "/api/members/agents", { name: `Writer ${runId}`, description: "Writes outreach copy" });
+  await assert.rejects(bob2("PATCH", "/api/workspace", { pm_agent_id: pmAgent.id }), /403/);
+  wsInfo = await alice("PATCH", "/api/workspace", { pm_agent_id: pmAgent.id, pm_triage: true });
+  assert.equal(wsInfo.pm_agent_id, pmAgent.id);
+  await alice("PATCH", "/api/workspace/pm-webhook", { webhook_url: `http://localhost:${HOOK_PORT}/hook`, webhook_key: HOOK_KEY });
+  const pmPing = await alice("POST", "/api/workspace/pm-webhook/test");
+  assert.equal(pmPing.ok, true, JSON.stringify(pmPing));
+  const writerPing = await alice("POST", `/api/members/${writer.id}/test-ping`);
+  assert.equal(writerPing.ok, true, "an agent without a webhook is reachable through the PM");
+  pass(`@${pmAgent.handle} is PM; its webhook answers; @${writer.handle} (no webhook) pings through it`);
+
+  step("Assigning an agent with no webhook wakes the PM, told which agent it's for");
+  const writeTask = await alice("POST", "/api/tasks", { title: `Draft outreach ${runId}`, assignee_id: writer.id });
+  const routed = await waitForHook((c) => c.body?.event === "assigned" && c.body.task.key === writeTask.key);
+  assert.equal(routed.body.as_agent, writer.handle);
+  assert.equal(routed.body.routed_via, pmAgent.handle);
+  assert.equal(routed.body.agent.description, "Writes outreach copy");
+  pass("webhook went to the PM with as_agent + routed_via");
+
+  step("An agent with its own webhook overrides the PM");
+  const ownTask = await alice("POST", "/api/tasks", { title: `Own hook ${runId}`, assignee_id: agent.id });
+  const direct = await waitForHook((c) => c.body?.event === "assigned" && c.body.task.key === ownTask.key);
+  assert.equal(direct.body.routed_via, undefined);
+  assert.equal(direct.body.as_agent, undefined);
+  await tool("end_run", { task: ownTask.key, reason: "test" });
+  pass("own webhook used directly");
+
+  step("New unassigned task → PM is woken to triage; PM assigns it, which wakes that agent");
+  const loose = await alice("POST", "/api/tasks", { title: `Unassigned ${runId}` });
+  const triage = await waitForHook((c) => c.body?.event === "triage" && c.body.task.key === loose.key);
+  assert.match(triage.body.instruction, /list_members/);
+  const pmConn = await connect(aliceJar, { act_as: pmAgent.id });
+  const pmTok = pmConn.tokens.access_token;
+  assert.ok((await mcp("tools/list", {}, pmTok)).tools.find((t) => t.name === "get_task").inputSchema.properties.as_agent);
+  await tool("get_task", { task: loose.key }, pmTok);
+  await tool("update_task", { task: loose.key, assignee: writer.handle }, pmTok);
+  const handed = await waitForHook((c) => c.body?.event === "assigned" && c.body.task.key === loose.key);
+  assert.equal(handed.body.as_agent, writer.handle);
+  let looseDetail = await alice("GET", `/api/tasks/${loose.key}`);
+  const pmRun = looseDetail.runs.find((r) => r.agent_id === pmAgent.id);
+  assert.equal(pmRun.trigger, "triage");
+  assert.equal(pmRun.status, "ended", "PM's triage run ends when it hands the task over");
+  pass("triage → PM assigned @writer → writer woken via PM; PM's run ended");
+
+  step("PM works as the agent; work is recorded under that agent and can't wake others");
+  await tool("post_update", { task: loose.key, body: "Drafting now.", as_agent: writer.handle }, pmTok);
+  looseDetail = await alice("GET", `/api/tasks/${loose.key}`);
+  assert.ok(looseDetail.entries.some((e) => e.type === "update" && e.author_id === writer.id));
+  assert.equal(looseDetail.runs.find((r) => r.agent_id === writer.id).status, "active");
+  const nHooks = hookCalls.length;
+  await tool("create_task", { title: "Writer tries to wake", assignee: agent.handle, as_agent: writer.handle }, pmTok);
+  await new Promise((r) => setTimeout(r, 2500));
+  assert.equal(hookCalls.length, nHooks);
+  await tool("complete_task", { task: loose.key, summary: "Done.", as_agent: writer.handle }, pmTok);
+  wsInfo = await alice("PATCH", "/api/workspace", { pm_agent_id: null });
+  assert.equal(wsInfo.pm_agent_id, null);
+  pass("update authored by @writer; acting-as agent can't wake others; PM cleared");
+
   step("Unreachable agent → run fails and lands in Needs you");
   await alice("PATCH", `/api/members/${agent.id}`, { webhook_url: `http://localhost:${HOOK_PORT}/missing` });
   const t3 = await alice("POST", "/api/tasks", { title: "Will fail", assignee_id: agent.id });

@@ -481,6 +481,18 @@ function FocusOnMount({ target }: { target: React.RefObject<HTMLElement | null> 
   return null;
 }
 
+/**
+ * How an agent gets woken: its own webhook ("own", an override), the workspace PM's webhook ("pm"),
+ * or not at all (null).
+ */
+export function wakeRoute(agent: Pick<Member, "id" | "has_webhook">, members: Member[] | undefined, me: Me | undefined) {
+  if (agent.has_webhook) return { kind: "own" as const, pm: null };
+  const pmId = me?.workspace?.pm_agent_id;
+  const pm = pmId && pmId !== agent.id ? members?.find((m) => m.id === pmId && m.active) : undefined;
+  if (pm?.has_webhook) return { kind: "pm" as const, pm };
+  return { kind: null, pm: pm ?? null };
+}
+
 export function assigneeOptions(members: Member[] | undefined) {
   return [
     { value: "none", label: "Unassigned", icon: <Avatar member={null} size={16} /> },

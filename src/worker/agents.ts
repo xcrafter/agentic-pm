@@ -5,21 +5,32 @@
  * as sub-agents (members with created_by = the orchestrator). It can act as any of them by passing
  * `as_agent` on a tool call, and assigning or @mentioning one of its own sub-agents wakes it.
  *
- * Loop guard: humans can wake any agent; an orchestrator can wake only its own sub-agents;
- * sub-agents can't wake anyone and can't register agents of their own (depth is 1).
+ * The workspace PM agent (chosen in Workspace settings) is a dispatcher: its webhook wakes every agent
+ * that has no webhook of its own, it can act as any agent, and it can wake any other agent.
+ *
+ * Loop guard: humans can wake any agent; the PM can wake any agent but itself; an orchestrator only its
+ * own sub-agents; other agents (including the PM acting as an agent) can't wake anyone.
  */
-import type { Actor, MemberRow } from "./domain";
-import { logActivity, notify, publicMember } from "./domain";
+import type { Actor, MemberRow, WorkspaceRow } from "./domain";
+import { getWorkspace, logActivity, notify, publicMember } from "./domain";
 import { uniqueHandle } from "./auth";
 import { type AppEnv, HttpError, encryptSecret, newId, nowIso } from "./util";
 
 export const MAX_SUB_AGENTS = 25;
 
 /** May this actor's action wake `agent`? */
-export function canWake(actor: Actor, agent: MemberRow) {
+export function canWake(actor: Actor, agent: MemberRow, ws: Pick<WorkspaceRow, "pm_agent_id">) {
   if (agent.kind !== "agent") return false;
   if (actor.member.kind === "human") return true;
+  if (agent.id === actor.member.id) return false;
+  if (ws.pm_agent_id && actor.member.id === ws.pm_agent_id) return true;
   return agent.created_by === actor.member.id;
+}
+
+export async function isWorkspacePm(env: AppEnv, m: MemberRow) {
+  if (m.kind !== "agent") return false;
+  const ws = await getWorkspace(env, m.workspace_id);
+  return ws.pm_agent_id === m.id;
 }
 
 /** Is `m` a sub-agent (created by another agent)? Returns the parent when it is. */
@@ -46,6 +57,19 @@ export async function listSubAgents(env: AppEnv, parentId: string) {
     .bind(parentId)
     .all<MemberRow>();
   return rows.results;
+}
+
+/** An agent `me` may act as with as_agent: its own sub-agents, or (for the workspace PM) any agent. */
+export async function getActableAgent(env: AppEnv, me: MemberRow, ref: string) {
+  if (await isWorkspacePm(env, me)) {
+    const handle = ref.replace(/^@/, "").toLowerCase();
+    const m = await env.DB.prepare("SELECT * FROM members WHERE workspace_id = ? AND kind = 'agent' AND (id = ? OR handle = ?)")
+      .bind(me.workspace_id, ref, handle)
+      .first<MemberRow>();
+    if (!m) throw new HttpError(404, `No agent "${ref}". Use list_members to see the agents.`);
+    return m;
+  }
+  return getSubAgent(env, me, ref);
 }
 
 export async function getSubAgent(env: AppEnv, parent: MemberRow, ref: string) {

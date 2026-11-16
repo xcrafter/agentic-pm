@@ -6,7 +6,25 @@ import type { MemberRow, TaskRow } from "./domain";
 import { addSystemEntry, getMember, getWorkspace, notify, taskKey } from "./domain";
 import { type AppEnv, decryptSecret, newId, nowIso } from "./util";
 
-export type TriggerKind = "assigned" | "answered" | "mentioned" | "manual" | "followup";
+export type TriggerKind = "assigned" | "answered" | "mentioned" | "manual" | "followup" | "triage";
+
+/**
+ * Where to send an agent's wake-up: its own webhook if it has one (an override), otherwise the
+ * workspace PM agent's webhook, with the PM told which agent the work is for.
+ */
+export interface WakeRoute {
+  url: string;
+  keyEncrypted: string;
+  via: MemberRow | null;
+}
+export async function resolveWake(env: AppEnv, agent: MemberRow): Promise<WakeRoute | null> {
+  if (agent.webhook_url && agent.webhook_key_encrypted) return { url: agent.webhook_url, keyEncrypted: agent.webhook_key_encrypted, via: null };
+  const ws = await getWorkspace(env, agent.workspace_id);
+  if (!ws.pm_agent_id || ws.pm_agent_id === agent.id) return null;
+  const pm = await env.DB.prepare("SELECT * FROM members WHERE id = ? AND kind = 'agent' AND active = 1").bind(ws.pm_agent_id).first<MemberRow>();
+  if (!pm?.webhook_url || !pm.webhook_key_encrypted) return null;
+  return { url: pm.webhook_url, keyEncrypted: pm.webhook_key_encrypted, via: pm };
+}
 
 export interface RunRow {
   id: string;
@@ -41,7 +59,7 @@ export async function onAgentTrigger(
 ): Promise<RunRow | null> {
   const { task, agent } = opts;
   if (agent.kind !== "agent" || !agent.active) return null;
-  if (!agent.webhook_url || !agent.webhook_key_encrypted) {
+  if (!(await resolveWake(env, agent))) {
     await addSystemEntry(env, task, agent, "agent_not_configured", { agent_name: agent.name });
     return null;
   }
@@ -86,7 +104,14 @@ export async function onAgentTrigger(
   return run;
 }
 
-export function buildPayload(publicUrl: string, run: RunRow, task: TaskRow, key: string, asAgent?: { handle: string; name: string }) {
+export function buildPayload(
+  publicUrl: string,
+  run: RunRow,
+  task: TaskRow,
+  key: string,
+  asAgent?: { handle: string; name: string; description?: string | null },
+  via?: { handle: string; name: string },
+) {
   const event = run.trigger === "followup" ? "followup" : run.trigger;
   const why: Record<string, string> = {
     assigned: "This task was assigned to you.",
@@ -94,17 +119,33 @@ export function buildPayload(publicUrl: string, run: RunRow, task: TaskRow, key:
     mentioned: "A human mentioned you on this task.",
     manual: "A human asked you to pick this task up.",
     followup: "There is new activity on this task since your last run.",
+    triage: "A new task was created without an assignee, and you are the workspace PM.",
   };
+  if (event === "triage") {
+    return {
+      event,
+      run_id: run.id,
+      task: { id: task.id, key, title: task.title, url: `${publicUrl.replace(/\/$/, "")}/t/${key}` },
+      instruction:
+        `${why.triage} Read it with get_task("${key}"), then pick who should do it: call list_members and compare agents' descriptions. ` +
+        `Assign it with update_task (assignee = their handle); assigning an agent wakes it. ` +
+        `If the task is unclear, use ask_question. If no agent fits, assign a person or leave a comment explaining why, then end_run.`,
+    };
+  }
   return {
     event,
     run_id: run.id,
     task: { id: task.id, key, title: task.title, url: `${publicUrl.replace(/\/$/, "")}/t/${key}` },
     trigger_entry_id: run.trigger_entry_id,
-    ...(asAgent ? { as_agent: asAgent.handle } : {}),
+    ...(asAgent ? { as_agent: asAgent.handle, agent: { handle: asAgent.handle, name: asAgent.name, description: asAgent.description ?? "" } } : {}),
+    ...(via ? { routed_via: via.handle } : {}),
     instruction:
-      (asAgent
-        ? `You are acting as the agent ${asAgent.name} (@${asAgent.handle}). Pass as_agent: "${asAgent.handle}" on EVERY Agentic PM tool call for this task. `
-        : "") +
+      (via
+        ? `This wake-up is for the agent ${asAgent!.name} (@${asAgent!.handle}), routed to you (@${via.handle}) as the workspace PM because it has no webhook of its own. ` +
+          `Hand it to that agent, or do the work as it. Either way pass as_agent: "${asAgent!.handle}" on EVERY Agentic PM tool call for this task. `
+        : asAgent
+          ? `You are acting as the agent ${asAgent.name} (@${asAgent.handle}). Pass as_agent: "${asAgent.handle}" on EVERY Agentic PM tool call for this task. `
+          : "") +
       `${why[event]} You are working task ${key} in Agentic PM. Use the Agentic PM MCP tools: ` +
       `call get_task("${key}") first to read the task and its thread (new activity is listed under "unread"). ` +
       `Post progress with post_update as you work. If you need a decision or information from a human, ` +
@@ -114,9 +155,9 @@ export function buildPayload(publicUrl: string, run: RunRow, task: TaskRow, key:
   };
 }
 
-async function postWebhook(env: AppEnv, agent: MemberRow, payload: unknown) {
-  const key = await decryptSecret(env, agent.webhook_key_encrypted!);
-  const res = await fetch(agent.webhook_url!, {
+async function postWebhook(env: AppEnv, route: WakeRoute, payload: unknown) {
+  const key = await decryptSecret(env, route.keyEncrypted);
+  const res = await fetch(route.url, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, "User-Agent": "AgenticPM/1.0" },
     body: JSON.stringify(payload),
@@ -134,7 +175,8 @@ export async function handleDispatch(env: AppEnv, msg: Message<DispatchMessage>)
   }
   const agent = await getMember(env, run.agent_id);
   const task = await env.DB.prepare("SELECT * FROM tasks WHERE id = ?").bind(run.task_id).first<TaskRow>();
-  if (!task || !agent.active || !agent.webhook_url) {
+  const route = agent.active ? await resolveWake(env, agent) : null;
+  if (!task || !agent.active || !route) {
     await env.DB.prepare("UPDATE agent_runs SET status = 'ended', ended_at = ?, last_error = ? WHERE id = ?")
       .bind(nowIso(), "agent or task no longer available", run.id)
       .run();
@@ -158,11 +200,18 @@ export async function handleDispatch(env: AppEnv, msg: Message<DispatchMessage>)
   const parent = agent.created_by
     ? await env.DB.prepare("SELECT id FROM members WHERE id = ? AND kind = 'agent'").bind(agent.created_by).first()
     : null;
-  const payload = buildPayload(env.PUBLIC_URL, run, task, taskKey(ws, task), parent ? { handle: agent.handle, name: agent.name } : undefined);
+  const payload = buildPayload(
+    env.PUBLIC_URL,
+    run,
+    task,
+    taskKey(ws, task),
+    parent || route.via ? { handle: agent.handle, name: agent.name, description: agent.description } : undefined,
+    route.via ? { handle: route.via.handle, name: route.via.name } : undefined,
+  );
   const attempts = run.attempts + 1;
   let result: { ok: boolean; status: number; body: string };
   try {
-    result = await postWebhook(env, agent, payload);
+    result = await postWebhook(env, route, payload);
   } catch (err) {
     result = { ok: false, status: 0, body: err instanceof Error ? err.message : String(err) };
   }
@@ -314,9 +363,10 @@ export async function retryRun(env: AppEnv, runId: string, triggeredBy: string) 
 }
 
 export async function testPing(env: AppEnv, agent: MemberRow) {
-  if (!agent.webhook_url || !agent.webhook_key_encrypted) return { ok: false, status: 0, body: "No webhook configured" };
+  const route = await resolveWake(env, agent);
+  if (!route) return { ok: false, status: 0, body: "No webhook configured" };
   try {
-    return await postWebhook(env, agent, {
+    return await postWebhook(env, route, {
       event: "test",
       instruction:
         "This is a connection test from Agentic PM. If you have the Agentic PM MCP tools, call list_my_tasks to confirm access. No other action is needed.",

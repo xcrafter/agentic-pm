@@ -62,6 +62,7 @@ import {
   useMe,
   useMembers,
   useProjects,
+  wakeRoute,
 } from "../components";
 import { type EditorHandle, RichEditor } from "../editor";
 import { ProjectDot } from "./Layout";
@@ -298,6 +299,8 @@ function Details({
     onSuccess: () => qc.invalidateQueries(),
   });
   const activeRuns = runs.filter((r) => !r.dismissed && r.status !== "ended");
+  const me = useMe().data;
+  const route = assignee ? wakeRoute(assignee, members, me) : { kind: null, pm: null };
 
   return (
     <aside className="shrink-0 border-t border-line lg:w-[340px] lg:overflow-auto lg:border-t-0 lg:border-l">
@@ -379,12 +382,17 @@ function Details({
           >
             Agent runs
           </SectionTitle>
-          {!assignee.has_webhook && (
+          {route.kind === null && (
             <p className="mb-2 rounded-lg bg-[#fdf5dc] px-2.5 py-2 text-[12px] text-[#946200] dark:bg-[#e5b53a]/15 dark:text-[#ecc76a]">
-              {assignee.name} has no wake-up webhook yet, so it can't be woken.{" "}
+              {assignee.name} has no wake-up webhook and there's no workspace PM to route through, so it can't be woken.{" "}
               <Link to={`/team/${assignee.handle}`} className="underline">
                 Set it up
               </Link>
+            </p>
+          )}
+          {route.kind === "pm" && (
+            <p className="mb-2 text-[12px] text-ink-3">
+              Wake-ups go through the workspace PM, <Link to={`/team/${route.pm!.handle}`} className="text-ink-2 underline">@{route.pm!.handle}</Link>.
             </p>
           )}
           {runs.length === 0 && <p className="text-[12px] text-ink-3">{assignee.name} hasn't been woken for this task yet.</p>}

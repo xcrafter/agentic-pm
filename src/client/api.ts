@@ -135,6 +135,8 @@ export interface WorkspaceInfo {
   logo_url: string | null;
   allowed_domains: string[];
   allowed_domains_source: "workspace" | "default";
+  pm_agent_id: string | null;
+  pm_triage: boolean;
 }
 export interface Me {
   member: Member | null;

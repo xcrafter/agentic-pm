@@ -1,8 +1,9 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Globe, ImageUp, Settings, ShieldCheck, Trash2, Wand2, X } from "lucide-react";
+import { Bot, Globe, ImageUp, Settings, ShieldCheck, Trash2, Wand2, Webhook, X, Zap } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { type WorkspaceInfo, api } from "../api";
-import { Button, Tag, TopBar, WorkspaceLogo, cx, inputClass, useMe } from "../components";
+import { Link } from "react-router";
+import { type Member, type WorkspaceInfo, api } from "../api";
+import { Avatar, Button, Menu, Tag, TopBar, WorkspaceLogo, cx, inputClass, useMe, useMembers, wakeRoute } from "../components";
 
 function Section({ icon, title, description, children }: { icon: ReactNode; title: string; description: string; children: ReactNode }) {
   return (
@@ -168,6 +169,8 @@ export function SettingsPage() {
               {logoError && <p className="mt-3 text-[13px] text-[#c4312b]">{logoError}</p>}
             </Section>
 
+            <AgentDispatch ws={ws} isAdmin={isAdmin} onSaved={setWs} />
+
             <Section
               icon={<ShieldCheck size={15} />}
               title="Allowed email domains"
@@ -240,5 +243,168 @@ export function SettingsPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * The workspace PM agent and its webhook: the workspace-level wake-up for every agent without its own
+ * webhook, plus (optionally) triage of new unassigned tasks.
+ */
+function AgentDispatch({ ws, isAdmin, onSaved }: { ws: WorkspaceInfo; isAdmin: boolean; onSaved: (w: WorkspaceInfo) => void }) {
+  const qc = useQueryClient();
+  const me = useMe().data;
+  const members = useMembers().data ?? [];
+  const agents = members.filter((m) => m.kind === "agent" && m.active);
+  const pm = members.find((m) => m.id === ws.pm_agent_id) ?? null;
+  const [url, setUrl] = useState(pm?.webhook_url ?? "");
+  const [key, setKey] = useState("");
+  const [ping, setPing] = useState<{ ok: boolean; status: number; body: string } | null>(null);
+  useEffect(() => {
+    setUrl(pm?.webhook_url ?? "");
+    setKey("");
+    setPing(null);
+  }, [pm?.id, pm?.webhook_url]);
+
+  const setPmField = useMutation({
+    mutationFn: (body: { pm_agent_id?: string | null; pm_triage?: boolean }) => api.patch<WorkspaceInfo>("/api/workspace", body),
+    onSuccess: onSaved,
+  });
+  const saveHook = useMutation({
+    mutationFn: () => api.patch<Member>("/api/workspace/pm-webhook", { webhook_url: url.trim(), webhook_key: key || undefined }),
+    onSuccess: () => {
+      setKey("");
+      qc.invalidateQueries({ queryKey: ["members"] });
+    },
+  });
+  const test = useMutation({
+    mutationFn: () => api.post<{ ok: boolean; status: number; body: string }>("/api/workspace/pm-webhook/test"),
+    onSuccess: setPing,
+  });
+
+  const routes = agents.filter((a) => a.id !== pm?.id).map((a) => ({ a, r: wakeRoute(a, members, me) }));
+  const viaPm = routes.filter((x) => x.r.kind === "pm");
+  const own = routes.filter((x) => x.r.kind === "own");
+  const none = routes.filter((x) => x.r.kind === null);
+  const hookDirty = url.trim() !== (pm?.webhook_url ?? "") || !!key;
+  const error = setPmField.error || saveHook.error || test.error;
+
+  return (
+    <Section
+      icon={<Webhook size={15} />}
+      title="Agent dispatch"
+      description="Pick a PM agent (e.g. your Grok PM) and give it one webhook. Every agent without its own webhook is woken through it, and the PM hands the work to the right agent. Set a webhook on an agent to override this."
+    >
+      <div className="max-w-lg space-y-5">
+        <div>
+          <span className="mb-1.5 block text-[13px] font-medium">PM agent</span>
+          {isAdmin ? (
+            <Menu
+              searchable
+              width="w-72"
+              className="h-9 w-full rounded-lg border border-line bg-canvas px-2.5 hover:border-line-strong"
+              trigger={
+                pm ? (
+                  <span className="flex min-w-0 items-center gap-2 text-[13px]">
+                    <Avatar member={pm} size={18} />
+                    <span className="truncate font-medium">{pm.name}</span>
+                    <span className="text-ink-3">@{pm.handle}</span>
+                  </span>
+                ) : (
+                  <span className="text-[13px] text-ink-3">No PM: each agent needs its own webhook</span>
+                )
+              }
+              value={ws.pm_agent_id ?? "none"}
+              onChange={(id) => setPmField.mutate({ pm_agent_id: id === "none" ? null : id })}
+              options={[
+                { value: "none", label: "No PM" },
+                ...agents.map((a) => ({ value: a.id, label: a.name, icon: <Avatar member={a} size={16} />, hint: `@${a.handle}` })),
+              ]}
+            />
+          ) : (
+            <div className="text-[13px]">{pm ? `${pm.name} (@${pm.handle})` : "None"}</div>
+          )}
+          {!agents.length && (
+            <p className="mt-1.5 text-[12px] text-ink-3">
+              No agents yet. Connect Grok over MCP or <Link to="/team" className="underline">add an agent</Link>.
+            </p>
+          )}
+        </div>
+
+        {pm && (
+          <>
+            <div className="rounded-[10px] border border-line bg-panel p-4">
+              <div className="mb-3 flex items-center gap-2 text-[13px] font-semibold">
+                <Bot size={14} className="text-agent" /> Workspace webhook
+                <span className="font-normal text-ink-3">(the PM's)</span>
+              </div>
+              <div className="space-y-3">
+                <label className="block">
+                  <span className="mb-1.5 block text-[13px] font-medium">Webhook URL</span>
+                  <input className={inputClass} value={url} onChange={(e) => setUrl(e.target.value)} disabled={!isAdmin} placeholder="https://… (the Grok PM routine's webhook)" />
+                </label>
+                <label className="block">
+                  <span className="mb-1.5 block text-[13px] font-medium">Webhook key</span>
+                  <input
+                    className={inputClass}
+                    type="password"
+                    value={key}
+                    onChange={(e) => setKey(e.target.value)}
+                    disabled={!isAdmin}
+                    placeholder={pm.has_webhook ? "Saved. Type a new key to replace it." : "Sent as a Bearer token with every wake-up"}
+                  />
+                </label>
+                {isAdmin && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button variant="primary" disabled={!hookDirty || !url.trim() || (!pm.has_webhook && !key) || saveHook.isPending} onClick={() => saveHook.mutate()}>
+                      {saveHook.isPending ? "Saving…" : "Save webhook"}
+                    </Button>
+                    <Button onClick={() => test.mutate()} disabled={!pm.has_webhook || test.isPending || hookDirty}>
+                      <Zap size={13} /> {test.isPending ? "Pinging…" : "Send test ping"}
+                    </Button>
+                    {ping && (
+                      <span className={cx("text-[12px]", ping.ok ? "text-[#1f9d5c]" : "text-danger")}>
+                        {ping.ok ? "The PM accepted the ping." : `Ping failed: ${ping.status || ""} ${ping.body}`}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <label className={cx("flex items-start gap-2.5 text-[13px]", !isAdmin && "opacity-70")}>
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={ws.pm_triage}
+                disabled={!isAdmin || setPmField.isPending}
+                onChange={(e) => setPmField.mutate({ pm_triage: e.target.checked })}
+              />
+              <span>
+                <span className="font-medium">Send new unassigned tasks to the PM</span>
+                <span className="block text-ink-3">When someone creates a task without an assignee, the PM is woken to pick the right agent or person.</span>
+              </span>
+            </label>
+
+            <div className="text-[13px]">
+              <div className="mb-1.5 font-medium">How agents are woken</div>
+              <ul className="space-y-1 text-ink-2">
+                <li>
+                  <Tag tone="blue">Via PM</Tag> {viaPm.length ? viaPm.map((x) => `@${x.a.handle}`).join(", ") : <span className="text-ink-3">none</span>}
+                </li>
+                <li>
+                  <Tag tone="green">Own webhook</Tag> {own.length ? own.map((x) => `@${x.a.handle}`).join(", ") : <span className="text-ink-3">none</span>}
+                </li>
+                {!pm.has_webhook && none.length > 0 && (
+                  <li>
+                    <Tag tone="amber">Can't be woken yet</Tag> {none.map((x) => `@${x.a.handle}`).join(", ")}: save the PM's webhook above.
+                  </li>
+                )}
+              </ul>
+            </div>
+          </>
+        )}
+        {error && <p className="text-[13px] text-danger">{(error as Error).message}</p>}
+      </div>
+    </Section>
   );
 }

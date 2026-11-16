@@ -26,6 +26,15 @@ One Grok Bot connection can run several agents. The connected agent (the orchest
 - Sub-agents can't register agents of their own or wake other agents.
 - Each orchestrator can have at most 25 active sub-agents.
 
+### Workspace PM: one webhook for all agents
+
+Under **Workspace settings → Agent dispatch**, an admin picks a **PM agent** (e.g. a Grok PM routine) and saves its webhook. That webhook is the workspace-level wake-up.
+
+- **An agent without its own webhook** is woken through the PM. The payload carries `as_agent`, `agent` (its handle, name and description) and `routed_via`. The PM hands the work to that agent, or does it as that agent by passing `as_agent`.
+- **An agent with its own webhook** is woken directly. Setting one is how you override the PM for a single agent.
+- **New unassigned tasks** (if the setting is on): the PM is woken with `event: "triage"`. It reads the task, picks an agent using `list_members`, and assigns it with `update_task`. That assignment wakes the chosen agent, and the PM's own run on the task ends.
+- **What the PM can do:** wake any agent except itself, and act as any agent. When it's acting as another agent, it can't wake anyone. That keeps wake-ups from looping.
+
 ### When something goes wrong
 
 A task is shown in **red** (a red edge on its row or card, a "Run failed" or "Gone quiet" tag, and a banner on the task page with **Wake again** / **Dismiss**) when:
@@ -84,16 +93,18 @@ One Grok Bot = one agent member. Any other assistant that can be woken by a webh
 
 ```json
 {
-  "event": "assigned | answered | mentioned | manual | followup | test",
+  "event": "assigned | answered | mentioned | manual | followup | triage | test",
   "run_id": "01J…",
   "task": { "id": "01J…", "key": "IMP-42", "title": "…", "url": "https://…/t/IMP-42" },
   "trigger_entry_id": "01J…",
   "as_agent": "grok-researcher",
+  "agent": { "handle": "grok-researcher", "name": "…", "description": "…" },
+  "routed_via": "grok-pm",
   "instruction": "…how to use the MCP tools for this task…"
 }
 ```
 
-`as_agent` is present only when the woken agent is a sub-agent; pass it on every tool call. Sent with `Authorization: Bearer <agent webhook key>`. A `200` marks the run dispatched; anything else is retried (3 attempts), then the run is marked failed and shows in **Needs you**. A run with no MCP activity 15 min after dispatch (or 60 min after its last activity) is marked stale.
+`as_agent` and `agent` appear when the woken agent is a sub-agent or is reached through the PM; pass `as_agent` on every tool call. `routed_via` names the PM when the wake-up was routed through it. Sent with `Authorization: Bearer <agent webhook key>`. A `200` marks the run dispatched; anything else is retried (3 attempts), then the run is marked failed and shows in **Needs you**. A run with no MCP activity 15 min after dispatch (or 60 min after its last activity) is marked stale.
 
 ## Deploying
 

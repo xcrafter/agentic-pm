@@ -41,6 +41,8 @@ export interface WorkspaceRow {
   logo_key: string | null;
   logo_updated_at: string | null;
   allowed_domains: string | null;
+  pm_agent_id: string | null;
+  pm_triage: number;
 }
 
 export const TASK_STATUSES = ["backlog", "todo", "in_progress", "waiting_on_human", "done", "canceled"] as const;
@@ -126,6 +128,8 @@ export async function ensureWorkspace(env: AppEnv): Promise<WorkspaceRow> {
     logo_key: null,
     logo_updated_at: null,
     allowed_domains: null,
+    pm_agent_id: null,
+    pm_triage: 1,
   };
   await env.DB.prepare("INSERT INTO workspaces (id, name, key_prefix, next_task_number, created_at) VALUES (?,?,?,?,?)")
     .bind(row.id, row.name, row.key_prefix, 1, row.created_at)
@@ -386,9 +390,13 @@ export async function createTask(env: AppEnv, ws: WorkspaceRow, actor: Actor, in
   if (task.assignee_id) {
     const assignee = await getMember(env, task.assignee_id);
     await addSystemEntry(env, task, actor.member, "assigned", { to: assignee.id, to_name: assignee.name });
-    if (canWake(actor, assignee)) {
+    if (canWake(actor, assignee, ws)) {
       await onAgentTrigger(env, { task, agent: assignee, trigger: "assigned", triggeredBy: actor.member.id });
     }
+  } else if (actor.member.kind === "human" && ws.pm_agent_id && ws.pm_triage) {
+    // No assignee: let the workspace PM agent pick the right agent (or person) for it.
+    const pm = await env.DB.prepare("SELECT * FROM members WHERE id = ? AND kind = 'agent' AND active = 1").bind(ws.pm_agent_id).first<MemberRow>();
+    if (pm) await onAgentTrigger(env, { task, agent: pm, trigger: "triage", triggeredBy: actor.member.id });
   }
   await notify(env, ws.id, { type: "task", task_id: task.id });
   return task;
@@ -505,9 +513,13 @@ export async function updateTask(
       const prev = await getMember(env, assigneeChange.from as string);
       if (prev.kind === "agent") await endRunsFor(env, task.id, prev.id, "unassigned");
     }
+    // An agent handing the task to someone else (e.g. the PM assigning it) is done with it.
+    if (actor.member.kind === "agent" && assigneeChange.to !== actor.member.id && assigneeChange.from !== actor.member.id) {
+      await endRunsFor(env, task.id, actor.member.id, "unassigned");
+    }
     if (assigneeChange.to) {
       const agent = await getMember(env, assigneeChange.to as string);
-      if (canWake(actor, agent)) {
+      if (canWake(actor, agent, ws)) {
         await onAgentTrigger(env, { task: next, agent, trigger: "assigned", triggeredBy: actor.member.id });
       }
     }
@@ -653,7 +665,7 @@ export async function postEntry(
   {
     if (type === "answer" && replyTo) {
       const asker = await getMember(env, replyTo.author_id);
-      if (asker.active && canWake(actor, asker)) {
+      if (asker.active && canWake(actor, asker, ws)) {
         await onAgentTrigger(env, {
           task,
           agent: asker,
@@ -672,7 +684,7 @@ export async function postEntry(
         .bind(ws.id, ...handles)
         .all<MemberRow>();
       for (const agent of mentioned.results) {
-        if (!canWake(actor, agent)) continue;
+        if (!canWake(actor, agent, ws)) continue;
         await onAgentTrigger(env, {
           task,
           agent,
