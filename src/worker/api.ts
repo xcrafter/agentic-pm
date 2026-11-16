@@ -39,6 +39,7 @@ import { ideaRoutes } from "./ideas";
 import { customerRoutes } from "./customers";
 import { shareRoutes } from "./shares";
 import { policyRoutes } from "./policies";
+import { toolRoutes } from "./tools";
 import { type AppEnv, HttpError, badRequest, encryptSecret, forbidden, newId, notFound, nowIso, verifySignedValue } from "./util";
 
 type Vars = { me: MemberRow; ws: WorkspaceRow; actor: Actor };
@@ -114,6 +115,7 @@ api.route("/", ideaRoutes);
 api.route("/", customerRoutes);
 api.route("/", shareRoutes);
 api.route("/", policyRoutes);
+api.route("/", toolRoutes);
 
 const requireAdmin = (me: MemberRow) => {
   if (me.role !== "admin") throw forbidden("Admins only");

@@ -34,9 +34,10 @@ import {
 } from "./domain";
 import { endRunsFor, failRunsFor, touchRun } from "./orchestrator";
 import { POST_KINDS, createPost, listPosts } from "./feed";
-import { IDEA_LABELS, IDEA_STATUSES, createIdea, listIdeas } from "./ideas";
+import { IDEA_LABELS, IDEA_STAGES, IDEA_STATUSES, createIdea, listIdeas } from "./ideas";
 import { logFeatureRequest } from "./customers";
-import { assertPoliciesRead, findPolicy, listPoliciesForAgent, markPolicyRead, policiesFor, policyForAgent } from "./policies";
+import { addTool, getTool, listTools, toolOut, updateTool } from "./tools";
+import { assertPoliciesRead, createPolicy, ensureFolderPath, findPolicy, listPoliciesForAgent, markPolicyRead, policiesFor, policyForAgent, updatePolicy } from "./policies";
 import { agentSummary, applyAgentProfile, canOrchestrate, getActableAgent, getSubAgent, isWorkspacePm, listSubAgents, registerSubAgent } from "./agents";
 import type { McpProps } from "./authorize";
 import { type AppEnv, HttpError, encryptSecret, signValue } from "./util";
@@ -76,7 +77,8 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
         `When you finish recurring work outside a task (e.g. a daily blog), post one line with share_update (set routine, e.g. "daily-blog", and link the result).` +
         ` The workspace keeps policies (SOPs, guidelines, strategies) that tell you how work must be done. get_task lists the ones that apply to you; ` +
         `read them with get_policy before acting and follow them. Required ones must be read in their latest version before you can change anything; ` +
-        `if a tool says so, read what it names and retry. Use list_policies to search the rest when unsure how something should be done.` +
+        `if a tool says so, read what it names and retry. Use list_policies to search the rest when unsure how something should be done; ` +
+        `write or improve policies with create_policy / update_policy when asked to.` +
         (isPm
           ? ` You are the workspace PM: you're woken for new unassigned tasks (assign each to the best agent; check list_members) ` +
             `and for any agent without its own webhook (the payload's as_agent says which). You can act as any agent by passing as_agent, ` +
@@ -700,8 +702,13 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
   server.registerTool(
     "list_ideas",
     {
-      description: "List product ideas, optionally filtered by label or status.",
-      inputSchema: { label: z.enum(IDEA_LABELS).optional(), status: z.enum(IDEA_STATUSES).optional(), limit: z.number().int().min(1).max(100).optional() },
+      description: "List product ideas, optionally filtered by label, status or stage (backlog = not shipped yet, live = shipped, archived). Defaults to the backlog; pinned ideas come first.",
+      inputSchema: {
+        label: z.enum(IDEA_LABELS).optional(),
+        status: z.enum(IDEA_STATUSES).optional(),
+        stage: z.enum(IDEA_STAGES).optional().describe("Default backlog"),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
       annotations: { readOnlyHint: true },
     },
     (input) =>
@@ -709,7 +716,9 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
         const w = await ws();
         const names = await memberNames();
         return (await listIdeas(env, w))
+          .filter((i) => i.stage === (input.stage ?? "backlog"))
           .filter((i) => (!input.label || i.labels.includes(input.label)) && (!input.status || i.status === input.status))
+          .sort((a, b) => Number(!!b.pinned_at) - Number(!!a.pinned_at))
           .slice(0, input.limit ?? 30)
           .map((i) => ({
             id: i.id,
@@ -717,8 +726,10 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
             summary: i.body.slice(0, 300),
             labels: i.labels,
             status: i.status,
+            stage: i.stage,
+            ...(i.pinned_at ? { pinned: true } : {}),
             suggested_owner: i.suggested_owner_id ? `@${names.get(i.suggested_owner_id)?.handle}` : null,
-            ...(i.request_count ? { customers_requesting: i.request_count, requested_by: i.requested_by.map((c) => c.name) } : {}),
+            ...(i.request_count ? { customers_requesting: i.request_count, times_requested: i.request_times, requested_by: i.requested_by.map((c) => c.name) } : {}),
             ...(i.task ? { task: i.task.key } : {}),
           }));
       }),
@@ -759,6 +770,136 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
         }
         await markPolicyRead(env, me, p);
         return policyForAgent(env, p, all.results);
+      }),
+  );
+
+  server.registerTool(
+    "create_policy",
+    {
+      description:
+        "Write a new policy (SOP, guideline, strategy, structure) for the workspace. Put it in a folder by path, e.g. 'Product / Roadmap'; " +
+        "missing folders are created. People decide who follows it and whether it's required; it starts as a policy for every agent.",
+      inputSchema: {
+        title: z.string().describe("Policy title"),
+        content: z.string().describe("The policy in Markdown: steps, rules, examples"),
+        folder: z.string().optional().describe("Folder path, e.g. 'Product' or 'Engineering / Releases'. Omit for top level."),
+        summary: z.string().optional().describe("One line on when to use it, e.g. 'Before publishing any blog post'"),
+      },
+    },
+    (a) =>
+      guard(async () => {
+        const w = await ws();
+        const parent = a.folder?.trim() ? await ensureFolderPath(env, w, actor, a.folder) : null;
+        const same = await env.DB.prepare(
+          `SELECT id FROM policies WHERE workspace_id = ? AND kind = 'doc' AND ${parent ? "parent_id = ?" : "parent_id IS NULL"} AND title = ? COLLATE NOCASE`,
+        )
+          .bind(...(parent ? [w.id, parent, a.title.trim()] : [w.id, a.title.trim()]))
+          .first<{ id: string }>();
+        if (same) throw new HttpError(409, `A policy with that title already exists there (id ${same.id}); use update_policy to change it`);
+        const p = await createPolicy(env, w, actor, { kind: "doc", title: a.title, content: a.content, summary: a.summary, parent_id: parent });
+        const all = await env.DB.prepare("SELECT * FROM policies WHERE workspace_id = ?").bind(w.id).all<any>();
+        const { content, ...rest } = policyForAgent(env, p, all.results);
+        return { ...rest, created: true };
+      }),
+  );
+
+  server.registerTool(
+    "update_policy",
+    {
+      description:
+        "Change a policy's title, content or summary, or move it to another folder. Every edit is kept as a version; if the policy is required, " +
+        "agents must read the new version before working.",
+      inputSchema: {
+        policy: z.string().describe("Policy id, path or title"),
+        title: z.string().optional(),
+        content: z.string().optional().describe("Full new Markdown (replaces the old text)"),
+        summary: z.string().optional(),
+        folder: z.string().optional().describe("Move to this folder path ('' for top level)"),
+      },
+    },
+    (a) =>
+      guard(async () => {
+        const w = await ws();
+        const p = await findPolicy(env, w.id, a.policy);
+        const parent_id = a.folder === undefined ? undefined : a.folder.trim() ? await ensureFolderPath(env, w, actor, a.folder) : null;
+        const saved = await updatePolicy(env, w, actor, p, { title: a.title, content: a.content, summary: a.summary, parent_id }, false);
+        const all = await env.DB.prepare("SELECT * FROM policies WHERE workspace_id = ?").bind(w.id).all<any>();
+        const { content, ...rest } = policyForAgent(env, saved, all.results);
+        return { ...rest, updated: true };
+      }),
+  );
+
+  server.registerTool(
+    "list_tools",
+    {
+      description: "Search the team's Tools directory (useful tools found online): name, summary, tags, category, pricing.",
+      inputSchema: {
+        query: z.string().optional(),
+        tag: z.string().optional(),
+        needs_research: z.boolean().optional().describe("Only tools not yet researched by an agent or person"),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    (a) =>
+      guard(async () => {
+        const w = await ws();
+        const q = a.query?.toLowerCase().trim();
+        return (await listTools(env, w))
+          .filter((t) => !a.tag || t.tags.includes(a.tag.toLowerCase()))
+          .filter((t) => !a.needs_research || !["agent", "human"].includes(t.enriched_by))
+          .filter((t) => !q || `${t.name} ${t.domain} ${t.summary} ${t.tags.join(" ")} ${t.category ?? ""}`.toLowerCase().includes(q))
+          .slice(0, 100)
+          .map(({ notes, created_by, ...t }) => t);
+      }),
+  );
+
+  server.registerTool(
+    "get_tool",
+    {
+      description: "Read one tool from the Tools directory, by id or URL.",
+      inputSchema: { tool: z.string().describe("Tool id or its URL") },
+      annotations: { readOnlyHint: true },
+    },
+    ({ tool }) => guard(async () => toolOut(await ws(), await getTool(env, await ws(), tool))),
+  );
+
+  server.registerTool(
+    "add_tool",
+    {
+      description: "Add a tool to the Tools directory by its website. A first summary and tags are filled in automatically; refine them with update_tool.",
+      inputSchema: { url: z.string(), notes: z.string().optional() },
+    },
+    (a) =>
+      guard(async () => {
+        const w = await ws();
+        let first: Promise<unknown> = Promise.resolve();
+        const t = await addTool(env, w, actor, { url: a.url, notes: a.notes, research: false }, (p) => void (first = p));
+        await first.catch(() => {}); // wait for the first pass so the agent sees the summary and tags
+        return toolOut(w, await getTool(env, w, t.id));
+      }),
+  );
+
+  server.registerTool(
+    "update_tool",
+    {
+      description:
+        "Write your research into the Tools directory: a plain 1–2 sentence summary (what it does, who it's for), 3–6 lowercase tags, " +
+        "a category, pricing (e.g. Free, Freemium, From $20/mo, Open source) and notes (standout features, alternatives, how we'd use it).",
+      inputSchema: {
+        tool: z.string().describe("Tool id or URL"),
+        name: z.string().optional(),
+        summary: z.string().optional(),
+        tags: z.array(z.string()).optional(),
+        category: z.string().optional(),
+        pricing: z.string().optional(),
+        notes: z.string().optional().describe("Markdown"),
+      },
+    },
+    ({ tool, ...rest }) =>
+      guard(async () => {
+        const w = await ws();
+        const t = await getTool(env, w, tool);
+        return updateTool(env, w, actor, t.id, rest);
       }),
   );
 

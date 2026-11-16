@@ -16,6 +16,7 @@ import {
   BarChart3,
   Lightbulb,
   BookOpen,
+  Wrench,
   Building,
   MoreHorizontal,
 } from "lucide-react";
@@ -233,6 +234,9 @@ function Sidebar({ shell }: { shell: ShellContext }) {
           </NavItem>
           <NavItem to="/projects" end icon={<FolderKanban size={15} />}>
             Projects
+          </NavItem>
+          <NavItem to="/tools" icon={<Wrench size={15} />}>
+            Tools
           </NavItem>
           <NavItem to="/settings" icon={<Settings size={15} />}>
             Workspace settings

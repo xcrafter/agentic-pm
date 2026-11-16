@@ -1,9 +1,26 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building, Lightbulb, MessageSquareQuote, Plus, Search, Trash2, UserPlus, Users, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Building, Lightbulb, MessageSquareQuote, Pencil, Pin, PinOff, Plus, Search, Trash2, UserPlus, Users, X } from "lucide-react";
+import { type ReactNode, useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { type Customer, type CustomerRequest, type Idea, type IdeaRequest, api } from "../api";
-import { Button, EmptyState, IconButton, Modal, ModalFooter, Tag, TopBar, canDelete, cx, inputClass, textareaClass, timeAgo, useMe, useMembers } from "../components";
+import { type Customer, type CustomerRequest, type Idea, type IdeaRequest, type RequestListItem, type RequestStatus, api } from "../api";
+import {
+  Button,
+  DeleteButton,
+  EmptyState,
+  IconButton,
+  Menu,
+  Modal,
+  ModalFooter,
+  Tag,
+  TopBar,
+  canDelete,
+  cx,
+  inputClass,
+  textareaClass,
+  timeAgo,
+  useMe,
+  useMembers,
+} from "../components";
 
 export const useCustomers = () => useQuery({ queryKey: ["customers"], queryFn: () => api.get<(Customer & { requests: number })[]>("/api/customers") });
 const today = () => new Date().toISOString().slice(0, 10);
@@ -69,7 +86,7 @@ export function CustomerPicker({ value, onChange, autoFocus }: { value: Picked; 
 
 type Feature = { id?: string; title: string } | null;
 
-function FeaturePicker({ value, onChange }: { value: Feature; onChange: (v: Feature) => void }) {
+function FeaturePicker({ value, onChange, existingOnly }: { value: Feature; onChange: (v: Feature) => void; existingOnly?: boolean }) {
   const ideas = useQuery({ queryKey: ["ideas"], queryFn: () => api.get<{ labels: string[]; ideas: Idea[] }>("/api/ideas") });
   const [q, setQ] = useState(value?.title ?? "");
   const [open, setOpen] = useState(false);
@@ -83,7 +100,7 @@ function FeaturePicker({ value, onChange }: { value: Feature; onChange: (v: Feat
       <input
         className={inputClass}
         value={q}
-        placeholder="Search existing ideas, or describe a new feature"
+        placeholder={existingOnly ? "Search ideas" : "Search existing ideas, or describe a new feature"}
         aria-label="Feature"
         onFocus={() => setOpen(true)}
         onChange={(e) => {
@@ -106,7 +123,7 @@ function FeaturePicker({ value, onChange }: { value: Feature; onChange: (v: Feat
               {i.request_count > 0 && <span className="shrink-0 text-[12px] text-ink-3">{i.request_count} asked</span>}
             </button>
           ))}
-          {q.trim() && (
+          {q.trim() && !existingOnly && (
             <button
               type="button"
               onClick={() => (onChange({ title: q.trim() }), setOpen(false))}
@@ -185,7 +202,7 @@ export function LogRequestModal({ open, onClose, ideaId, onLogged }: { open: boo
           </label>
           {save.error && <p className="text-[13px] text-danger">{(save.error as Error).message}</p>}
         </div>
-        <ModalFooter hint="The same customer asking again updates their request instead of counting twice.">
+        <ModalFooter hint="If this customer already asked for it, this counts as another ask on their request.">
           <Button type="button" variant="ghost" onClick={onClose}>
             Cancel
           </Button>
@@ -198,28 +215,176 @@ export function LogRequestModal({ open, onClose, ideaId, onLogged }: { open: boo
   );
 }
 
-/** "Requested by" list on an idea, with add/remove. */
-export function RequestsSection({ idea }: { idea: Idea }) {
+export const REQ_STATUS: Record<RequestStatus, { label: string; tone: "blue" | "green" | "gray" }> = {
+  open: { label: "Open", tone: "blue" },
+  live: { label: "Live", tone: "green" },
+  archived: { label: "Archived", tone: "gray" },
+};
+
+function useRequestActions() {
   const qc = useQueryClient();
-  const detail = useQuery({ queryKey: ["idea", idea.id], queryFn: () => api.get<Idea>(`/api/ideas/${idea.id}`) });
+  const refresh = () => {
+    for (const k of ["ideas", "idea", "customers", "customer", "idea-requests"]) qc.invalidateQueries({ queryKey: [k] });
+  };
+  const patch = useMutation({ mutationFn: ({ id, ...b }: { id: string } & Record<string, unknown>) => api.patch(`/api/idea-requests/${id}`, b), onSettled: refresh });
+  return { patch, refresh };
+}
+
+type RequestLike = Pick<IdeaRequest, "id" | "idea_id" | "note" | "requested_at" | "added_by" | "times" | "status" | "pinned_at"> & {
+  customer_name?: string;
+  idea_title?: string;
+};
+
+export function RequestStatusMenu({ r, onChange }: { r: RequestLike; onChange: (s: RequestStatus) => void }) {
+  return (
+    <Menu
+      label="Request status"
+      width="w-48"
+      value={r.status}
+      onChange={onChange}
+      options={(["open", "live", "archived"] as RequestStatus[]).map((v) => ({ value: v, label: REQ_STATUS[v].label }))}
+      trigger={
+        <span className="flex h-6 items-center rounded-md px-0.5 hover:bg-hover">
+          <Tag tone={REQ_STATUS[r.status].tone}>{REQ_STATUS[r.status].label}</Tag>
+        </span>
+      }
+    />
+  );
+}
+
+/** One customer request with pin, status, edit and delete. `title` is the customer (on an idea) or the feature (on a customer). */
+function RequestItem({ r, title, plan }: { r: RequestLike; title: ReactNode; plan?: string | null }) {
+  const me = useMe().data?.member;
   const members = useMembers();
+  const { patch, refresh } = useRequestActions();
+  const [editing, setEditing] = useState(false);
+  return (
+    <li className={cx("group rounded-lg border px-3 py-2", r.pinned_at ? "border-[#e5a00d]/40 bg-[#fff8e6] dark:bg-[#e5a00d]/10" : "border-line", r.status === "archived" && "opacity-70")}>
+      <div className="flex items-center gap-1.5 text-[13px]">
+        {r.pinned_at && <Pin size={12} className="shrink-0 text-[#e5a00d]" fill="currentColor" aria-label="Pinned" />}
+        <span className="min-w-0 flex-1 truncate font-medium">{title}</span>
+        {plan && <Tag>{plan}</Tag>}
+        {r.times > 1 && (
+          <span className="shrink-0 rounded-[6px] bg-accent-soft px-1.5 text-[12px] leading-5 font-medium text-accent" title={`Asked ${r.times} times`}>
+            {r.times}×
+          </span>
+        )}
+        <RequestStatusMenu r={r} onChange={(status) => patch.mutate({ id: r.id, status })} />
+      </div>
+      {r.note && <p className="mt-1 text-[13px] leading-relaxed whitespace-pre-line text-ink-2">“{r.note}”</p>}
+      <div className="mt-1 flex items-center gap-1 text-[12px] text-ink-3">
+        <span title={`Logged by ${members.data?.find((m) => m.id === r.added_by)?.name ?? "someone"}`}>Last asked {r.requested_at}</span>
+        <span className="ml-auto flex items-center gap-0.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100">
+          <IconButton label={r.pinned_at ? "Unpin request" : "Pin request"} className="h-6 w-6" onClick={() => patch.mutate({ id: r.id, pinned: !r.pinned_at })}>
+            {r.pinned_at ? <PinOff size={12} /> : <Pin size={12} />}
+          </IconButton>
+          <IconButton label="Edit request" className="h-6 w-6" onClick={() => setEditing(true)}>
+            <Pencil size={12} />
+          </IconButton>
+          {canDelete(me, r.added_by) && (
+            <DeleteButton icon what="request" name={typeof title === "string" ? title : undefined} onDelete={() => api.del(`/api/idea-requests/${r.id}`)} onDone={refresh} />
+          )}
+        </span>
+      </div>
+      <EditRequestModal open={editing} onClose={() => setEditing(false)} request={r} />
+    </li>
+  );
+}
+
+export function EditRequestModal({ open, onClose, request }: { open: boolean; onClose: () => void; request: RequestLike }) {
+  const { patch } = useRequestActions();
+  const [note, setNote] = useState(request.note);
+  const [date, setDate] = useState(request.requested_at);
+  const [times, setTimes] = useState(String(request.times));
+  const [status, setStatus] = useState<RequestStatus>(request.status);
+  const [feature, setFeature] = useState<Feature>(null);
+  useEffect(() => {
+    if (open) {
+      setNote(request.note);
+      setDate(request.requested_at);
+      setTimes(String(request.times));
+      setStatus(request.status);
+      setFeature(null);
+    }
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  const moving = feature?.id && feature.id !== request.idea_id;
+  return (
+    <Modal open={open} onClose={onClose} title={<><Pencil size={15} className="text-ink-3" /> Edit request{request.customer_name ? ` from ${request.customer_name}` : ""}</>}>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          patch.mutate(
+            { id: request.id, note, requested_at: date, times: Number(times), status, ...(moving ? { idea_id: feature!.id } : {}) },
+            { onSuccess: onClose },
+          );
+        }}
+      >
+        <div className="max-h-[70vh] space-y-4 overflow-y-auto p-4">
+          <label className="block">
+            <span className="mb-1.5 block text-[13px] font-medium">In their words</span>
+            <textarea className={textareaClass} rows={4} value={note} onChange={(e) => setNote(e.target.value)} />
+          </label>
+          <div className="flex flex-wrap gap-3">
+            <label className="block w-44">
+              <span className="mb-1.5 block text-[13px] font-medium">Last asked</span>
+              <input type="date" className={inputClass} value={date} max={today()} onChange={(e) => setDate(e.target.value)} />
+            </label>
+            <label className="block w-28">
+              <span className="mb-1.5 block text-[13px] font-medium">Times asked</span>
+              <input type="number" min={1} max={9999} className={inputClass} value={times} onChange={(e) => setTimes(e.target.value)} />
+            </label>
+          </div>
+          <div>
+            <span className="mb-1.5 block text-[13px] font-medium">Status</span>
+            <div className="flex w-fit rounded-lg border border-line-strong bg-subtle p-0.5">
+              {(["open", "live", "archived"] as RequestStatus[]).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  aria-pressed={status === v}
+                  onClick={() => setStatus(v)}
+                  className={cx("h-7 rounded-md px-3 text-[12px] font-medium", status === v ? "bg-canvas text-ink shadow-btn" : "text-ink-3 hover:text-ink-2")}
+                >
+                  {REQ_STATUS[v].label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <label className="block">
+            <span className="mb-1.5 block text-[13px] font-medium">Move to another feature (optional)</span>
+            <FeaturePicker value={feature} onChange={setFeature} existingOnly />
+            {request.idea_title && <span className="mt-1 block text-[12px] text-ink-3">Now: {request.idea_title}</span>}
+            {moving && <span className="mt-1 block text-[12px] text-ink-3">If they already asked for that feature, the two requests are merged.</span>}
+          </label>
+          {patch.error && <p className="text-[13px] text-danger">{(patch.error as Error).message}</p>}
+        </div>
+        <ModalFooter>
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" disabled={patch.isPending || !(Number(times) >= 1)}>
+            {patch.isPending ? "Saving…" : "Save changes"}
+          </Button>
+        </ModalFooter>
+      </form>
+    </Modal>
+  );
+}
+
+/** "Requested by" list on an idea: customers who asked, how often, and whether it's open/live/archived for them. */
+export function RequestsSection({ idea }: { idea: Idea }) {
+  const detail = useQuery({ queryKey: ["idea", idea.id], queryFn: () => api.get<Idea>(`/api/ideas/${idea.id}`) });
   const [adding, setAdding] = useState(false);
-  const remove = useMutation({
-    mutationFn: (id: string) => api.del(`/api/idea-requests/${id}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["ideas"] });
-      qc.invalidateQueries({ queryKey: ["idea", idea.id] });
-      qc.invalidateQueries({ queryKey: ["customers"] });
-    },
-  });
   const reqs: IdeaRequest[] = detail.data?.requests ?? [];
+  const active = reqs.filter((r) => r.status !== "archived");
   return (
     <div className="mt-5 border-t border-line pt-4">
       <div className="mb-2 flex items-center gap-2">
         <h3 className="text-[13px] font-semibold">Requested by</h3>
-        {reqs.length > 0 && (
+        {active.length > 0 && (
           <span className="text-[12px] text-ink-3">
-            {reqs.length} customer{reqs.length > 1 ? "s" : ""}
+            {active.length} customer{active.length > 1 ? "s" : ""}
+            {idea.request_times > active.length ? ` · asked ${idea.request_times}×` : ""}
             {idea.request_mrr ? ` · ${money(idea.request_mrr)} MRR` : ""}
           </span>
         )}
@@ -230,25 +395,129 @@ export function RequestsSection({ idea }: { idea: Idea }) {
       {!reqs.length && <p className="text-[12px] text-ink-3">No customer has asked for this yet. Add one when a customer requests it.</p>}
       <ul className="space-y-1.5">
         {reqs.map((r) => (
-          <li key={r.id} className="group rounded-lg border border-line px-3 py-2">
-            <div className="flex items-center gap-2 text-[13px]">
-              <Link to={`/customers?c=${r.customer_id}`} className="truncate font-medium hover:underline">
+          <RequestItem
+            key={r.id}
+            r={r}
+            plan={r.plan}
+            title={
+              <Link to={`/customers?c=${r.customer_id}`} className="hover:underline">
                 {r.customer_name}
               </Link>
-              {r.plan && <Tag>{r.plan}</Tag>}
-              <span className="ml-auto shrink-0 text-[12px] text-ink-3" title={`Added by ${members.data?.find((m) => m.id === r.added_by)?.name ?? "someone"}`}>
-                {r.requested_at}
-              </span>
-              <IconButton label={`Remove ${r.customer_name}'s request`} className="h-6 w-6 opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-danger" onClick={() => remove.mutate(r.id)}>
-                <X size={12} />
-              </IconButton>
-            </div>
-            {r.note && <p className="mt-1 text-[13px] leading-relaxed text-ink-2">“{r.note}”</p>}
-          </li>
+            }
+          />
         ))}
       </ul>
       <LogRequestModal open={adding} onClose={() => setAdding(false)} ideaId={idea.id} />
     </div>
+  );
+}
+
+/** Every customer request, filterable by open / live / archived. */
+function RequestsTab() {
+  const [params, setParams] = useSearchParams();
+  const status = (params.get("rs") as RequestStatus | "all" | null) ?? "open";
+  const [q, setQ] = useState("");
+  const all = useQuery({ queryKey: ["idea-requests"], queryFn: () => api.get<RequestListItem[]>("/api/idea-requests") });
+  const { patch, refresh } = useRequestActions();
+  const me = useMe().data?.member;
+  const [editing, setEditing] = useState<RequestListItem | null>(null);
+  const text = q.trim().toLowerCase();
+  const rows = (all.data ?? []).filter(
+    (r) => (status === "all" || r.status === status) && (!text || `${r.customer_name} ${r.idea_title} ${r.note}`.toLowerCase().includes(text)),
+  );
+  const count = (s: RequestStatus) => (all.data ?? []).filter((r) => r.status === s).length;
+  const setStatus = (v: string) => {
+    const next = new URLSearchParams(params);
+    if (v === "open") next.delete("rs");
+    else next.set("rs", v);
+    setParams(next, { replace: true });
+  };
+  const cell = "h-11 border-r border-b border-line px-3 text-[13px] whitespace-nowrap";
+  return (
+    <>
+      <div className="scroll-row flex flex-wrap items-center gap-2 border-b border-line px-3 py-2 md:px-5">
+        <div className="flex rounded-lg border border-line-strong bg-subtle p-0.5">
+          {([["open", "Open"], ["live", "Live"], ["archived", "Archived"], ["all", "All"]] as const).map(([v, label]) => (
+            <button
+              key={v}
+              aria-pressed={status === v}
+              onClick={() => setStatus(v)}
+              className={cx("h-6 rounded-md px-2 text-[12px] font-medium", status === v ? "bg-canvas text-ink shadow-btn" : "text-ink-3 hover:text-ink-2")}
+            >
+              {label}
+              {v !== "all" && <span className="ml-1 tabular-nums text-ink-3">{count(v)}</span>}
+            </button>
+          ))}
+        </div>
+        <label className="flex h-7 w-60 items-center gap-1.5 rounded-lg border border-line-strong bg-canvas px-2 text-[12px] focus-within:border-accent/50">
+          <Search size={13} className="shrink-0 text-ink-3" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search customer, feature or note" aria-label="Search requests" className="w-full min-w-0 bg-transparent outline-none placeholder:text-ink-3" />
+        </label>
+        <span className="text-[12px] text-ink-3 tabular-nums md:ml-auto">{rows.length} requests</span>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto">
+        {all.isLoading ? (
+          <p className="p-6 text-[13px] text-ink-3">Loading…</p>
+        ) : !rows.length ? (
+          <EmptyState icon={<MessageSquareQuote size={18} />} title={all.data?.length ? "No requests here" : "No requests yet"}>
+            {status === "live" ? "When a requested idea goes live, its requests move here so you know who to tell." : "Log what customers ask for and it shows up here."}
+          </EmptyState>
+        ) : (
+          <table className="w-full min-w-[860px] border-separate border-spacing-0">
+            <thead className="sticky top-0 z-10 bg-canvas">
+              <tr>
+                {["", "Customer", "Feature", "Asked", "Status", "Last asked", ""].map((h, i) => (
+                  <th key={i} className={cx("h-9 border-b border-line px-3 text-left text-[12px] font-medium text-ink-3", i > 0 && i < 6 && "border-r", i === 3 && "text-right")}>
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} className={cx("group hover:bg-hover", r.status === "archived" && "text-ink-2")}>
+                  <td className="w-9 border-b border-line pl-2">
+                    <IconButton
+                      label={r.pinned_at ? "Unpin request" : "Pin request"}
+                      className={cx("h-6 w-6", r.pinned_at ? "text-[#e5a00d]" : "opacity-0 group-hover:opacity-100 focus:opacity-100")}
+                      onClick={() => patch.mutate({ id: r.id, pinned: !r.pinned_at })}
+                    >
+                      <Pin size={13} fill={r.pinned_at ? "currentColor" : "none"} />
+                    </IconButton>
+                  </td>
+                  <td className={cx(cell, "max-w-[200px]")}>
+                    <Link to={`/customers?c=${r.customer_id}`} className="block truncate font-medium hover:underline">
+                      {r.customer_name}
+                    </Link>
+                  </td>
+                  <td className={cx(cell, "max-w-[360px]")}>
+                    <Link to={`/ideas?idea=${r.idea_id}&stage=all`} className="block truncate hover:underline" title={r.note || undefined}>
+                      {r.idea_title}
+                    </Link>
+                  </td>
+                  <td className={cx(cell, "text-right tabular-nums")}>{r.times}×</td>
+                  <td className={cell}>
+                    <RequestStatusMenu r={r} onChange={(st) => patch.mutate({ id: r.id, status: st })} />
+                  </td>
+                  <td className={cx(cell, "text-ink-3")}>{r.requested_at}</td>
+                  <td className="w-20 border-b border-line px-1">
+                    <span className="flex items-center gap-0.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100">
+                      <IconButton label="Edit request" className="h-6 w-6" onClick={() => setEditing(r)}>
+                        <Pencil size={12} />
+                      </IconButton>
+                      {canDelete(me, r.added_by) && (
+                        <DeleteButton icon what="request" name={`${r.customer_name}: ${r.idea_title}`} onDelete={() => api.del(`/api/idea-requests/${r.id}`)} onDone={refresh} />
+                      )}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+      {editing && <EditRequestModal open onClose={() => setEditing(null)} request={editing} />}
+    </>
   );
 }
 
@@ -257,13 +526,20 @@ export function RequestsSection({ idea }: { idea: Idea }) {
 export function CustomersPage() {
   const [params, setParams] = useSearchParams();
   const selected = params.get("c");
+  const tab = params.get("tab") === "requests" ? "requests" : "customers";
   const customers = useCustomers();
   const [q, setQ] = useState("");
   const [adding, setAdding] = useState(false);
   const [logging, setLogging] = useState(false);
   const text = q.trim().toLowerCase();
   const rows = (customers.data ?? []).filter((c) => !text || c.name.toLowerCase().includes(text) || (c.domain ?? "").includes(text) || (c.plan ?? "").toLowerCase().includes(text));
-  const pick = (id: string | null) => setParams(id ? { c: id } : {}, { replace: true });
+  const pick = (id: string | null) => {
+    const next = new URLSearchParams(params);
+    if (id) next.set("c", id);
+    else next.delete("c");
+    setParams(next, { replace: true });
+  };
+  const setTab = (t: string) => setParams(t === "requests" ? { tab: "requests" } : {}, { replace: true });
   const cell = "h-11 border-r border-b border-line px-3 text-[13px] whitespace-nowrap";
 
   return (
@@ -283,6 +559,23 @@ export function CustomersPage() {
       />
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col">
+          <div className="flex h-10 shrink-0 items-end gap-4 border-b border-line px-3 md:px-5" role="tablist">
+            {([["customers", "Customers"], ["requests", "Requests"]] as const).map(([v, label]) => (
+              <button
+                key={v}
+                role="tab"
+                aria-selected={tab === v}
+                onClick={() => setTab(v)}
+                className={cx("-mb-px h-9 border-b-2 px-0.5 text-[13px] font-medium", tab === v ? "border-ink text-ink" : "border-transparent text-ink-3 hover:text-ink-2")}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {tab === "requests" ? (
+            <RequestsTab />
+          ) : (
+          <>
           <div className="flex items-center gap-2 border-b border-line px-3 py-2 md:px-5">
             <label className="flex h-7 w-60 items-center gap-1.5 rounded-lg border border-line-strong bg-canvas px-2 text-[12px] focus-within:border-accent/50">
               <Search size={13} className="shrink-0 text-ink-3" />
@@ -334,6 +627,8 @@ export function CustomersPage() {
               </table>
             )}
           </div>
+          </>
+          )}
         </div>
         {selected && <CustomerPanel key={selected} id={selected} onClose={() => pick(null)} />}
       </div>
@@ -459,21 +754,20 @@ function CustomerPanel({ id, onClose }: { id: string; onClose: () => void }) {
           </div>
 
           <h3 className="mt-6 mb-2 text-[13px] font-semibold">
-            What they've asked for <span className="font-normal text-ink-3">({c.requests.length})</span>
+            What they've asked for <span className="font-normal text-ink-3">({c.requests.filter((r) => r.status === "open").length} open of {c.requests.length})</span>
           </h3>
           {!c.requests.length && <p className="text-[12px] text-ink-3">No requests yet.</p>}
           <ul className="space-y-1.5">
             {c.requests.map((r) => (
-              <li key={r.id} className="rounded-lg border border-line px-3 py-2">
-                <div className="flex items-center gap-2 text-[13px]">
-                  <Link to={`/ideas?idea=${r.idea_id}&status=all`} className="min-w-0 flex-1 truncate font-medium hover:underline">
+              <RequestItem
+                key={r.id}
+                r={{ ...r, customer_name: c.name }}
+                title={
+                  <Link to={`/ideas?idea=${r.idea_id}&stage=all`} className="hover:underline">
                     {r.idea_title}
                   </Link>
-                  {r.idea_status === "converted" && <Tag tone="green">Task created</Tag>}
-                  <span className="shrink-0 text-[12px] text-ink-3">{r.requested_at}</span>
-                </div>
-                {r.note && <p className="mt-1 text-[13px] leading-relaxed text-ink-2">“{r.note}”</p>}
-              </li>
+                }
+              />
             ))}
           </ul>
         </div>

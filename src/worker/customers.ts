@@ -5,7 +5,7 @@
 import { Hono } from "hono";
 import type { Actor, MemberRow, WorkspaceRow } from "./domain";
 import { logActivity, notify } from "./domain";
-import { createIdea, getIdea } from "./ideas";
+import { type RequestStatus, REQUEST_STATUSES, createIdea, getIdea, requestStatusFor } from "./ideas";
 import { type AppEnv, HttpError, badRequest, forbidden, newId, notFound, nowIso } from "./util";
 
 export interface CustomerRow {
@@ -97,22 +97,31 @@ export async function resolveCustomer(env: AppEnv, ws: WorkspaceRow, actor: Acto
 
 /** Link a customer to an idea. Asking again updates the note/date instead of double-counting. */
 export async function addRequest(env: AppEnv, ws: WorkspaceRow, actor: Actor, ideaId: string, customer: CustomerRow, note?: string, requestedAt?: string) {
-  await getIdea(env, ws, ideaId);
+  const idea = await getIdea(env, ws, ideaId);
   const date = requestedAt && /^\d{4}-\d{2}-\d{2}$/.test(requestedAt) ? requestedAt : today();
   const text = (note ?? "").trim().slice(0, 2000);
-  const existing = await env.DB.prepare("SELECT id FROM idea_requests WHERE idea_id = ? AND customer_id = ?").bind(ideaId, customer.id).first<{ id: string }>();
+  const existing = await env.DB.prepare("SELECT id, times, status, requested_at FROM idea_requests WHERE idea_id = ? AND customer_id = ?")
+    .bind(ideaId, customer.id)
+    .first<{ id: string; times: number; status: RequestStatus; requested_at: string }>();
+  const now = nowIso();
   if (existing) {
-    await env.DB.prepare("UPDATE idea_requests SET note = CASE WHEN ? = '' THEN note ELSE ? END, requested_at = ? WHERE id = ?")
-      .bind(text, text, date, existing.id)
+    // Asked again: count it, keep the latest date and what they said this time. An archived request reopens.
+    await env.DB.prepare(
+      `UPDATE idea_requests SET times = times + 1, note = CASE WHEN ? = '' THEN note ELSE ? END, requested_at = MAX(requested_at, ?),
+       status = CASE WHEN status = 'archived' THEN ? ELSE status END, updated_at = ? WHERE id = ?`,
+    )
+      .bind(text, text, date, requestStatusFor(idea.stage === "archived" ? "backlog" : idea.stage), now, existing.id)
       .run();
   } else {
-    await env.DB.prepare("INSERT INTO idea_requests (id, idea_id, customer_id, note, requested_at, added_by, created_at) VALUES (?,?,?,?,?,?,?)")
-      .bind(newId(), ideaId, customer.id, text, date, actor.member.id, nowIso())
+    await env.DB.prepare(
+      "INSERT INTO idea_requests (id, idea_id, customer_id, note, requested_at, added_by, created_at, status, times) VALUES (?,?,?,?,?,?,?,?,1)",
+    )
+      .bind(newId(), ideaId, customer.id, text, date, actor.member.id, now, requestStatusFor(idea.stage === "archived" ? "backlog" : idea.stage))
       .run();
   }
-  await logActivity(env, ws.id, actor, "idea", ideaId, "requested", undefined, { customer: customer.name, note: text });
+  await logActivity(env, ws.id, actor, "idea", ideaId, "requested", undefined, { customer: customer.name, note: text, again: !!existing });
   await notify(env, ws.id, { type: "ideas" });
-  return { already: !!existing };
+  return { already: !!existing, times: (existing?.times ?? 0) + 1 };
 }
 
 /** One step: customer (existing or new) + feature (existing idea or a new one). */
@@ -143,8 +152,8 @@ export async function logFeatureRequest(
 
 export async function listCustomers(env: AppEnv, ws: WorkspaceRow) {
   const rows = await env.DB.prepare(
-    `SELECT c.*, COUNT(r.id) AS requests, MAX(r.requested_at) AS last_request
-     FROM customers c LEFT JOIN idea_requests r ON r.customer_id = c.id
+    `SELECT c.*, COUNT(r.id) AS requests, SUM(CASE WHEN r.status = 'open' THEN 1 ELSE 0 END) AS open_requests, MAX(r.requested_at) AS last_request
+     FROM customers c LEFT JOIN idea_requests r ON r.customer_id = c.id AND r.status != 'archived'
      WHERE c.workspace_id = ? GROUP BY c.id ORDER BY c.name COLLATE NOCASE`,
   )
     .bind(ws.id)
@@ -156,8 +165,10 @@ export async function getCustomer(env: AppEnv, ws: WorkspaceRow, id: string) {
   const c = await env.DB.prepare("SELECT * FROM customers WHERE id = ? AND workspace_id = ?").bind(id, ws.id).first<CustomerRow>();
   if (!c) throw notFound("Customer");
   const reqs = await env.DB.prepare(
-    `SELECT r.id, r.idea_id, r.note, r.requested_at, r.added_by, i.title AS idea_title, i.status AS idea_status, i.labels AS idea_labels
-     FROM idea_requests r JOIN ideas i ON i.id = r.idea_id WHERE r.customer_id = ? ORDER BY r.requested_at DESC, r.created_at DESC`,
+    `SELECT r.id, r.idea_id, r.customer_id, r.note, r.requested_at, r.added_by, r.times, r.status, r.pinned_at,
+            i.title AS idea_title, i.status AS idea_status, i.stage AS idea_stage, i.labels AS idea_labels
+     FROM idea_requests r JOIN ideas i ON i.id = r.idea_id WHERE r.customer_id = ?
+     ORDER BY (r.pinned_at IS NULL), CASE r.status WHEN 'open' THEN 0 WHEN 'live' THEN 1 ELSE 2 END, r.requested_at DESC, r.created_at DESC`,
   )
     .bind(id)
     .all<{ id: string; idea_id: string; note: string; requested_at: string; added_by: string; idea_title: string; idea_status: string; idea_labels: string }>();
@@ -217,16 +228,107 @@ customerRoutes.post("/api/ideas/:id/requests", async (c) => {
   return c.json({ ...r, idea: await getIdea(c.env, ws, c.req.param("id")) });
 });
 
-customerRoutes.delete("/api/idea-requests/:id", async (c) => {
-  const ws = c.get("ws");
-  const r = await c.env.DB.prepare(
+type ReqRow = {
+  id: string;
+  idea_id: string;
+  customer_id: string;
+  customer_name: string;
+  note: string;
+  requested_at: string;
+  added_by: string;
+  times: number;
+  status: RequestStatus;
+  pinned_at: string | null;
+};
+
+async function getRequest(env: AppEnv, ws: WorkspaceRow, id: string) {
+  const r = await env.DB.prepare(
     "SELECT r.*, c.name AS customer_name FROM idea_requests r JOIN customers c ON c.id = r.customer_id WHERE r.id = ? AND c.workspace_id = ?",
   )
-    .bind(c.req.param("id"), ws.id)
-    .first<{ id: string; idea_id: string; customer_name: string; added_by: string }>();
+    .bind(id, ws.id)
+    .first<ReqRow>();
   if (!r) throw notFound("Request");
+  return r;
+}
+
+// Every customer request, with its customer and feature (the Requests tab).
+customerRoutes.get("/api/idea-requests", async (c) => {
+  const rows = await c.env.DB.prepare(
+    `SELECT r.id, r.idea_id, r.customer_id, r.note, r.requested_at, r.added_by, r.times, r.status, r.pinned_at, r.created_at,
+            c.name AS customer_name, c.plan, c.mrr, i.title AS idea_title, i.stage AS idea_stage, i.status AS idea_status
+     FROM idea_requests r JOIN customers c ON c.id = r.customer_id JOIN ideas i ON i.id = r.idea_id
+     WHERE c.workspace_id = ? ORDER BY (r.pinned_at IS NULL), r.requested_at DESC, r.created_at DESC LIMIT 2000`,
+  )
+    .bind(c.get("ws").id)
+    .all();
+  return c.json(rows.results);
+});
+
+// Edit a request: what they said, when, how many times, open/live/archived, pinned, or which feature it's for.
+customerRoutes.patch("/api/idea-requests/:id", async (c) => {
+  const ws = c.get("ws");
+  const r = await getRequest(c.env, ws, c.req.param("id"));
+  const b = await c.req.json<{ note?: string; requested_at?: string; times?: number; status?: RequestStatus; pinned?: boolean; idea_id?: string }>();
+  const next = { ...r };
+  if (b.note !== undefined) next.note = String(b.note).trim().slice(0, 2000);
+  if (b.requested_at !== undefined) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(b.requested_at)) throw badRequest("Date must be YYYY-MM-DD");
+    next.requested_at = b.requested_at;
+  }
+  if (b.times !== undefined) {
+    const t = Math.round(Number(b.times));
+    if (!(t >= 1 && t <= 9999)) throw badRequest("Times asked must be 1 or more");
+    next.times = t;
+  }
+  if (b.status !== undefined) {
+    if (!REQUEST_STATUSES.includes(b.status)) throw badRequest("Status must be open, live or archived");
+    next.status = b.status;
+  }
+  if (b.pinned !== undefined) next.pinned_at = b.pinned ? (r.pinned_at ?? nowIso()) : null;
+  const now = nowIso();
+  if (b.idea_id && b.idea_id !== r.idea_id) {
+    await getIdea(c.env, ws, b.idea_id);
+    const clash = await c.env.DB.prepare("SELECT * FROM idea_requests WHERE idea_id = ? AND customer_id = ?").bind(b.idea_id, r.customer_id).first<ReqRow>();
+    if (clash) {
+      // This customer already asked for that feature: merge the two into one.
+      await c.env.DB.batch([
+        c.env.DB.prepare("UPDATE idea_requests SET times = ?, note = ?, requested_at = ?, updated_at = ? WHERE id = ?").bind(
+          clash.times + next.times,
+          [clash.note, next.note].filter(Boolean).join("\n\n"),
+          clash.requested_at > next.requested_at ? clash.requested_at : next.requested_at,
+          now,
+          clash.id,
+        ),
+        c.env.DB.prepare("DELETE FROM idea_requests WHERE id = ?").bind(r.id),
+      ]);
+      await logActivity(c.env, ws.id, c.get("actor"), "idea", b.idea_id, "request_merged", { from_idea: r.idea_id }, { customer: r.customer_name });
+      await notify(c.env, ws.id, { type: "ideas" });
+      return c.json({ ...(await getRequest(c.env, ws, clash.id)), merged: true });
+    }
+    next.idea_id = b.idea_id;
+  }
+  await c.env.DB.prepare(
+    "UPDATE idea_requests SET idea_id = ?, note = ?, requested_at = ?, times = ?, status = ?, pinned_at = ?, updated_at = ? WHERE id = ?",
+  )
+    .bind(next.idea_id, next.note, next.requested_at, next.times, next.status, next.pinned_at, now, r.id)
+    .run();
+  await logActivity(c.env, ws.id, c.get("actor"), "idea", next.idea_id, "request_updated", { status: r.status, times: r.times, idea_id: r.idea_id }, {
+    customer: r.customer_name,
+    status: next.status,
+    times: next.times,
+    idea_id: next.idea_id,
+  });
+  await notify(c.env, ws.id, { type: "ideas" });
+  return c.json(await getRequest(c.env, ws, r.id));
+});
+
+customerRoutes.delete("/api/idea-requests/:id", async (c) => {
+  const ws = c.get("ws");
+  const me = c.get("me");
+  const r = await getRequest(c.env, ws, c.req.param("id"));
+  if (me.role !== "admin" && r.added_by !== me.id) throw forbidden("Only admins or whoever logged this request can delete it");
   await c.env.DB.prepare("DELETE FROM idea_requests WHERE id = ?").bind(r.id).run();
-  await logActivity(c.env, ws.id, c.get("actor"), "idea", r.idea_id, "request_removed", { customer: r.customer_name });
+  await logActivity(c.env, ws.id, c.get("actor"), "idea", r.idea_id, "request_removed", { customer: r.customer_name, note: r.note, times: r.times });
   await notify(c.env, ws.id, { type: "ideas" });
   return c.json({ ok: true });
 });

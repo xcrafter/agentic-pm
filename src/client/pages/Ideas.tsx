@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, ExternalLink, Lightbulb, MessageSquareQuote, Plus, Search, Sparkles, Trash2, Users, Wand2, X } from "lucide-react";
+import { Archive, ArrowRight, ExternalLink, Lightbulb, MessageSquareQuote, MoreHorizontal, Pencil, Pin, PinOff, Plus, Rocket, Search, Sparkles, Trash2, Undo2, Users, Wand2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
-import { type Idea, type IdeaStatus, type Member, api } from "../api";
+import { type Idea, type IdeaStage, type IdeaStatus, type Member, api } from "../api";
 import {
   AgentBadge,
   Avatar,
@@ -12,6 +12,8 @@ import {
   Markdown,
   MemberChip,
   Menu,
+  Modal,
+  ModalFooter,
   MultiSelect,
   Tag,
   TopBar,
@@ -62,7 +64,13 @@ const STATUS: Record<IdeaStatus, { label: string; tone: Tone }> = {
   converted: { label: "Task created", tone: "green" },
   parked: { label: "Parked", tone: "amber" },
 };
-type StatusFilter = "open" | "all" | IdeaStatus;
+const STAGE: Record<IdeaStage, { label: string; tone: Tone }> = {
+  backlog: { label: "Backlog", tone: "gray" },
+  live: { label: "Live", tone: "green" },
+  archived: { label: "Archived", tone: "gray" },
+};
+type StageFilter = IdeaStage | "all";
+type StatusFilter = "any" | IdeaStatus;
 
 export function IdeaLabel({ label }: { label: string }) {
   return <Tag tone={LABEL_TONE[label] ?? "gray"}>{LABEL_NAME[label] ?? label}</Tag>;
@@ -74,13 +82,28 @@ export function IdeasPage() {
   const selectedId = params.get("idea");
   const labelsParam = params.get("labels");
   const labels = labelsParam ? labelsParam.split(",") : [];
-  const status = (params.get("status") as StatusFilter) || "open";
+  const stage = (params.get("stage") as StageFilter) || "backlog";
+  const status = (params.get("status") as StatusFilter) || "any";
+  const pinnedOnly = params.get("pinned") === "1";
   const owner = params.get("owner");
   const requestedOnly = params.get("requested") === "1";
   const sort = (params.get("sort") as "new" | "requests" | "mrr") || "new";
   const [q, setQ] = useState("");
   const [adding, setAdding] = useState(false);
   const [logging, setLogging] = useState(false);
+  const [checked, setChecked] = useState<Set<string>>(new Set());
+  const [confirmDelete, setConfirmDelete] = useState<string[] | null>(null);
+  const me = useMe().data?.member;
+  const qc = useQueryClient();
+  const bulk = useMutation({
+    mutationFn: (b: { ids: string[]; action: string }) => api.post<{ count: number }>("/api/ideas/bulk", b),
+    onSuccess: (_r, b) => {
+      setChecked(new Set());
+      if (b.action === "delete" && selectedId && b.ids.includes(selectedId)) setParam("idea", null);
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["ideas"] }),
+  });
+  const act = (ids: string[], action: string) => (action === "delete" ? setConfirmDelete(ids) : bulk.mutate({ ids, action }));
   const members = useMembers();
   const byId = new Map((members.data ?? []).map((m) => [m.id, m]));
   const ideas = useQuery({ queryKey: ["ideas"], queryFn: () => api.get<{ labels: string[]; ideas: Idea[] }>("/api/ideas") });
@@ -93,19 +116,29 @@ export function IdeasPage() {
     setParams(next, { replace: true });
   };
 
-  const byStatus = all.filter((i) =>
-    status === "all" ? true : status === "open" ? i.status === "new" || i.status === "exploring" || i.status === "planned" : i.status === status,
-  );
+  const byStatus = all.filter((i) => (stage === "all" || i.stage === stage) && (stage !== "backlog" || status === "any" || i.status === status));
+  const stageCount = (st: IdeaStage) => all.filter((i) => i.stage === st).length;
   const text = q.trim().toLowerCase();
   const list = byStatus.filter(
     (i) =>
       (!requestedOnly || i.request_count > 0) &&
+      (!pinnedOnly || !!i.pinned_at) &&
       (!labels.length || labels.every((l) => i.labels.includes(l))) &&
       (!owner || (owner === "none" ? !i.suggested_owner_id : i.suggested_owner_id === owner)) &&
       (!text || i.title.toLowerCase().includes(text) || i.body.toLowerCase().includes(text)),
   );
   if (sort === "requests") list.sort((a, b) => b.request_count - a.request_count || b.request_mrr - a.request_mrr);
   if (sort === "mrr") list.sort((a, b) => b.request_mrr - a.request_mrr || b.request_count - a.request_count);
+  // Pinned ideas always come first.
+  list.sort((a, b) => Number(!!b.pinned_at) - Number(!!a.pinned_at));
+  const visibleChecked = list.filter((i) => checked.has(i.id)).map((i) => i.id);
+  const toggleCheck = (id: string) =>
+    setChecked((c) => {
+      const n = new Set(c);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
   const labelCounts = new Map(allLabels.map((l) => [l, byStatus.filter((i) => i.labels.includes(l)).length]));
   const selected = all.find((i) => i.id === selectedId) ?? null;
   const ownerName = owner === "none" ? "No owner" : owner ? byId.get(owner)?.name : null;
@@ -127,6 +160,31 @@ export function IdeasPage() {
         }
       />
       <LogRequestModal open={logging} onClose={() => setLogging(false)} onLogged={(id) => setParam("idea", id)} />
+      <Modal open={!!confirmDelete} onClose={() => setConfirmDelete(null)} title={`Delete ${confirmDelete?.length === 1 ? "idea" : `${confirmDelete?.length} ideas`}?`}>
+        <div className="space-y-2 px-4 py-4 text-[13px] text-ink-2">
+          <ul className="max-h-48 list-disc overflow-auto pl-5">
+            {all
+              .filter((i) => confirmDelete?.includes(i.id))
+              .map((i) => (
+                <li key={i.id}>{i.title}</li>
+              ))}
+          </ul>
+          <p>Their customer requests are deleted too. Tasks made from them stay. This can't be undone; archive instead if you might want them back.</p>
+          {bulk.error && <p className="text-danger">{(bulk.error as Error).message}</p>}
+        </div>
+        <ModalFooter>
+          <Button variant="ghost" onClick={() => setConfirmDelete(null)}>
+            Cancel
+          </Button>
+          <Button
+            variant="danger"
+            disabled={bulk.isPending}
+            onClick={() => bulk.mutate({ ids: confirmDelete!, action: "delete" }, { onSuccess: () => setConfirmDelete(null) })}
+          >
+            {bulk.isPending ? "Deleting…" : "Delete"}
+          </Button>
+        </ModalFooter>
+      </Modal>
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="space-y-2 border-b border-line px-3 py-2 md:px-5">
@@ -134,22 +192,50 @@ export function IdeasPage() {
               <div className="flex rounded-lg border border-line-strong bg-subtle p-0.5">
                 {(
                   [
-                    ["open", "Open"],
-                    ["converted", "Task created"],
-                    ["parked", "Parked"],
+                    ["backlog", "Backlog"],
+                    ["live", "Live"],
+                    ["archived", "Archived"],
                     ["all", "All"],
-                  ] as [StatusFilter, string][]
+                  ] as [StageFilter, string][]
                 ).map(([v, label]) => (
                   <button
                     key={v}
-                    aria-pressed={status === v}
-                    onClick={() => setParam("status", v === "open" ? null : v)}
-                    className={cx("h-6 rounded-md px-2 text-[12px] font-medium", status === v ? "bg-canvas text-ink shadow-btn" : "text-ink-3 hover:text-ink-2")}
+                    aria-pressed={stage === v}
+                    onClick={() => (setParam("stage", v === "backlog" ? null : v), setChecked(new Set()))}
+                    className={cx("h-6 rounded-md px-2 text-[12px] font-medium", stage === v ? "bg-canvas text-ink shadow-btn" : "text-ink-3 hover:text-ink-2")}
                   >
                     {label}
+                    {v !== "all" && <span className="ml-1 tabular-nums text-ink-3">{stageCount(v)}</span>}
                   </button>
                 ))}
               </div>
+              {stage === "backlog" && (
+                <Menu
+                  label="Filter by progress"
+                  width="w-48"
+                  value={status}
+                  onChange={(v) => setParam("status", v === "any" ? null : v)}
+                  options={[
+                    { value: "any", label: "Any progress" },
+                    ...(["new", "exploring", "planned", "converted"] as IdeaStatus[]).map((v) => ({ value: v, label: STATUS[v].label })),
+                  ]}
+                  trigger={
+                    <span className={cx("inline-flex h-7 items-center gap-1.5 rounded-lg border px-2 text-[12px] font-medium", status !== "any" ? "border-accent/30 bg-accent-soft text-accent" : "border-line-strong bg-canvas text-ink-2 shadow-btn hover:bg-hover")}>
+                      {status === "any" ? "Progress" : `Progress: ${STATUS[status].label}`}
+                    </span>
+                  }
+                />
+              )}
+              <button
+                aria-pressed={pinnedOnly}
+                onClick={() => setParam("pinned", pinnedOnly ? null : "1")}
+                className={cx(
+                  "inline-flex h-7 items-center gap-1.5 rounded-lg border px-2 text-[12px] font-medium",
+                  pinnedOnly ? "border-[#e5a00d]/40 bg-[#fff8e6] text-[#a86f00] dark:bg-[#e5a00d]/10 dark:text-[#f0b93a]" : "border-line-strong bg-canvas text-ink-2 shadow-btn hover:bg-hover",
+                )}
+              >
+                <Pin size={13} /> Pinned
+              </button>
               <label className="flex h-7 w-52 items-center gap-1.5 rounded-lg border border-line-strong bg-canvas px-2 text-[12px] focus-within:border-accent/50">
                 <Search size={13} className="shrink-0 text-ink-3" />
                 <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search ideas" aria-label="Search ideas" className="w-full min-w-0 bg-transparent outline-none placeholder:text-ink-3" />
@@ -224,6 +310,39 @@ export function IdeasPage() {
             </div>
           </div>
 
+          {visibleChecked.length > 0 && (
+            <div className="scroll-row flex flex-wrap items-center gap-1.5 border-b border-line bg-accent-soft/50 px-3 py-1.5 md:px-5">
+              <span className="mr-1 text-[12px] font-medium tabular-nums">{visibleChecked.length} selected</span>
+              <Button size="sm" onClick={() => act(visibleChecked, "pin")}>
+                <Pin size={13} /> Pin
+              </Button>
+              <Button size="sm" onClick={() => act(visibleChecked, "unpin")}>
+                <PinOff size={13} /> Unpin
+              </Button>
+              {stage !== "live" && (
+                <Button size="sm" onClick={() => act(visibleChecked, "live")}>
+                  <Rocket size={13} /> Mark live
+                </Button>
+              )}
+              {stage !== "backlog" && (
+                <Button size="sm" onClick={() => act(visibleChecked, "backlog")}>
+                  <Undo2 size={13} /> Back to backlog
+                </Button>
+              )}
+              {stage !== "archived" && (
+                <Button size="sm" onClick={() => act(visibleChecked, "archived")}>
+                  <Archive size={13} /> Archive
+                </Button>
+              )}
+              <Button size="sm" variant="ghost" className="hover:text-danger" onClick={() => act(visibleChecked, "delete")}>
+                <Trash2 size={13} /> Delete
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setChecked(new Set())}>
+                Clear
+              </Button>
+              {bulk.error && <span className="text-[12px] text-danger">{(bulk.error as Error).message}</span>}
+            </div>
+          )}
           <div className="min-h-0 flex-1 overflow-auto">
             {adding && <NewIdea onDone={(id) => (setAdding(false), id && setParam("idea", id))} />}
             {ideas.isLoading ? (
@@ -241,7 +360,11 @@ export function IdeasPage() {
                 }
               >
                 {all.length
-                  ? "Try other labels or statuses."
+                  ? stage === "live"
+                    ? "Ideas show up here once they're live: mark one live, or finish the task made from it."
+                    : stage === "archived"
+                      ? "Archived ideas land here. Nothing is archived yet."
+                      : "Try other labels or filters."
                   : "Log feature ideas, concepts and strategies. They're labelled automatically and can become tasks when you're ready. Agents can add them with log_idea."}
               </EmptyState>
             ) : (
@@ -249,21 +372,27 @@ export function IdeasPage() {
                 {list.map((i) => {
                   const o = i.suggested_owner_id ? byId.get(i.suggested_owner_id) : undefined;
                   return (
-                    <li key={i.id}>
-                      <button
-                        onClick={() => setParam("idea", i.id)}
-                        className={cx("flex w-full items-start gap-4 px-3 py-3 text-left hover:bg-hover md:px-5", selectedId === i.id && "bg-active")}
-                      >
+                    <li key={i.id} className={cx("group flex items-start hover:bg-hover", selectedId === i.id && "bg-active", i.pinned_at && "bg-[#fffaf0] dark:bg-[#e5a00d]/5")}>
+                      <label className={cx("flex h-11 w-8 shrink-0 cursor-pointer items-center justify-end md:w-10", !checked.size && "md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100")}>
+                        <input type="checkbox" aria-label={`Select ${i.title}`} checked={checked.has(i.id)} onChange={() => toggleCheck(i.id)} />
+                      </label>
+                      <button onClick={() => setParam("idea", i.id)} className="flex min-w-0 flex-1 items-start gap-4 py-3 pr-1 pl-2.5 text-left">
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
+                            {i.pinned_at && <Pin size={13} className="shrink-0 text-[#e5a00d]" fill="currentColor" aria-label="Pinned" />}
                             <span className="truncate text-[14px] font-medium">{i.title}</span>
-                            {i.status !== "new" && <Tag tone={STATUS[i.status].tone}>{STATUS[i.status].label}</Tag>}
+                            {i.stage !== "backlog" && (stage === "all" || i.stage === "live") ? (
+                              <Tag tone={STAGE[i.stage].tone}>{STAGE[i.stage].label}</Tag>
+                            ) : (
+                              i.status !== "new" && i.stage === "backlog" && <Tag tone={STATUS[i.status].tone}>{STATUS[i.status].label}</Tag>
+                            )}
                             {i.request_count > 0 && (
                               <span
-                                title={`Requested by ${i.requested_by.map((c) => c.name).join(", ")}`}
+                                title={`Requested by ${i.requested_by.map((c) => c.name).join(", ")}${i.request_times > i.request_count ? ` (asked ${i.request_times} times)` : ""}`}
                                 className="inline-flex h-[22px] shrink-0 items-center gap-1 rounded-[6px] bg-accent-soft px-1.5 text-[12px] font-medium text-accent"
                               >
                                 <Users size={12} /> {i.request_count}
+                                {i.request_times > i.request_count && <span className="font-normal opacity-80">· {i.request_times}×</span>}
                                 {i.request_mrr ? <span className="font-normal opacity-80">· {money(i.request_mrr)}</span> : null}
                               </span>
                             )}
@@ -284,6 +413,13 @@ export function IdeasPage() {
                         </div>
                         <span className="hidden w-16 shrink-0 pt-0.5 text-right text-[12px] text-ink-3 md:block">{timeAgo(i.created_at)}</span>
                       </button>
+                      <div className="flex h-11 shrink-0 items-center pr-2 md:pr-4">
+                        <IdeaActions
+                          idea={i}
+                          canDel={canDelete(me, i.created_by)}
+                          onAction={(a) => (a === "edit" ? setParam("idea", i.id) : act([i.id], a))}
+                        />
+                      </div>
                     </li>
                   );
                 })}
@@ -295,6 +431,32 @@ export function IdeasPage() {
         {selected && <IdeaPanel key={selected.id} idea={selected} byId={byId} members={members.data ?? []} labels={allLabels} onClose={() => setParam("idea", null)} />}
       </div>
     </div>
+  );
+}
+
+/** The ⋯ menu on an idea: pin, edit, move between backlog / live / archived, delete. */
+function IdeaActions({ idea, canDel, onAction, align = "right" }: { idea: Idea; canDel: boolean; onAction: (a: string) => void; align?: "left" | "right" }) {
+  const options = [
+    idea.pinned_at ? { value: "unpin", label: "Unpin", icon: <PinOff size={14} /> } : { value: "pin", label: "Pin to top", icon: <Pin size={14} /> },
+    { value: "edit", label: "Open and edit", icon: <Pencil size={14} /> },
+    ...(idea.stage !== "live" ? [{ value: "live", label: "Mark live", icon: <Rocket size={14} /> }] : []),
+    ...(idea.stage !== "backlog" ? [{ value: "backlog", label: "Move to backlog", icon: <Undo2 size={14} /> }] : []),
+    ...(idea.stage !== "archived" ? [{ value: "archived", label: "Archive", icon: <Archive size={14} /> }] : []),
+    ...(canDel ? [{ value: "delete", label: "Delete…", icon: <Trash2 size={14} className="text-danger" /> }] : []),
+  ];
+  return (
+    <Menu
+      label={`Actions for ${idea.title}`}
+      align={align}
+      width="w-48"
+      options={options}
+      onChange={onAction}
+      trigger={
+        <span className="flex h-7 w-7 items-center justify-center rounded-md text-ink-3 hover:bg-active hover:text-ink" aria-label="More actions">
+          <MoreHorizontal size={15} />
+        </span>
+      }
+    />
   );
 }
 
@@ -376,19 +538,42 @@ function IdeaPanel({ idea, byId, members, labels, onClose }: { idea: Idea; byId:
   });
   const owner = idea.suggested_owner_id ? byId.get(idea.suggested_owner_id) : undefined;
   const author = byId.get(idea.created_by);
-  const err = patch.error || relabel.error || convert.error || del.error;
+  const err = patch.error || relabel.error || convert.error;
 
   return (
     <aside className="fixed inset-0 z-40 flex flex-col bg-canvas md:static md:z-auto md:w-[440px] md:shrink-0 md:border-l md:border-line">
       <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line px-4">
         <Lightbulb size={15} className="text-ink-3" />
-        <Tag tone={STATUS[idea.status].tone}>{STATUS[idea.status].label}</Tag>
+        <Tag tone={STAGE[idea.stage].tone}>{STAGE[idea.stage].label}</Tag>
         <span className="truncate text-[12px] text-ink-3">
           Added by {author?.name ?? "someone"} {timeAgo(idea.created_at)}
         </span>
-        <IconButton label="Close" className="ml-auto" onClick={onClose}>
-          <X size={16} />
-        </IconButton>
+        <span className="ml-auto flex items-center gap-0.5">
+          <IconButton
+            label={idea.pinned_at ? "Unpin" : "Pin to top"}
+            aria-pressed={!!idea.pinned_at}
+            className={cx(idea.pinned_at && "text-[#e5a00d]")}
+            onClick={() => patch.mutate({ pinned: !idea.pinned_at })}
+          >
+            <Pin size={15} fill={idea.pinned_at ? "currentColor" : "none"} />
+          </IconButton>
+          <IdeaActions
+            idea={idea}
+            canDel={canDelete(me, idea.created_by)}
+            onAction={(a) =>
+              a === "delete"
+                ? setConfirmDelete(true)
+                : a === "edit"
+                  ? setEditing(true)
+                  : a === "pin" || a === "unpin"
+                    ? patch.mutate({ pinned: a === "pin" })
+                    : patch.mutate({ stage: a })
+            }
+          />
+          <IconButton label="Close" onClick={onClose}>
+            <X size={16} />
+          </IconButton>
+        </span>
       </div>
       <div className="min-h-0 flex-1 overflow-auto px-4 py-4">
         {editing ? (
@@ -480,7 +665,29 @@ function IdeaPanel({ idea, byId, members, labels, onClose }: { idea: Idea; byId:
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <span className="w-28 shrink-0 text-[13px] text-ink-3">Status</span>
+            <span className="w-28 shrink-0 text-[13px] text-ink-3">Stage</span>
+            <div className="flex rounded-lg border border-line-strong bg-subtle p-0.5">
+              {(["backlog", "live", "archived"] as IdeaStage[]).map((v) => (
+                <button
+                  key={v}
+                  aria-pressed={idea.stage === v}
+                  onClick={() => idea.stage !== v && patch.mutate({ stage: v })}
+                  className={cx("h-6 rounded-md px-2 text-[12px] font-medium", idea.stage === v ? "bg-canvas text-ink shadow-btn" : "text-ink-3 hover:text-ink-2")}
+                >
+                  {STAGE[v].label}
+                </button>
+              ))}
+            </div>
+          </div>
+          {idea.stage === "live" && (
+            <p className="-mt-1 pl-[124px] text-[12px] text-ink-3">
+              Live {idea.live_at ? timeAgo(idea.live_at) : ""}
+              {idea.request_count ? ` · ${idea.request_count} customer${idea.request_count > 1 ? "s" : ""} asked for this` : ""}
+            </p>
+          )}
+          {idea.stage === "backlog" && (
+          <div className="flex items-center gap-3">
+            <span className="w-28 shrink-0 text-[13px] text-ink-3">Progress</span>
             {idea.status === "converted" ? (
               <Tag tone="green">Task created</Tag>
             ) : (
@@ -493,10 +700,11 @@ function IdeaPanel({ idea, byId, members, labels, onClose }: { idea: Idea; byId:
                 }
                 value={idea.status}
                 onChange={(st: IdeaStatus) => patch.mutate({ status: st })}
-                options={(["new", "exploring", "planned", "parked"] as IdeaStatus[]).map((st) => ({ value: st, label: STATUS[st].label }))}
+                options={(["new", "exploring", "planned"] as IdeaStatus[]).map((st) => ({ value: st, label: STATUS[st].label }))}
               />
             )}
           </div>
+          )}
         </div>
 
         <RequestsSection idea={idea} />
@@ -527,25 +735,27 @@ function IdeaPanel({ idea, byId, members, labels, onClose }: { idea: Idea; byId:
         </div>
         {err && <p className="mt-3 text-[13px] text-danger">{(err as Error).message}</p>}
       </div>
-      {canDelete(me, idea.created_by) && (
-        <div className="flex shrink-0 justify-end border-t border-line px-4 py-2">
-          {confirmDelete ? (
-            <div className="flex items-center gap-2">
-              <span className="text-[12px] text-ink-2">Delete this idea?</span>
-              <Button size="sm" variant="ghost" onClick={() => setConfirmDelete(false)}>
-                Cancel
-              </Button>
-              <Button size="sm" variant="danger" onClick={() => del.mutate()} disabled={del.isPending}>
-                Delete
-              </Button>
-            </div>
-          ) : (
-            <Button size="sm" variant="ghost" className="hover:text-danger" onClick={() => setConfirmDelete(true)}>
-              <Trash2 size={13} /> Delete idea
-            </Button>
-          )}
+      <Modal open={confirmDelete} onClose={() => setConfirmDelete(false)} title="Delete this idea?">
+        <div className="space-y-2 px-4 py-4 text-[13px] text-ink-2">
+          <p className="font-medium text-ink">{idea.title}</p>
+          <p>
+            {idea.request_count ? `Its ${idea.request_count} customer request${idea.request_count > 1 ? "s are" : " is"} deleted too. ` : ""}
+            {idea.task ? `The task ${idea.task.key} stays. ` : ""}This can't be undone; archive it instead if you might want it back.
+          </p>
+          {del.error && <p className="text-danger">{(del.error as Error).message}</p>}
         </div>
-      )}
+        <ModalFooter>
+          <Button variant="ghost" onClick={() => setConfirmDelete(false)}>
+            Cancel
+          </Button>
+          <Button variant="ghost" onClick={() => (patch.mutate({ stage: "archived" }), setConfirmDelete(false))}>
+            <Archive size={13} /> Archive instead
+          </Button>
+          <Button variant="danger" onClick={() => del.mutate()} disabled={del.isPending}>
+            {del.isPending ? "Deleting…" : "Delete"}
+          </Button>
+        </ModalFooter>
+      </Modal>
     </aside>
   );
 }

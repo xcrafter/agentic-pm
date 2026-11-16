@@ -178,6 +178,20 @@ Start with the few rules agents most often get wrong, and mark only those requir
 
 Star a view in the **Views** menu to show it in your sidebar. Stars are per person. Views you create are starred for you.
 
+### 13. Ideas: backlog, live, archived
+
+Ideas sit in three stages, each with its own tab. **Backlog** covers everything still being considered or built; filter it by progress (New, Exploring, Planned, Task created). **Live** means shipped, and **Archived** means not pursuing.
+
+- Finishing the task made from an idea marks the idea live automatically. You can also mark one live from its ⋯ menu.
+- **Pin** important ideas to keep them at the top for everyone.
+- Tick several ideas to pin, mark live, archive or delete them together. Delete asks first; archive if you might want an idea back.
+
+**Customer requests** each have their own status: Open, Live or Archived. When an idea goes live, its open requests go live with it, so the **Requests** tab under Customers shows exactly which customers to tell. If a customer asks again, that adds to their request's count (e.g. "3×") instead of being ignored. You can edit a request (what they said, date, times asked, status), pin it, move it to another idea (merging if they'd already asked for that one), or delete it.
+
+### 14. Tools directory
+
+**Tools** (near the bottom of the sidebar) is a quiet bookmark list of useful tools. Paste a website and the app reads the page, then writes a short summary, tags, a category and pricing. If you have a PM agent, it also gets a low-priority "Research tool" task to research the tool properly and write back with `update_tool`. Filter by tag, pin favourites, and edit anything by hand.
+
 ### Getting the most out of it
 
 - **One identity per agent.** Each real agent should have its own profile, so its work, 👍 and failures are attributed to it, not to "Grok".
@@ -253,8 +267,9 @@ Problems also land in **Needs you**, for whoever triggered the run, the agent's 
 | Tasks | `list_my_tasks`, `get_task`, `search_tasks`, `create_task`, `update_task`, `complete_task`, `end_run` (`outcome`: `handed_back` / `blocked` / `failed`) |
 | Thread & content | `post_update`, `add_comment`, `ask_question`, `write_note`, `create_checklist`, `add_checklist_item`, `set_checklist_item`, `attach_file`, `get_attachment` |
 | Feed | `share_update` (`kind`, `task`, `link`, `routine`), `read_feed` |
-| Ideas | `log_idea` (`title`, `body`, optional `labels`, `owner`, `source_url`), `list_ideas`, `log_feature_request` (`customer`, `idea_id` or `title`, `note`) |
-| Policies | `list_policies` (`query`), `get_policy` (id, path like `Marketing / Blog SOP`, or title; records that the agent read that version) |
+| Ideas | `list_ideas` (`stage`: backlog / live / archived), `log_idea` (`title`, `body`, optional `labels`, `owner`, `source_url`), `list_ideas`, `log_feature_request` (`customer`, `idea_id` or `title`, `note`) |
+| Policies | `list_policies` (`query`), `get_policy` (id, path like `Marketing / Blog SOP`, or title; records that the agent read that version), `create_policy` (`title`, `content`, `folder` path, `summary`), `update_policy` (agents can't change who follows a policy or make it required) |
+| Tools directory | `list_tools` (`query`, `tag`, `needs_research`), `get_tool`, `add_tool` (`url`), `update_tool` (`summary`, `tags`, `category`, `pricing`, `notes`) |
 | Profile & team | `update_my_profile`, `register_agent`, `list_my_agents`, `update_agent`, `list_members`, `list_projects` |
 
 `register_agent`, `list_my_agents` and `update_agent` are for orchestrators and the PM. For an orchestrator or the PM, every tool also accepts `as_agent`.

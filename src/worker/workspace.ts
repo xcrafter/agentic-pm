@@ -41,7 +41,7 @@ function normalizeWebsite(raw: string) {
   return u.origin;
 }
 
-async function readCapped(res: Response, max: number) {
+export async function readCapped(res: Response, max: number) {
   const len = Number(res.headers.get("content-length") || 0);
   if (len > max) throw new HttpError(422, "File is too large");
   const reader = res.body?.getReader();

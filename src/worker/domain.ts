@@ -7,6 +7,7 @@ import { type AppEnv, HttpError, badRequest, forbidden, newId, notFound, nowIso,
 import { onAgentTrigger, touchRun, endRunsFor } from "./orchestrator";
 import { canWake } from "./agents";
 import { postTaskCompleted } from "./feed";
+import { ideasLiveForTask } from "./ideas";
 
 // ---------- Types ----------
 
@@ -538,7 +539,10 @@ export async function updateTask(
       .bind(task.id)
       .all<{ agent_id: string }>();
     for (const r of open.results) await endRunsFor(env, task.id, r.agent_id, "completed");
-    if (statusChange.to === "done") await postTaskCompleted(env, ws, actor, next, patch.summary);
+    if (statusChange.to === "done") {
+      await postTaskCompleted(env, ws, actor, next, patch.summary);
+      await ideasLiveForTask(env, ws, actor, next.id);
+    }
   } else if (actor.member.kind === "agent") {
     await touchRun(env, next.id, actor.member.id);
   }

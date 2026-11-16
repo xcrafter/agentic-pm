@@ -268,12 +268,18 @@ export interface Idea {
   suggested_owner_id: string | null;
   owner_reason: string | null;
   status: IdeaStatus;
+  stage: IdeaStage;
+  live_at: string | null;
+  pinned_at: string | null;
+  pinned_by: string | null;
   source_url: string | null;
   created_by: string;
   task: { id: string; key: string; status: string | null } | null;
   created_at: string;
   updated_at: string;
   request_count: number;
+  request_times: number;
+  open_request_count: number;
   request_mrr: number;
   requested_by: { id: string; name: string }[];
   last_requested_at: string | null;
@@ -289,6 +295,18 @@ export interface IdeaRequest {
   note: string;
   requested_at: string;
   added_by: string;
+  times: number;
+  status: RequestStatus;
+  pinned_at: string | null;
+}
+export type IdeaStage = "backlog" | "live" | "archived";
+export type RequestStatus = "open" | "live" | "archived";
+/** A request as listed on the Requests tab (with its customer and feature). */
+export interface RequestListItem extends IdeaRequest {
+  idea_title: string;
+  idea_stage: IdeaStage;
+  idea_status: IdeaStatus;
+  created_at: string;
 }
 export interface Customer {
   id: string;
@@ -307,10 +325,34 @@ export interface Customer {
 export interface CustomerRequest {
   id: string;
   idea_id: string;
+  customer_id: string;
   note: string;
   requested_at: string;
   added_by: string;
+  times: number;
+  status: RequestStatus;
+  pinned_at: string | null;
   idea_title: string;
   idea_status: IdeaStatus;
+  idea_stage: IdeaStage;
   idea_labels: string[];
+}
+
+export interface ToolEntry {
+  id: string;
+  url: string;
+  domain: string;
+  name: string;
+  summary: string;
+  notes: string;
+  tags: string[];
+  category: string | null;
+  pricing: string | null;
+  icon_url: string | null;
+  enriched_by: "pending" | "ai" | "agent" | "human" | "failed";
+  pinned_at: string | null;
+  research_task: { key: string; status: string | null } | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
 }

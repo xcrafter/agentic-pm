@@ -162,7 +162,7 @@ export function policyForAgent(env: AppEnv, p: PolicyRow, all: PolicyRow[]) {
 
 export const policyRoutes = new Hono<{ Bindings: AppEnv; Variables: Vars }>();
 
-async function getOwn(env: AppEnv, wsId: string, id: string) {
+export async function getOwn(env: AppEnv, wsId: string, id: string) {
   const p = await env.DB.prepare("SELECT * FROM policies WHERE id = ? AND workspace_id = ?").bind(id, wsId).first<PolicyRow>();
   if (!p) throw notFound("Policy");
   return p;
@@ -213,36 +213,63 @@ policyRoutes.get("/api/policy-revisions/:id", async (c) => {
   return c.json(r);
 });
 
-policyRoutes.post("/api/policies", async (c) => {
-  const ws = c.get("ws");
-  const me = c.get("me");
-  const b = await c.req.json<{ kind?: string; title?: string; parent_id?: string | null; content?: string }>();
+export interface PolicyCreate {
+  kind?: string;
+  title?: string;
+  parent_id?: string | null;
+  content?: string;
+  summary?: string;
+}
+
+/** Create a folder or doc. Used by the web app and by agents over MCP. */
+export async function createPolicy(env: AppEnv, ws: Pick<WorkspaceRow, "id">, actor: Actor, b: PolicyCreate) {
   const kind = b.kind === "folder" ? "folder" : "doc";
   const title = (b.title ?? "").trim() || (kind === "folder" ? "New folder" : "Untitled");
   if (title.length > 120) throw badRequest("Keep the title under 120 characters");
   const content = String(b.content ?? "");
   if (content.length > MAX_CONTENT) throw badRequest("This document is too long");
-  await checkParent(c.env, ws.id, b.parent_id ?? null);
-  const count = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM policies WHERE workspace_id = ?").bind(ws.id).first<{ n: number }>();
+  await checkParent(env, ws.id, b.parent_id ?? null);
+  const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM policies WHERE workspace_id = ?").bind(ws.id).first<{ n: number }>();
   if ((count?.n ?? 0) >= MAX_ITEMS) throw badRequest(`This workspace already has ${MAX_ITEMS} policies and folders`);
   const id = newId();
   const now = nowIso();
-  await c.env.DB.prepare(
-    `INSERT INTO policies (id, workspace_id, parent_id, kind, title, content, position, created_by, updated_by, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+  await env.DB.prepare(
+    `INSERT INTO policies (id, workspace_id, parent_id, kind, title, content, summary, position, created_by, updated_by, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
   )
-    .bind(id, ws.id, b.parent_id ?? null, kind, title, content, Date.now(), me.id, me.id, now, now)
+    .bind(id, ws.id, b.parent_id ?? null, kind, title, content, String(b.summary ?? "").trim().slice(0, 300), Date.now(), actor.member.id, actor.member.id, now, now)
     .run();
-  await logActivity(c.env, ws.id, c.get("actor"), "policy", id, "created", undefined, { kind, title });
-  await notify(c.env, ws.id, { type: "policies" });
-  return c.json(meta(await getOwn(c.env, ws.id, id)), 201);
-});
+  await logActivity(env, ws.id, actor, "policy", id, "created", undefined, { kind, title });
+  await notify(env, ws.id, { type: "policies" });
+  const p = await getOwn(env, ws.id, id);
+  if (kind === "doc") await markPolicyRead(env, actor.member, p);
+  return p;
+}
 
-policyRoutes.patch("/api/policies/:id", async (c) => {
-  const ws = c.get("ws");
-  const me = c.get("me");
-  const p = await getOwn(c.env, ws.id, c.req.param("id"));
-  const b = await c.req.json<Record<string, unknown>>();
+/** Find a folder by its path ("Product / Roadmaps"), creating any missing folders along the way. */
+export async function ensureFolderPath(env: AppEnv, ws: Pick<WorkspaceRow, "id">, actor: Actor, path: string): Promise<string | null> {
+  const parts = path.split("/").map((x) => x.trim()).filter(Boolean).slice(0, 10);
+  let parent: string | null = null;
+  for (const name of parts) {
+    const hit: { id: string; kind: string } | null = await env.DB.prepare(
+      `SELECT id, kind FROM policies WHERE workspace_id = ? AND ${parent ? "parent_id = ?" : "parent_id IS NULL"} AND title = ? COLLATE NOCASE ORDER BY kind = 'folder' DESC LIMIT 1`,
+    )
+      .bind(...(parent ? [ws.id, parent, name] : [ws.id, name]))
+      .first<{ id: string; kind: string }>();
+    if (hit && hit.kind !== "folder") throw badRequest(`"${name}" is a document, not a folder`);
+    parent = hit ? hit.id : (await createPolicy(env, ws, actor, { kind: "folder", title: name, parent_id: parent })).id;
+  }
+  return parent;
+}
+
+export type PolicyPatch = Record<string, unknown>;
+
+/**
+ * Update a policy. Title/content changes bump the version (keeping the old text as a revision), which means
+ * agents must read it again if it's required. `settingsAllowed` = false (agents) keeps who-follows-it and
+ * "required" in people's hands.
+ */
+export async function updatePolicy(env: AppEnv, ws: Pick<WorkspaceRow, "id">, actor: Actor, p: PolicyRow, b: PolicyPatch, settingsAllowed = true) {
   const next = { ...p };
   if (typeof b.title === "string") {
     const t = b.title.trim();
@@ -254,31 +281,33 @@ policyRoutes.patch("/api/policies/:id", async (c) => {
     next.content = b.content;
   }
   if (typeof b.summary === "string") next.summary = b.summary.trim().slice(0, 300);
-  if (b.audience === "all" || b.audience === "agents" || b.audience === "reference") next.audience = b.audience;
-  const a = ids(b.agent_ids);
-  if (a) next.agent_ids = JSON.stringify(a);
-  const pr = ids(b.project_ids);
-  if (pr) next.project_ids = JSON.stringify(pr);
-  if (typeof b.required === "boolean") next.required = b.required ? 1 : 0;
+  if (settingsAllowed) {
+    if (b.audience === "all" || b.audience === "agents" || b.audience === "reference") next.audience = b.audience;
+    const a = ids(b.agent_ids);
+    if (a) next.agent_ids = JSON.stringify(a);
+    const pr = ids(b.project_ids);
+    if (pr) next.project_ids = JSON.stringify(pr);
+    if (typeof b.required === "boolean") next.required = b.required ? 1 : 0;
+  }
   if (typeof b.position === "number" && Number.isFinite(b.position)) next.position = b.position;
   if (b.parent_id !== undefined) {
     const parentId = (b.parent_id as string | null) || null;
-    await checkParent(c.env, ws.id, parentId, p.id);
+    await checkParent(env, ws.id, parentId, p.id);
     next.parent_id = parentId;
   }
   const changedText = next.title !== p.title || next.content !== p.content;
   if (changedText && p.kind === "doc") next.version = p.version + 1;
   const now = nowIso();
   const stmts = [
-    c.env.DB.prepare(
+    env.DB.prepare(
       `UPDATE policies SET parent_id = ?, title = ?, content = ?, summary = ?, audience = ?, agent_ids = ?, project_ids = ?, required = ?,
        version = ?, position = ?, updated_by = ?, updated_at = ? WHERE id = ?`,
-    ).bind(next.parent_id, next.title, next.content, next.summary, next.audience, next.agent_ids, next.project_ids, next.required, next.version, next.position, me.id, now, p.id),
+    ).bind(next.parent_id, next.title, next.content, next.summary, next.audience, next.agent_ids, next.project_ids, next.required, next.version, next.position, actor.member.id, now, p.id),
   ];
   if (changedText && p.kind === "doc") {
     // Keep the version being replaced so changes can be reviewed.
     stmts.push(
-      c.env.DB.prepare("INSERT INTO policy_revisions (id, policy_id, version, title, content, author_id, created_at) VALUES (?,?,?,?,?,?,?)").bind(
+      env.DB.prepare("INSERT INTO policy_revisions (id, policy_id, version, title, content, author_id, created_at) VALUES (?,?,?,?,?,?,?)").bind(
         newId(),
         p.id,
         p.version,
@@ -289,14 +318,29 @@ policyRoutes.patch("/api/policies/:id", async (c) => {
       ),
     );
   }
-  await c.env.DB.batch(stmts);
+  await env.DB.batch(stmts);
   const settings = ["audience", "agent_ids", "project_ids", "required", "parent_id"] as const;
   const changedSettings = settings.filter((k) => next[k] !== p[k]);
   if (changedText || changedSettings.length) {
-    await logActivity(c.env, ws.id, c.get("actor"), "policy", p.id, "updated", undefined, { version: next.version, changed: [...(changedText ? ["text"] : []), ...changedSettings] });
+    await logActivity(env, ws.id, actor, "policy", p.id, "updated", undefined, { version: next.version, changed: [...(changedText ? ["text"] : []), ...changedSettings] });
   }
-  await notify(c.env, ws.id, { type: "policies" });
-  return c.json({ ...meta(await getOwn(c.env, ws.id, p.id)), content: next.content });
+  const saved = await getOwn(env, ws.id, p.id);
+  // Whoever wrote the new version has, by definition, read it.
+  if (changedText && p.kind === "doc") await markPolicyRead(env, actor.member, saved);
+  await notify(env, ws.id, { type: "policies" });
+  return saved;
+}
+
+policyRoutes.post("/api/policies", async (c) => {
+  const b = await c.req.json<PolicyCreate>();
+  return c.json(meta(await createPolicy(c.env, c.get("ws"), c.get("actor"), b)), 201);
+});
+
+policyRoutes.patch("/api/policies/:id", async (c) => {
+  const ws = c.get("ws");
+  const p = await getOwn(c.env, ws.id, c.req.param("id"));
+  const saved = await updatePolicy(c.env, ws, c.get("actor"), p, await c.req.json<PolicyPatch>());
+  return c.json({ ...meta(saved), content: saved.content });
 });
 
 policyRoutes.delete("/api/policies/:id", async (c) => {

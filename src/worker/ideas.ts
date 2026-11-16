@@ -27,6 +27,13 @@ export const IDEA_LABELS = [
 export type IdeaLabel = (typeof IDEA_LABELS)[number];
 export const IDEA_STATUSES = ["new", "exploring", "planned", "converted", "parked"] as const;
 export type IdeaStatus = (typeof IDEA_STATUSES)[number];
+/** Backlog = being considered or built; live = shipped; archived = not pursuing. */
+export const IDEA_STAGES = ["backlog", "live", "archived"] as const;
+export type IdeaStage = (typeof IDEA_STAGES)[number];
+export const REQUEST_STATUSES = ["open", "live", "archived"] as const;
+export type RequestStatus = (typeof REQUEST_STATUSES)[number];
+/** The request status that goes with each idea stage. */
+export const requestStatusFor = (stage: IdeaStage): RequestStatus => (stage === "backlog" ? "open" : stage);
 
 const LABEL_HELP: Record<IdeaLabel, string> = {
   feature: "a new product capability",
@@ -71,6 +78,10 @@ interface IdeaRow {
   source_url: string | null;
   created_by: string;
   converted_task_id: string | null;
+  stage: IdeaStage;
+  live_at: string | null;
+  pinned_at: string | null;
+  pinned_by: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -216,13 +227,26 @@ export async function createIdea(env: AppEnv, ws: WorkspaceRow, actor: Actor, in
   return getIdea(env, ws, id);
 }
 
-type RequestRow = { id: string; idea_id: string; customer_id: string; customer_name: string; plan: string | null; mrr: number | null; note: string; requested_at: string; added_by: string };
+type RequestRow = {
+  id: string;
+  idea_id: string;
+  customer_id: string;
+  customer_name: string;
+  plan: string | null;
+  mrr: number | null;
+  note: string;
+  requested_at: string;
+  added_by: string;
+  times: number;
+  status: RequestStatus;
+  pinned_at: string | null;
+};
 
 async function requestsFor(env: AppEnv, ws: WorkspaceRow, ideaId?: string) {
   const rows = await env.DB.prepare(
-    `SELECT r.id, r.idea_id, r.customer_id, c.name AS customer_name, c.plan, c.mrr, r.note, r.requested_at, r.added_by
+    `SELECT r.id, r.idea_id, r.customer_id, c.name AS customer_name, c.plan, c.mrr, r.note, r.requested_at, r.added_by, r.times, r.status, r.pinned_at
      FROM idea_requests r JOIN customers c ON c.id = r.customer_id
-     WHERE c.workspace_id = ? ${ideaId ? "AND r.idea_id = ?" : ""} ORDER BY r.requested_at DESC, r.created_at DESC`,
+     WHERE c.workspace_id = ? ${ideaId ? "AND r.idea_id = ?" : ""} ORDER BY (r.pinned_at IS NULL), r.requested_at DESC, r.created_at DESC`,
   )
     .bind(...(ideaId ? [ws.id, ideaId] : [ws.id]))
     .all<RequestRow>();
@@ -231,12 +255,18 @@ async function requestsFor(env: AppEnv, ws: WorkspaceRow, ideaId?: string) {
   return by;
 }
 
-const requestSummary = (reqs: RequestRow[] = []) => ({
-  request_count: reqs.length,
-  request_mrr: Math.round(reqs.reduce((n, r) => n + (r.mrr ?? 0), 0) * 100) / 100,
-  requested_by: reqs.map((r) => ({ id: r.customer_id, name: r.customer_name })),
-  last_requested_at: reqs[0]?.requested_at ?? null,
-});
+const requestSummary = (all: RequestRow[] = []) => {
+  // Archived requests don't count toward demand.
+  const reqs = all.filter((r) => r.status !== "archived");
+  return {
+    request_count: reqs.length,
+    request_times: reqs.reduce((n, r) => n + (r.times || 1), 0),
+    open_request_count: reqs.filter((r) => r.status === "open").length,
+    request_mrr: Math.round(reqs.reduce((n, r) => n + (r.mrr ?? 0), 0) * 100) / 100,
+    requested_by: reqs.map((r) => ({ id: r.customer_id, name: r.customer_name })),
+    last_requested_at: reqs.map((r) => r.requested_at).sort().at(-1) ?? null,
+  };
+};
 
 export async function getIdea(env: AppEnv, ws: WorkspaceRow, id: string) {
   const r = await env.DB.prepare(
@@ -260,12 +290,42 @@ function ideaOut(ws: WorkspaceRow, r: IdeaRow & { task_number: number | null; ta
     suggested_owner_id: r.suggested_owner_id,
     owner_reason: r.owner_reason,
     status: r.status,
+    stage: r.stage,
+    live_at: r.live_at,
+    pinned_at: r.pinned_at,
+    pinned_by: r.pinned_by,
     source_url: r.source_url,
     created_by: r.created_by,
     task: r.converted_task_id && r.task_number != null ? { id: r.converted_task_id, key: `${ws.key_prefix}-${r.task_number}`, status: r.task_status } : null,
     created_at: r.created_at,
     updated_at: r.updated_at,
   };
+}
+
+/** Move an idea between backlog / live / archived; its customer requests follow along. */
+export async function setIdeaStage(env: AppEnv, ws: WorkspaceRow, actor: Actor | null, id: string, stage: IdeaStage) {
+  const idea = await env.DB.prepare("SELECT * FROM ideas WHERE id = ? AND workspace_id = ?").bind(id, ws.id).first<IdeaRow>();
+  if (!idea) throw notFound("Idea");
+  if (idea.stage === stage) return;
+  const now = nowIso();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE ideas SET stage = ?, live_at = ?, updated_at = ? WHERE id = ?").bind(stage, stage === "live" ? (idea.live_at ?? now) : null, now, id),
+    // Requests that were tracking the old stage move with the idea; ones set by hand stay put.
+    env.DB.prepare("UPDATE idea_requests SET status = ?, updated_at = ? WHERE idea_id = ? AND status = ?").bind(
+      requestStatusFor(stage),
+      now,
+      id,
+      requestStatusFor(idea.stage),
+    ),
+  ]);
+  await logActivity(env, ws.id, actor, "idea", id, "stage_changed", { stage: idea.stage }, { stage });
+}
+
+/** When a task made from an idea is done, the idea is live. */
+export async function ideasLiveForTask(env: AppEnv, ws: WorkspaceRow, actor: Actor, taskId: string) {
+  const rows = await env.DB.prepare("SELECT id FROM ideas WHERE converted_task_id = ? AND stage = 'backlog'").bind(taskId).all<{ id: string }>();
+  for (const r of rows.results) await setIdeaStage(env, ws, actor, r.id, "live");
+  if (rows.results.length) await notify(env, ws.id, { type: "ideas" });
 }
 
 export async function listIdeas(env: AppEnv, ws: WorkspaceRow) {
@@ -327,7 +387,15 @@ ideaRoutes.patch("/api/ideas/:id", async (c) => {
   const ws = c.get("ws");
   const id = c.req.param("id");
   await getIdea(c.env, ws, id);
-  const b = await c.req.json<{ title?: string; body?: string; labels?: string[]; suggested_owner_id?: string | null; status?: IdeaStatus }>();
+  const b = await c.req.json<{
+    title?: string;
+    body?: string;
+    labels?: string[];
+    suggested_owner_id?: string | null;
+    status?: IdeaStatus;
+    stage?: IdeaStage;
+    pinned?: boolean;
+  }>();
   const sets: string[] = [];
   const binds: unknown[] = [];
   const set = (col: string, v: unknown) => (sets.push(`${col} = ?`), binds.push(v));
@@ -349,11 +417,14 @@ ideaRoutes.patch("/api/ideas/:id", async (c) => {
     if (!IDEA_STATUSES.includes(b.status) || b.status === "converted") throw badRequest("Use Convert to task to convert an idea");
     set("status", b.status);
   }
+  if (b.pinned !== undefined) (set("pinned_at", b.pinned ? nowIso() : null), set("pinned_by", b.pinned ? c.get("me").id : null));
+  if (b.stage !== undefined && !IDEA_STAGES.includes(b.stage)) throw badRequest("Stage must be backlog, live or archived");
   if (sets.length) {
     set("updated_at", nowIso());
     await c.env.DB.prepare(`UPDATE ideas SET ${sets.join(", ")} WHERE id = ?`).bind(...binds, id).run();
-    await notify(c.env, ws.id, { type: "ideas" });
   }
+  if (b.stage !== undefined) await setIdeaStage(c.env, ws, c.get("actor"), id, b.stage);
+  if (sets.length || b.stage !== undefined) await notify(c.env, ws.id, { type: "ideas" });
   return c.json(await getIdea(c.env, ws, id));
 });
 
@@ -369,6 +440,44 @@ ideaRoutes.post("/api/ideas/:id/relabel", async (c) => {
 ideaRoutes.post("/api/ideas/:id/convert", async (c) => {
   const b = await c.req.json<{ assign?: boolean; project_id?: string | null }>().catch(() => ({}) as { assign?: boolean; project_id?: string | null });
   return c.json(await convertIdea(c.env, c.get("ws"), c.get("actor"), c.req.param("id"), { assign: !!b.assign, projectId: b.project_id }));
+});
+
+// Act on several ideas at once: pin, unpin, move stage, or delete.
+ideaRoutes.post("/api/ideas/bulk", async (c) => {
+  const ws = c.get("ws");
+  const me = c.get("me");
+  const b = await c.req.json<{ ids?: string[]; action?: string }>();
+  const ids = [...new Set((b.ids ?? []).filter((x) => typeof x === "string"))].slice(0, 500);
+  if (!ids.length) throw badRequest("Pick at least one idea");
+  const marks = ids.map(() => "?").join(",");
+  const rows = (await c.env.DB.prepare(`SELECT * FROM ideas WHERE workspace_id = ? AND id IN (${marks})`).bind(ws.id, ...ids).all<IdeaRow>()).results;
+  const now = nowIso();
+  switch (b.action) {
+    case "pin":
+    case "unpin": {
+      const pin = b.action === "pin";
+      await c.env.DB.prepare(`UPDATE ideas SET pinned_at = ?, pinned_by = ? WHERE workspace_id = ? AND id IN (${marks})`)
+        .bind(pin ? now : null, pin ? me.id : null, ws.id, ...ids)
+        .run();
+      break;
+    }
+    case "backlog":
+    case "live":
+    case "archived":
+      for (const r of rows) await setIdeaStage(c.env, ws, c.get("actor"), r.id, b.action);
+      break;
+    case "delete": {
+      const notMine = rows.filter((r) => r.created_by !== me.id);
+      if (me.role !== "admin" && notMine.length) throw forbidden(`Only admins can delete ideas other people added (${notMine.length} of these)`);
+      await c.env.DB.batch(rows.map((r) => c.env.DB.prepare("DELETE FROM ideas WHERE id = ?").bind(r.id)));
+      for (const r of rows) await logActivity(c.env, ws.id, c.get("actor"), "idea", r.id, "deleted", { title: r.title, body: r.body });
+      break;
+    }
+    default:
+      throw badRequest("Unknown action");
+  }
+  await notify(c.env, ws.id, { type: "ideas" });
+  return c.json({ ok: true, count: rows.length });
 });
 
 ideaRoutes.delete("/api/ideas/:id", async (c) => {

@@ -23,6 +23,12 @@ const hookServer = http.createServer((req, res) => {
   let body = "";
   req.on("data", (c) => (body += c));
   req.on("end", () => {
+    if (req.url === "/site") {
+      res.writeHead(200, { "Content-Type": "text/html" }).end(
+        `<html><head><title>Quillpad | Notes for teams</title><meta name="description" content="Quillpad is a shared notebook for product teams."><link rel="icon" href="/fav.svg"></head><body><h1>Write together</h1><p>Shared docs with comments.</p></body></html>`,
+      );
+      return;
+    }
     if (req.url === "/hook") {
       const ok = req.headers.authorization === `Bearer ${HOOK_KEY}`;
       const call = { auth: ok, body: body ? JSON.parse(body) : null };
@@ -782,6 +788,102 @@ try {
   await tool("post_update", { task: pt.key, body: "policy gone, not gated" });
   await alice("PATCH", `/api/tasks/${pt.key}`, { status: "done" });
   pass("tree + cycle guard, gating until read, re-read after edits, revisions, scoping, webhook lists policies, folder delete cascades");
+
+  step("Agents write policies over MCP (folders created from the path) but can't make them required");
+  const made = await tool("create_policy", { title: "Release checklist", folder: `Product ${runId} / Engineering`, content: "1. Tag\n2. Ship", summary: "Before any release" });
+  assert.ok(made.created && made.path === `Product ${runId} / Engineering / Release checklist`);
+  await assert.rejects(tool("create_policy", { title: "release checklist", folder: `Product ${runId} / Engineering`, content: "dup" }), /already exists/);
+  const upd = await tool("update_policy", { policy: made.id, content: "1. Tag\n2. Ship\n3. Announce" });
+  assert.equal(upd.version, 2);
+  const madeTree = await alice("GET", "/api/policies");
+  assert.equal(madeTree.filter((x) => x.kind === "folder" && [`Product ${runId}`, "Engineering"].includes(x.title)).length, 2);
+  await alice("PATCH", `/api/policies/${made.id}`, { required: true });
+  assert.equal((await tool("get_task", { task: (await alice("POST", "/api/tasks", { title: `pol ${runId}` })).key })).policies.find((x) => x.id === made.id).read_latest, true, "the writer has read its own version");
+  await alice("DELETE", `/api/policies/${madeTree.find((x) => x.title === `Product ${runId}`).id}`);
+  pass("create_policy builds the folder path, refuses duplicates, update_policy versions it");
+
+  step("Ideas: backlog / live / archived, pins, bulk actions; requests count repeat asks and follow the idea's stage");
+  const iA = await alice("POST", "/api/ideas", { title: `Stage A ${runId}`, labels: ["feature"] });
+  const iB = await alice("POST", "/api/ideas", { title: `Stage B ${runId}`, labels: ["feature"] });
+  const cust1 = await alice("POST", "/api/customers", { name: `Acme ${runId}` });
+  const cust2 = await alice("POST", "/api/customers", { name: `Globex ${runId}` });
+  await alice("POST", "/api/feature-requests", { customer_id: cust1.id, idea_id: iA.id, note: "need it" });
+  const again2 = await alice("POST", "/api/feature-requests", { customer_id: cust1.id, idea_id: iA.id, note: "asked again on a call" });
+  assert.equal(again2.already_requested, true);
+  await alice("POST", "/api/feature-requests", { customer_id: cust2.id, idea_id: iA.id });
+  let ia = await alice("GET", `/api/ideas/${iA.id}`);
+  assert.equal(ia.request_count, 2);
+  assert.equal(ia.request_times, 3, "one customer asked twice");
+  assert.ok(ia.requests.every((r) => r.status === "open") && ia.stage === "backlog");
+  await alice("POST", "/api/ideas/bulk", { ids: [iA.id, iB.id], action: "pin" });
+  assert.ok((await alice("GET", "/api/ideas")).ideas.filter((i) => [iA.id, iB.id].includes(i.id)).every((i) => i.pinned_at));
+  const acmeReq = ia.requests.find((r) => r.customer_id === cust1.id);
+  await alice("PATCH", `/api/idea-requests/${acmeReq.id}`, { status: "archived" });
+  await alice("PATCH", `/api/ideas/${iA.id}`, { stage: "live" });
+  ia = await alice("GET", `/api/ideas/${iA.id}`);
+  assert.equal(ia.stage, "live");
+  assert.equal(ia.requests.find((r) => r.customer_id === cust2.id).status, "live", "open requests go live with the idea");
+  assert.equal(ia.requests.find((r) => r.customer_id === cust1.id).status, "archived", "requests set by hand stay put");
+  assert.equal(ia.request_count, 1, "archived requests don't count");
+  // Edit a request: times, note, pin; move it to another idea.
+  await alice("PATCH", `/api/idea-requests/${acmeReq.id}`, { times: 5, note: "edited", pinned: true, status: "open" });
+  const moved = await alice("PATCH", `/api/idea-requests/${acmeReq.id}`, { idea_id: iB.id });
+  assert.equal(moved.idea_id, iB.id);
+  const allReqs = await alice("GET", "/api/idea-requests");
+  const movedRow = allReqs.find((r) => r.id === acmeReq.id);
+  assert.ok(movedRow && movedRow.times === 5 && movedRow.pinned_at && movedRow.idea_title === `Stage B ${runId}`);
+  // Moving onto an idea the customer already asked for merges the two.
+  const g = (await alice("GET", `/api/ideas/${iA.id}`)).requests.find((r) => r.customer_id === cust2.id);
+  await alice("POST", "/api/feature-requests", { customer_id: cust2.id, idea_id: iB.id, note: "for B too" });
+  const merged = await alice("PATCH", `/api/idea-requests/${g.id}`, { idea_id: iB.id });
+  assert.ok(merged.merged && merged.times === 2);
+  // A task made from an idea going done makes it live.
+  const convB = await alice("POST", `/api/ideas/${iB.id}/convert`, {});
+  await alice("PATCH", `/api/tasks/${convB.task_key}`, { status: "done" });
+  const ib = await alice("GET", `/api/ideas/${iB.id}`);
+  assert.ok(ib.stage === "live" && ib.live_at);
+  assert.equal(ib.requests.find((r) => r.customer_id === cust1.id).status, "live");
+  // Bulk archive, then requests can be deleted by whoever logged them (not by others).
+  await alice("POST", "/api/ideas/bulk", { ids: [iA.id, iB.id], action: "archived" });
+  assert.ok((await alice("GET", "/api/ideas")).ideas.filter((i) => [iA.id, iB.id].includes(i.id)).every((i) => i.stage === "archived"));
+  await assert.rejects(bob2("DELETE", `/api/idea-requests/${acmeReq.id}`), /403/);
+  await alice("DELETE", `/api/idea-requests/${acmeReq.id}`);
+  await assert.rejects(bob2("POST", "/api/ideas/bulk", { ids: [iA.id], action: "delete" }), /403/);
+  const bulkDel = await alice("POST", "/api/ideas/bulk", { ids: [iA.id, iB.id], action: "delete" });
+  assert.equal(bulkDel.count, 2);
+  assert.ok(!(await alice("GET", "/api/ideas")).ideas.some((i) => [iA.id, iB.id].includes(i.id)));
+  const listedLive = await tool("list_ideas", { stage: "live" });
+  assert.ok(Array.isArray(listedLive));
+  pass("stages + cascade, repeat asks counted, edit/move/merge/pin requests, task done → live, bulk pin/archive/delete with permissions");
+
+  step("Tools directory: paste a site → summary and tags; the PM agent researches it; agents write back");
+  await alice("PATCH", "/api/workspace", { pm_agent_id: pmAgent.id });
+  const toolUrl = `http://127.0.0.1:${HOOK_PORT}/site?utm_source=x`;
+  const tl = await alice("POST", "/api/tools", { url: toolUrl });
+  assert.equal(tl.url, `http://127.0.0.1:${HOOK_PORT}/site`, "tracking params dropped");
+  await assert.rejects(alice("POST", "/api/tools", { url: `127.0.0.1:${HOOK_PORT}/site` }), /409|already/);
+  let tlNow;
+  for (let i = 0; i < 40; i++) {
+    tlNow = (await alice("GET", "/api/tools")).find((x) => x.id === tl.id);
+    if (tlNow.enriched_by !== "pending" && tlNow.research_task) break;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  assert.ok(["ai", "failed"].includes(tlNow.enriched_by) || tlNow.enriched_by === "ai", tlNow.enriched_by);
+  assert.ok(/Quillpad/.test(tlNow.name) && /notebook/i.test(tlNow.summary), JSON.stringify(tlNow));
+  assert.ok(tlNow.icon_url.endsWith("/fav.svg"));
+  assert.ok(tlNow.research_task, "the PM agent got a research task");
+  const researchHook = await waitForHook((c) => c.body?.task?.key === tlNow.research_task.key);
+  assert.ok(researchHook.body.task.title.startsWith("Research tool:"));
+  const wrote = await tool("update_tool", { tool: tl.url, summary: "Shared notebook for product teams.", tags: ["Docs", "#Collaboration", "docs"], pricing: "Freemium" });
+  assert.deepEqual(wrote.tags, ["docs", "collaboration"]);
+  assert.equal(wrote.enriched_by, "agent");
+  assert.ok((await tool("list_tools", { tag: "docs" })).some((x) => x.id === tl.id));
+  assert.ok(!(await tool("list_tools", { needs_research: true })).some((x) => x.id === tl.id));
+  await assert.rejects(alice("POST", `/api/tools/${tl.id}/research`), /409|already/);
+  await assert.rejects(bob2("DELETE", `/api/tools/${tl.id}`), /403/);
+  await alice("DELETE", `/api/tools/${tl.id}`);
+  await alice("PATCH", "/api/workspace", { pm_agent_id: null });
+  pass("site read (title, description, icon), duplicate refused, research task woke the PM, update_tool normalised tags");
 
   step("Favorite views: each person picks which views show in their sidebar");
   const fv = await alice("POST", "/api/views", { name: `Fav ${runId}`, config: { hideDone: true } });
