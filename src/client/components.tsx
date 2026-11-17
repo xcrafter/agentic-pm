@@ -181,9 +181,9 @@ const TONES: Record<Tone, string> = {
   pink: "bg-[#fde8ee] text-[#c0315a] dark:bg-[#ec5c86]/15 dark:text-[#f190ac]",
 };
 
-export function Tag({ tone = "gray", children, className }: { tone?: Tone; children: ReactNode; className?: string }) {
+export function Tag({ tone = "gray", children, className, title }: { tone?: Tone; children: ReactNode; className?: string; title?: string }) {
   return (
-    <span className={cx("inline-flex h-[22px] max-w-full items-center gap-1 rounded-[6px] px-1.5 text-[12px] font-medium whitespace-nowrap", TONES[tone], className)}>
+    <span title={title} className={cx("inline-flex h-[22px] max-w-full items-center gap-1 rounded-[6px] px-1.5 text-[12px] font-medium whitespace-nowrap", TONES[tone], className)}>
       {children}
     </span>
   );

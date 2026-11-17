@@ -8,6 +8,7 @@ import { onAgentTrigger, touchRun, endRunsFor } from "./orchestrator";
 import { canWake } from "./agents";
 import { postTaskCompleted } from "./feed";
 import { ideasLiveForTask } from "./ideas";
+import { addDependency, dependenciesOf, onBlockerFinished, reactionsFor } from "./links";
 
 // ---------- Types ----------
 
@@ -260,8 +261,9 @@ export async function listTasks(env: AppEnv, workspaceId: string, f: TaskFilters
     binds.push(f.memberKind);
   }
   if (f.query) {
-    where.push("(t.title LIKE ? OR t.description LIKE ?)");
-    binds.push(`%${f.query}%`, `%${f.query}%`);
+    const num = /^(?:[A-Za-z]+-)?(\d+)$/.exec(f.query.trim());
+    where.push(`(t.title LIKE ? OR t.description LIKE ?${num ? " OR t.number = ?" : ""})`);
+    binds.push(`%${f.query}%`, `%${f.query}%`, ...(num ? [Number(num[1])] : []));
   }
   const limit = Math.min(f.limit ?? 500, 1000);
   const rows = await env.DB.prepare(
@@ -275,7 +277,7 @@ export async function listTasks(env: AppEnv, workspaceId: string, f: TaskFilters
 
 export async function serializeTasks(env: AppEnv, ws: WorkspaceRow, tasks: TaskRow[]) {
   if (!tasks.length) return [];
-  const [members, projects, openQs, runs] = await Promise.all([
+  const [members, projects, openQs, runs, blockers] = await Promise.all([
     env.DB.prepare("SELECT * FROM members WHERE workspace_id = ?").bind(ws.id).all<MemberRow>(),
     env.DB.prepare("SELECT id, name FROM projects WHERE workspace_id = ?").bind(ws.id).all<{ id: string; name: string }>(),
     env.DB.prepare(
@@ -290,7 +292,14 @@ export async function serializeTasks(env: AppEnv, ws: WorkspaceRow, tasks: TaskR
     )
       .bind(ws.id)
       .all<{ task_id: string; status: string }>(),
+    env.DB.prepare(
+      `SELECT d.task_id, COUNT(*) AS n FROM task_dependencies d JOIN tasks b ON b.id = d.depends_on_id
+       WHERE b.workspace_id = ? AND b.status NOT IN ('done','canceled') GROUP BY d.task_id`,
+    )
+      .bind(ws.id)
+      .all<{ task_id: string; n: number }>(),
   ]);
+  const blockedByTask = new Map(blockers.results.map((b) => [b.task_id, b.n]));
   const mById = new Map(members.results.map((m) => [m.id, m]));
   const pById = new Map(projects.results.map((p) => [p.id, p]));
   const qByTask = new Map(openQs.results.map((q) => [q.task_id, q.n]));
@@ -321,6 +330,7 @@ export async function serializeTasks(env: AppEnv, ws: WorkspaceRow, tasks: TaskR
       completed_at: t.completed_at,
       open_questions: qByTask.get(t.id) ?? 0,
       run_status: runByTask.get(t.id) ?? null,
+      open_blockers: blockedByTask.get(t.id) ?? 0,
     };
   });
 }
@@ -335,6 +345,8 @@ export interface CreateTaskInput {
   dueDate?: string | null;
   /** Ask the workspace PM to pick an assignee (only when there's none). Defaults to the workspace setting. */
   triage?: boolean;
+  /** Task keys or ids this new task is blocked by. */
+  blockedBy?: string[];
 }
 
 export async function createTask(env: AppEnv, ws: WorkspaceRow, actor: Actor, input: CreateTaskInput): Promise<TaskRow> {
@@ -344,6 +356,7 @@ export async function createTask(env: AppEnv, ws: WorkspaceRow, actor: Actor, in
   if (input.priority && !PRIORITIES.includes(input.priority)) throw badRequest("Invalid priority");
   if (input.assigneeId) await assertMemberInWorkspace(env, ws.id, input.assigneeId);
   if (input.projectId) await assertProjectInWorkspace(env, ws.id, input.projectId);
+  const blockers = await Promise.all([...new Set(input.blockedBy ?? [])].slice(0, 20).map((r) => getTaskByRef(env, ws.id, r)));
 
   const numRow = await env.DB.prepare(
     "UPDATE workspaces SET next_task_number = next_task_number + 1 WHERE id = ? RETURNING next_task_number - 1 AS n",
@@ -391,6 +404,7 @@ export async function createTask(env: AppEnv, ws: WorkspaceRow, actor: Actor, in
     .run();
   await logActivity(env, ws.id, actor, "task", task.id, "created", undefined, task);
   await addSystemEntry(env, task, actor.member, "created", {});
+  for (const b of blockers) await addDependency(env, ws, actor, task, b);
   if (task.assignee_id) {
     const assignee = await getMember(env, task.assignee_id);
     await addSystemEntry(env, task, actor.member, "assigned", { to: assignee.id, to_name: assignee.name });
@@ -543,6 +557,7 @@ export async function updateTask(
       await postTaskCompleted(env, ws, actor, next, patch.summary);
       await ideasLiveForTask(env, ws, actor, next.id);
     }
+    await onBlockerFinished(env, ws, actor, next);
   } else if (actor.member.kind === "agent") {
     await touchRun(env, next.id, actor.member.id);
   }
@@ -968,9 +983,11 @@ export async function getTaskDetail(env: AppEnv, ws: WorkspaceRow, task: TaskRow
       .all(),
     env.DB.prepare("SELECT * FROM agent_runs WHERE task_id = ? ORDER BY created_at DESC LIMIT 20").bind(task.id).all(),
   ]);
+  const [dependencies, reactions] = await Promise.all([dependenciesOf(env, ws, task.id), reactionsFor(env, task.id)]);
   return {
     task: serialized,
-    entries: entries.results.map((e) => ({ ...e, data: parseJson(e.data, {}) })),
+    entries: entries.results.map((e) => ({ ...e, data: parseJson(e.data, {}), reactions: reactions.get(e.id) ?? [] })),
+    dependencies,
     notes: notes.results,
     checklists: checklists.results.map((c) => ({ ...c, items: items.results.filter((i) => i.checklist_id === c.id) })),
     attachments: attachments.results,

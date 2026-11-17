@@ -12,6 +12,7 @@ import {
   Paperclip,
   Plus,
   Signal,
+  SmilePlus,
   UserRound,
   X,
   Zap,
@@ -69,6 +70,7 @@ import {
 import { type EditorHandle, RichEditor } from "../editor";
 import { ProjectDot } from "./Layout";
 import { ShareTaskButton } from "../ShareTask";
+import { DependenciesSection } from "../Dependencies";
 
 type TabKey = "overview" | "activity" | "files";
 
@@ -405,6 +407,8 @@ function Details({
         </AttrRow>
       </div>
 
+      <DependenciesSection detail={detail} />
+
       {!assignee && pmAgent && (
         <div className="border-t border-line px-4 py-4">
           <SectionTitle>Assignment</SectionTitle>
@@ -518,7 +522,123 @@ const SYSTEM_TEXT: Record<string, (d: any, byId: Map<string, Member>) => string>
   agent_not_configured: () => "couldn't be woken: no webhook configured",
   run_failed: (d) => (d.reported_by_agent ? `reported a problem: ${d.error ?? ""}` : `couldn't be reached: ${d.error ?? "unknown error"}`),
   run_stale: (d) => `has gone quiet (${d.reason})`,
+  blocked_by_added: (d) => `marked this as blocked by ${d.key} ${d.title}`,
+  blocked_by_removed: (d) => `removed the blocker ${d.key} ${d.title}`,
+  blocks_added: (d) => `added ${d.key} ${d.title} as waiting on this`,
+  blocks_removed: (d) => `removed ${d.key} ${d.title} from waiting on this`,
+  unblocked: (d) => `unblocked: ${d.key} ${d.title} is ${d.outcome === "canceled" ? "canceled" : "done"}, nothing else is in the way`,
 };
+
+const ENTRY_REACTIONS = ["👍", "🎉", "👀", "❤️"] as const;
+
+/** Emoji reactions on a thread message. 👍 means "acknowledged". */
+function Reactions({ entry, byId, meId }: { entry: Entry; byId: Map<string, Member>; meId?: string }) {
+  const qc = useQueryClient();
+  const [picker, setPicker] = useState(false);
+  const react = useMutation({
+    mutationFn: (emoji: string) => api.post(`/api/entries/${entry.id}/reactions`, { emoji }),
+    onMutate: async (emoji) => {
+      // Optimistic toggle so the click feels instant.
+      await qc.cancelQueries({ queryKey: ["task"] });
+      qc.setQueriesData<TaskDetail>({ queryKey: ["task"] }, (d) => {
+        if (!d?.entries || !meId) return d;
+        return {
+          ...d,
+          entries: d.entries.map((x) => {
+            if (x.id !== entry.id) return x;
+            const list = x.reactions.map((r) => ({ ...r, by: [...r.by] }));
+            let r = list.find((y) => y.emoji === emoji);
+            if (!r) list.push((r = { emoji, count: 0, by: [] }));
+            r.by = r.by.includes(meId) ? r.by.filter((id) => id !== meId) : [...r.by, meId];
+            r.count = r.by.length;
+            const order = (e: string) => ENTRY_REACTIONS.indexOf(e as (typeof ENTRY_REACTIONS)[number]);
+            return { ...x, reactions: list.filter((y) => y.count > 0).sort((a, b) => order(a.emoji) - order(b.emoji)) };
+          }),
+        };
+      });
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["task"] }),
+  });
+  const names = (ids: string[]) => ids.map((id) => (id === meId ? "You" : (byId.get(id)?.name ?? "Someone"))).join(", ");
+  const reactions = entry.reactions ?? [];
+  const ack = reactions.find((r) => r.emoji === "👍");
+  const iAcked = !!ack && !!meId && ack.by.includes(meId);
+  const others = reactions.filter((r) => r.emoji !== "👍");
+  // No "Acknowledge" button on your own messages (you still see who acknowledged them).
+  const ownMessage = !!meId && entry.author_id === meId && !entry.data.via_share;
+  const chip = "inline-flex h-6 items-center gap-1 rounded-full border px-2 text-[12px] tabular-nums transition-colors";
+  return (
+    <div className="mr-1 flex flex-wrap items-center gap-1">
+      {(!ownMessage || ack) && (
+        <button
+          type="button"
+          disabled={ownMessage && !iAcked}
+          onClick={() => react.mutate("👍")}
+          aria-pressed={iAcked}
+          title={ack ? `Acknowledged by ${names(ack.by)}` : "Acknowledge: let them know you've seen this"}
+          className={cx(
+            chip,
+            iAcked
+              ? "border-accent/40 bg-accent-soft text-ink"
+              : ack
+                ? "border-line bg-canvas text-ink-2 hover:border-line-strong"
+                : "border-transparent text-ink-3 hover:border-line hover:bg-hover hover:text-ink",
+          )}
+        >
+          <span className="text-[13px] leading-none">👍</span>
+          <span>{ack ? (ack.count === 1 ? `Acknowledged by ${names(ack.by)}` : `${ack.count} acknowledged`) : "Acknowledge"}</span>
+        </button>
+      )}
+      {others.map((r) => {
+        const mine = !!meId && r.by.includes(meId);
+        return (
+          <button
+            key={r.emoji}
+            type="button"
+            onClick={() => react.mutate(r.emoji)}
+            aria-pressed={mine}
+            title={names(r.by)}
+            className={cx(chip, mine ? "border-accent/40 bg-accent-soft" : "border-line bg-canvas hover:border-line-strong")}
+          >
+            <span className="text-[13px] leading-none">{r.emoji}</span>
+            {r.count}
+          </button>
+        );
+      })}
+      <div
+        className="relative"
+        onBlur={(ev) => !ev.currentTarget.contains(ev.relatedTarget as Node) && setPicker(false)}
+        onKeyDown={(ev) => ev.key === "Escape" && setPicker(false)}
+      >
+        <button
+          type="button"
+          onClick={() => setPicker((p) => !p)}
+          aria-label="Add reaction"
+          aria-expanded={picker}
+          title="Add reaction"
+          className="flex h-6 w-6 items-center justify-center rounded-full text-ink-3 hover:bg-hover hover:text-ink"
+        >
+          <SmilePlus size={14} />
+        </button>
+        {picker && (
+          <div className="absolute bottom-7 left-0 z-20 flex gap-0.5 rounded-full border border-line bg-canvas p-0.5 shadow-pop">
+            {ENTRY_REACTIONS.map((emoji) => (
+              <button
+                key={emoji}
+                type="button"
+                onClick={() => (react.mutate(emoji), setPicker(false))}
+                aria-label={emoji === "👍" ? "Acknowledge" : `React ${emoji}`}
+                className="flex h-7 w-7 items-center justify-center rounded-full text-[15px] hover:bg-hover"
+              >
+                {emoji}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function Thread({
   entries,
@@ -627,14 +747,15 @@ function Thread({
                 {isQ && e.data.addressed_to && <div className="mb-1 text-[12px] text-ink-3">For {byId.get(e.data.addressed_to)?.name ?? "someone"}</div>}
                 <Markdown text={e.body} />
                 {(isQ || e.type === "comment" || e.type === "update" || e.type === "answer") && (
-                  <div className="mt-2 flex items-center">
+                  <div className="mt-2 flex flex-wrap items-center gap-y-1">
+                    <Reactions entry={e} byId={byId} meId={me?.id} />
                     {e.type !== "answer" && (
-                      <Button size="sm" variant={open ? "secondary" : "ghost"} className={cx(!open && "-ml-2")} onClick={() => onReply(e)}>
+                      <Button size="sm" variant={open ? "secondary" : "ghost"} onClick={() => onReply(e)}>
                         {open ? "Answer" : "Reply"}
                       </Button>
                     )}
                     {canDelete(me, e.author_id) && !open && (
-                      <DeleteButton what="message" className={cx(e.type === "answer" && "-ml-2")} onDelete={() => api.del(`/api/entries/${e.id}`)} onDone={refresh} />
+                      <DeleteButton what="message" onDelete={() => api.del(`/api/entries/${e.id}`)} onDone={refresh} />
                     )}
                   </div>
                 )}

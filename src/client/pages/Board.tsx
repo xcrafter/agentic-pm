@@ -22,6 +22,7 @@ import {
   TriangleAlert,
   UserRound,
   X,
+  Link2,
 } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
@@ -941,6 +942,12 @@ export function RunBadge({ task, compact }: { task: Task; compact?: boolean }) {
           {compact ? `${task.open_questions} question${task.open_questions > 1 ? "s" : ""}` : `Waiting on you · ${task.open_questions}`}
         </Tag>
       )}
+      {task.open_blockers > 0 && (
+        <Tag tone="gray" className="shrink-0" title={`Waiting on ${task.open_blockers} other task${task.open_blockers > 1 ? "s" : ""}`}>
+          <Link2 size={12} />
+          {compact ? "Blocked" : `Blocked by ${task.open_blockers}`}
+        </Tag>
+      )}
       {!problem && !task.open_questions && run && (
         <Tag tone={run[1]} className="shrink-0">
           {task.run_status === "active" && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" />}
@@ -976,7 +983,7 @@ function Card({ task }: { task: Task }) {
           <MemberChip member={task.assignee} size={16} muted />
           <span className="ml-auto shrink-0 text-ink-3 tabular-nums">{task.key}</span>
         </div>
-        {(task.project || task.priority !== "none" || task.run_status || task.open_questions > 0) && (
+        {(task.project || task.priority !== "none" || task.run_status || task.open_questions > 0 || task.open_blockers > 0) && (
           <div className="flex flex-wrap items-center gap-1.5">
             {task.priority !== "none" && <PriorityIcon priority={task.priority} />}
             {task.project && <Tag tone={projectTone(task.project.id)}>{task.project.name}</Tag>}

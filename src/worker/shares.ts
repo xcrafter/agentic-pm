@@ -132,6 +132,16 @@ export async function renderShareMarkdown(env: AppEnv, share: ShareRow, task: Ta
 
   out.push("## Description", "", t.description.trim() || "_No description._", "");
 
+  const deps = d.dependencies;
+  if (deps.blocked_by.length || deps.blocking.length) {
+    out.push("## Dependencies", "");
+    const line = (x: { key: string; title: string; status: string }) => `- ${x.key}: ${x.title} (${STATUS_LABEL[x.status] ?? x.status})`;
+    if (deps.blocked_by.length) {
+      out.push(deps.open_blockers ? `Blocked by (${deps.open_blockers} not done yet):` : "Blocked by (all done):", ...deps.blocked_by.map(line), "");
+    }
+    if (deps.blocking.length) out.push("Blocks:", ...deps.blocking.map(line), "");
+  }
+
   if (d.checklists.length) {
     out.push("## Checklists", "");
     for (const c of d.checklists as unknown as Array<{ title: string; items: Array<{ text: string; done: number }> }>) {
@@ -160,7 +170,7 @@ export async function renderShareMarkdown(env: AppEnv, share: ShareRow, task: Ta
     out.push("");
   }
 
-  const msgs = (d.entries as Array<{ id: string; type: string; author_id: string; body: string; created_at: string; data: any }>).filter(
+  const msgs = (d.entries as unknown as Array<{ id: string; type: string; author_id: string; body: string; created_at: string; data: any; reactions: { emoji: string; by: string[] }[] }>).filter(
     (e) => ["comment", "update", "question", "answer"].includes(e.type) && !e.data?.deleted && e.body.trim(),
   );
   if (msgs.length) {
@@ -168,7 +178,10 @@ export async function renderShareMarkdown(env: AppEnv, share: ShareRow, task: Ta
     for (const e of msgs) {
       const author = e.data?.via_share ? `${e.data.author_name || "External"} (via share link)` : name(e.author_id);
       const kind = e.type === "comment" ? "" : ` · ${e.type}${e.type === "question" ? ` (${e.data?.state ?? "open"})` : ""}`;
-      out.push(`**${author}** — ${day(e.created_at)}${kind}`, "", e.body.trim(), "", "---", "");
+      const ack = e.reactions.find((r) => r.emoji === "👍");
+      const others = e.reactions.filter((r) => r.emoji !== "👍").map((r) => `${r.emoji} ${r.by.length}`);
+      const foot = [ack ? `👍 Acknowledged by ${ack.by.map(name).join(", ")}` : "", ...others].filter(Boolean).join(" · ");
+      out.push(`**${author}** — ${day(e.created_at)}${kind}`, "", e.body.trim(), "", ...(foot ? [`_${foot}_`, ""] : []), "---", "");
     }
   }
 
@@ -195,12 +208,35 @@ function esc(s: string) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-function renderShareHtml(title: string, md: string, mdUrl: string, wsName: string) {
+/** Plain-text summary of Markdown for link previews (Slack, WhatsApp, iMessage, X…). */
+export function previewText(md: string, max = 200) {
+  const text = md
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+[.)])\s+(\[[ xX]\]\s+)?/gm, "")
+    .replace(/[*_`~]+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.length > max ? `${text.slice(0, max - 1).replace(/\s+\S*$/, "")}…` : text;
+}
+
+function renderShareHtml(title: string, md: string, mdUrl: string, wsName: string, meta: { description: string; url: string; status: string }) {
+  const desc = meta.description || `${meta.status} · shared from ${wsName}`;
   return `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
 <title>${esc(title)}</title>
+<meta name="description" content="${esc(desc)}">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="${esc(wsName)}">
+<meta property="og:title" content="${esc(title)}">
+<meta property="og:description" content="${esc(desc)}">
+<meta property="og:url" content="${esc(meta.url)}">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="${esc(title)}">
+<meta name="twitter:description" content="${esc(desc)}">
 <link rel="alternate" type="text/markdown" href="${esc(mdUrl)}">
 <style>
 :root{--bg:#f7f7f8;--card:#fff;--text:#1d1d20;--muted:#6b6b76;--line:#e6e6ea;--accent:#3b5bdb}
@@ -225,6 +261,8 @@ document.getElementById('copy').onclick=async function(){try{await navigator.cli
 
 // ---------- Public routes (no sign-in) ----------
 
+const PREVIEW_BOTS = /Slackbot|facebookexternalhit|Facebot|Twitterbot|WhatsApp|LinkedInBot|Discordbot|TelegramBot|SkypeUriPreview|Applebot|redditbot|Embedly|Iframely|vkShare|Pinterest|Google-PageRenderer|bingbot.*preview|MicrosoftPreview|Mattermost|Zulip/i;
+
 export const sharePublicRoutes = new Hono<{ Bindings: AppEnv }>();
 
 sharePublicRoutes.onError((err, c) => {
@@ -243,7 +281,13 @@ sharePublicRoutes.get("/share/:token", async (c) => {
   else if (token.endsWith(".json")) (format = "json"), (token = token.slice(0, -5));
   const { share, task, ws } = await findShare(c.env, token);
 
-  await c.env.DB.prepare("UPDATE task_shares SET last_used_at = ?, use_count = use_count + 1 WHERE id = ?").bind(nowIso(), share.id).run();
+  // Link-preview bots (Slack, WhatsApp, iMessage…) get the HTML page for its title/description tags,
+  // and don't count as a use of the link.
+  const ua = c.req.header("user-agent") ?? "";
+  const previewBot = PREVIEW_BOTS.test(ua);
+  if (!previewBot) {
+    await c.env.DB.prepare("UPDATE task_shares SET last_used_at = ?, use_count = use_count + 1 WHERE id = ?").bind(nowIso(), share.id).run();
+  }
   const md = await renderShareMarkdown(c.env, share, task, ws);
   const headers = { "Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow", "Referrer-Policy": "no-referrer" };
 
@@ -261,9 +305,17 @@ sharePublicRoutes.get("/share/:token", async (c) => {
       headers,
     );
   }
-  const wantsHtml = format === "auto" && (c.req.header("accept") ?? "").includes("text/html");
+  const wantsHtml = format === "auto" && (previewBot || (c.req.header("accept") ?? "").includes("text/html"));
   if (!wantsHtml) return c.body(md, 200, { ...headers, "Content-Type": "text/markdown; charset=utf-8" });
-  return c.html(renderShareHtml(`${taskKey(ws, task)}: ${task.title}`, md, `${shareUrl(c.env, share)}.md`, ws.name), 200, headers);
+  return c.html(
+    renderShareHtml(`${taskKey(ws, task)}: ${task.title}`, md, `${shareUrl(c.env, share)}.md`, ws.name, {
+      description: previewText(task.description),
+      url: shareUrl(c.env, share),
+      status: STATUS_LABEL[task.status] ?? task.status,
+    }),
+    200,
+    headers,
+  );
 });
 
 sharePublicRoutes.post("/share/:token/messages", async (c) => {

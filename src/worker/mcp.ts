@@ -5,6 +5,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
+import { addDependency, dependenciesOf, reactToEntry, removeDependency } from "./links";
 import {
   type Actor,
   type EntryRow,
@@ -128,7 +129,7 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
     return new Map(rows.results.map((m) => [m.id, m]));
   };
 
-  const compactEntry = (e: EntryRow & { data: any }, names: Map<string, { name: string; handle: string; kind: string }>) => {
+  const compactEntry = (e: EntryRow & { data: any; reactions?: { emoji: string; by: string[] }[] }, names: Map<string, { name: string; handle: string; kind: string }>) => {
     const a = names.get(e.author_id);
     const base: Record<string, unknown> = {
       id: e.id,
@@ -139,6 +140,11 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
     if (e.data?.deleted) return { ...base, deleted: true };
     if (e.body) base.body = e.body;
     if (e.reply_to_id) base.reply_to = e.reply_to_id;
+    if (e.reactions?.length) {
+      base.reactions = e.reactions.map((r) => `${r.emoji} ${r.by.map((id) => names.get(id)?.name ?? "someone").join(", ")}`);
+      const ack = e.reactions.find((r) => r.emoji === "👍");
+      if (ack) base.acknowledged_by = ack.by.map((id) => names.get(id)?.name ?? "someone");
+    }
     if (e.type === "system" || e.type.endsWith("_created") || e.type === "attachment_added" || e.type === "question") {
       const { actor_known, ...rest } = e.data ?? {};
       if (Object.keys(rest).length) base.data = rest;
@@ -180,13 +186,21 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
           .first<{ last_read_at: string }>();
         const detail = await getTaskDetail(env, w, t);
         const names = await memberNames();
-        const entries = detail.entries as (EntryRow & { data: any })[];
+        const entries = detail.entries as unknown as (EntryRow & { data: any; reactions: { emoji: string; by: string[] }[] })[];
         const unread = entries.filter((e) => e.author_id !== me.id && (!cursor || e.created_at > cursor.last_read_at));
         const recent = entries.slice(-50);
         await markRead(env, me.id, t.id);
         if (me.kind === "agent") await touchRun(env, t.id, me.id);
         return {
           task: detail.task,
+          dependencies: detail.dependencies.blocked_by.length || detail.dependencies.blocking.length
+            ? {
+                ...detail.dependencies,
+                note: detail.dependencies.open_blockers
+                  ? `Blocked: ${detail.dependencies.open_blockers} task(s) in blocked_by aren't done yet. Don't start work that needs their result.`
+                  : undefined,
+              }
+            : undefined,
           open_questions: entries
             .filter((e) => e.type === "question" && e.data?.state === "open")
             .map((e) => compactEntry(e, names)),
@@ -240,6 +254,7 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
         assignee: z.string().optional().describe("Member handle or id"),
         priority: z.enum(PRIORITIES).optional(),
         status: z.enum(TASK_STATUSES).optional(),
+        blocked_by: z.array(z.string()).optional().describe("Task keys this task depends on (it can't start until they're done)"),
       },
     },
     (a) =>
@@ -247,6 +262,7 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
         const w = await ws();
         const assigneeId = a.assignee ? (await findMemberByRef(env, w.id, a.assignee)).id : null;
         const t = await createTask(env, w, actor, {
+          blockedBy: a.blocked_by,
           title: a.title,
           description: a.description,
           projectId: a.project ?? null,
@@ -289,6 +305,47 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
           dueDate: a.due_date,
         });
         return (await serializeTasks(env, w, [next]))[0];
+      }),
+  );
+
+  server.registerTool(
+    "set_dependency",
+    {
+      description:
+        "Mark that a task is blocked by another (it can't start until the other is done), or remove that link. " +
+        "When the last blocker is done, the blocked task's agent is woken.",
+      inputSchema: {
+        task: z.string().describe("The task that waits"),
+        blocked_by: z.string().describe("The task it waits for"),
+        remove: z.boolean().optional().describe("true to remove the link"),
+      },
+    },
+    (a) =>
+      guard(async () => {
+        const w = await ws();
+        const t = await getTaskByRef(env, w.id, a.task);
+        const b = await getTaskByRef(env, w.id, a.blocked_by);
+        if (a.remove) await removeDependency(env, w, actor, t, b);
+        else await addDependency(env, w, actor, t, b);
+        return await dependenciesOf(env, w, t.id);
+      }),
+  );
+
+  server.registerTool(
+    "react",
+    {
+      description:
+        "React to a message in a task thread. 👍 means acknowledged: use it to confirm you've seen feedback or a reply without posting a comment.",
+      inputSchema: {
+        entry_id: z.string().describe("Thread message id (from get_task)"),
+        emoji: z.enum(["👍", "🎉", "👀", "❤️"]).optional().describe("Defaults to 👍"),
+        remove: z.boolean().optional(),
+      },
+    },
+    (a) =>
+      guard(async () => {
+        const w = await ws();
+        return await reactToEntry(env, w, actor, a.entry_id, a.emoji ?? "👍", !a.remove);
       }),
   );
 

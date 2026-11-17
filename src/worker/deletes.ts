@@ -116,6 +116,8 @@ export async function deleteTask(env: AppEnv, ws: WorkspaceRow, actor: Actor, ta
     env.DB.prepare("DELETE FROM attachments WHERE task_id = ?").bind(id),
     env.DB.prepare("DELETE FROM agent_runs WHERE task_id = ?").bind(id),
     env.DB.prepare("DELETE FROM task_shares WHERE task_id = ?").bind(id),
+    env.DB.prepare("DELETE FROM task_dependencies WHERE task_id = ? OR depends_on_id = ?").bind(id, id),
+    env.DB.prepare("DELETE FROM entry_reactions WHERE entry_id IN (SELECT id FROM thread_entries WHERE task_id = ?)").bind(id),
     env.DB.prepare("UPDATE posts SET task_id = NULL WHERE task_id = ?").bind(id),
     env.DB.prepare("UPDATE ideas SET converted_task_id = NULL WHERE converted_task_id = ?").bind(id),
     env.DB.prepare("UPDATE tools SET research_task_id = NULL WHERE research_task_id = ?").bind(id),

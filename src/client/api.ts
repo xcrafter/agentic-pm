@@ -56,6 +56,7 @@ export interface Task {
   completed_at: string | null;
   open_questions: number;
   run_status: string | null;
+  open_blockers: number;
 }
 
 export interface Entry {
@@ -68,6 +69,14 @@ export interface Entry {
   reply_to_id: string | null;
   created_at: string;
   edited_at: string | null;
+  reactions: { emoji: string; count: number; by: string[] }[];
+}
+export interface DepTask {
+  id: string;
+  key: string;
+  title: string;
+  status: Status;
+  assignee: { id: string; name: string } | null;
 }
 export interface Note {
   id: string;
@@ -118,6 +127,7 @@ export interface TaskDetail {
   checklists: Checklist[];
   attachments: Attachment[];
   runs: Run[];
+  dependencies: { blocked_by: DepTask[]; blocking: DepTask[]; open_blockers: number };
 }
 export interface Project {
   id: string;

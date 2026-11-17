@@ -935,6 +935,80 @@ try {
   assert.equal((await fetch(`${BASE}${new URL(ro.url).pathname}`)).status, 404);
   pass("read link serves Markdown/HTML, reply link posts back as External, revoked and deleted links stop working");
 
+  step("Dependencies: blocked-by links, no loops, the dependent task's agent wakes when its blockers are done");
+  const blocker = await alice("POST", "/api/tasks", { title: `Design schema ${runId}`, triage: false });
+  const dependent = await alice("POST", "/api/tasks", { title: `Build API ${runId}`, assignee_id: agent.id, blocked_by: [blocker.key] });
+  await waitForHook((c) => c.body?.event === "assigned" && c.body.task.key === dependent.key);
+  await tool("end_run", { task: dependent.key, reason: "waiting on the schema" });
+  let depD = await alice("GET", `/api/tasks/${dependent.key}`);
+  assert.deepEqual(depD.dependencies.blocked_by.map((t) => t.key), [blocker.key]);
+  assert.equal(depD.dependencies.open_blockers, 1);
+  assert.equal(depD.task.open_blockers, 1);
+  assert.deepEqual((await alice("GET", `/api/tasks/${blocker.key}`)).dependencies.blocking.map((t) => t.key), [dependent.key]);
+  await assert.rejects(alice("POST", `/api/tasks/${blocker.key}/dependencies`, { blocked_by: dependent.key }), /409/);
+  await assert.rejects(alice("POST", `/api/tasks/${blocker.key}/dependencies`, { blocked_by: blocker.key }), /400/);
+  // A dependent task created from the blocker's page ("blocks" side).
+  const followOn = await alice("POST", "/api/tasks", { title: `Write docs ${runId}`, blocked_by: [blocker.key], triage: false });
+  assert.equal((await alice("GET", `/api/tasks/${blocker.key}`)).dependencies.blocking.length, 2);
+  // Agents see dependencies and can add them.
+  const viaMcp = await tool("get_task", { task: dependent.key });
+  assert.ok(viaMcp.dependencies.note.includes("Blocked"));
+  const extra = await alice("POST", "/api/tasks", { title: `Pick a DB ${runId}`, triage: false });
+  await tool("set_dependency", { task: dependent.key, blocked_by: extra.key });
+  assert.equal((await alice("GET", `/api/tasks/${dependent.key}`)).dependencies.open_blockers, 2);
+  const depHooks = hookCalls.length;
+  await alice("PATCH", `/api/tasks/${blocker.key}`, { status: "done" });
+  await new Promise((r) => setTimeout(r, 1200));
+  assert.ok(!hookCalls.slice(depHooks).some((c) => c.body?.task?.key === dependent.key), "still blocked by the other task: no wake");
+  await alice("PATCH", `/api/tasks/${extra.key}`, { status: "canceled" });
+  const unblockedWake = await waitForHook((c) => c.body?.event === "followup" && c.body.task.key === dependent.key);
+  assert.ok(unblockedWake);
+  depD = await alice("GET", `/api/tasks/${dependent.key}`);
+  assert.equal(depD.dependencies.open_blockers, 0);
+  assert.ok(depD.entries.some((e) => e.data.event === "unblocked"));
+  await tool("end_run", { task: dependent.key, reason: "test" });
+  await alice("DELETE", `/api/tasks/${dependent.key}/dependencies?blocked_by=${extra.key}`);
+  assert.equal((await alice("GET", `/api/tasks/${dependent.key}`)).dependencies.blocked_by.length, 1);
+  pass("links both ways, loops rejected, agent woken only when the last blocker finishes, links removable");
+
+  step("Reactions on replies: 👍 acknowledges; agents see who acknowledged and can acknowledge too");
+  const fb = await tool("post_update", { task: dependent.key, body: "Schema migration is drafted, please check" });
+  await alice("POST", `/api/entries/${fb.id}/reactions`, { emoji: "👍" });
+  await alice("POST", `/api/entries/${fb.id}/reactions`, { emoji: "🎉" });
+  await alice("POST", `/api/entries/${fb.id}/reactions`, { emoji: "🎉" }); // toggles off
+  let fe = (await alice("GET", `/api/tasks/${dependent.key}`)).entries.find((e) => e.id === fb.id);
+  assert.deepEqual(fe.reactions.map((r) => [r.emoji, r.count]), [["👍", 1]]);
+  const seen = (await tool("get_task", { task: dependent.key })).thread.find((e) => e.id === fb.id);
+  assert.deepEqual(seen.acknowledged_by, ["Alice"]);
+  const humanNote = await alice("POST", `/api/tasks/${dependent.key}/entries`, { body: "Use UUIDs for ids" });
+  const ackHooks = hookCalls.length;
+  await tool("react", { entry_id: humanNote.id });
+  await new Promise((r) => setTimeout(r, 800));
+  assert.equal(hookCalls.length, ackHooks, "reactions never wake anyone");
+  fe = (await alice("GET", `/api/tasks/${dependent.key}`)).entries.find((e) => e.id === humanNote.id);
+  assert.equal(fe.reactions[0].emoji, "👍");
+  await assert.rejects(alice("POST", `/api/entries/${fb.id}/reactions`, { emoji: "🚀" }), /400/);
+  pass("👍 shows as acknowledged for people and agents; unknown emoji rejected");
+
+  step("Share link previews: title and description in the page's meta tags");
+  const sharePrev = await alice("POST", `/api/tasks/${dependent.key}/shares`, { mode: "read", expires_in_days: 1 });
+  await alice("PATCH", `/api/tasks/${dependent.key}`, { description: "## Goal\n\nShip the **orders** API with [docs](https://example.com)." });
+  const prevPath = new URL(sharePrev.url).pathname;
+  const usesBefore = (await alice("GET", `/api/tasks/${dependent.key}/shares`))[0].use_count;
+  const bot = await fetch(`${BASE}${prevPath}`, { headers: { "User-Agent": "Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)" } });
+  const botHtml = await bot.text();
+  assert.ok(bot.headers.get("content-type").includes("text/html"), "preview bots get HTML even without Accept: text/html");
+  assert.ok(botHtml.includes(`<meta property="og:title" content="${dependent.key}: Build API ${runId}">`));
+  assert.ok(botHtml.includes(`<meta property="og:description" content="Goal Ship the orders API with docs.">`), botHtml.match(/og:description[^>]*/)?.[0]);
+  assert.ok(botHtml.includes('name="twitter:card"'));
+  assert.equal((await alice("GET", `/api/tasks/${dependent.key}/shares`))[0].use_count, usesBefore, "previews don't count as uses");
+  const shareMd = await fetch(`${BASE}${prevPath}.md`).then((r) => r.text());
+  assert.ok(shareMd.includes("## Dependencies") && shareMd.includes(`- ${blocker.key}: Design schema ${runId} (Done)`));
+  assert.ok(shareMd.includes("👍 Acknowledged by Alice"));
+  await alice("DELETE", `/api/tasks/${followOn.key}`);
+  assert.equal((await alice("GET", `/api/tasks/${blocker.key}`)).dependencies.blocking.length, 1, "deleting a task drops its links");
+  pass("Slack/WhatsApp-style previews show the task title and description; shared Markdown lists dependencies and acknowledgements");
+
   step("Unreachable agent → run fails and lands in Needs you");
   await alice("PATCH", `/api/members/${agent.id}`, { webhook_url: `http://localhost:${HOOK_PORT}/missing` });
   const t3 = await alice("POST", "/api/tasks", { title: "Will fail", assignee_id: agent.id });

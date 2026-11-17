@@ -192,6 +192,35 @@ Ideas sit in three stages, each with its own tab. **Backlog** covers everything 
 
 **Tools** (near the bottom of the sidebar) is a quiet bookmark list of useful tools. Paste a website and the app reads the page, then writes a short summary, tags, a category and pricing. If you have a PM agent, it also gets a low-priority "Research tool" task to research the tool properly and write back with `update_tool`. Filter by tag, pin favourites, and edit anything by hand.
 
+### 15. Dependencies
+
+In a task's side panel, **Dependencies** has two lists:
+
+- **Blocked by**: the tasks this one waits for.
+- **Blocks**: the tasks that wait for this one.
+
+Press **+** on either list to search for a task, or type a title to create one. Use the **Blocks** list to create a dependent task.
+
+A task with unfinished blockers shows a **Blocked** tag in lists and on the board.
+
+When its last blocker is done or canceled, the task gets an "unblocked" note in its thread. If an agent owns the task and it's in To do or In progress, that agent is woken.
+
+Links that would form a loop are refused. Agents see dependencies in `get_task`, can pass `blocked_by` to `create_task`, and can change links with `set_dependency`.
+
+### 16. Acknowledge replies with 👍
+
+Every comment, update and answer has an **Acknowledge** (👍) button, plus 🎉 👀 ❤️.
+
+A 👍 tells the author you've seen it, without writing a reply. It shows as "Acknowledged by …" to everyone:
+
+- **People** see it in the thread.
+- **Agents** see it as `acknowledged_by` in `get_task`.
+- **Outside tools** see it in the shared Markdown.
+
+Agents can acknowledge your messages with `react`. Reactions never wake anyone.
+
+Share links also include the task's title and description as preview tags, so Slack, WhatsApp, iMessage and similar apps show them in the preview.
+
 ### Getting the most out of it
 
 - **One identity per agent.** Each real agent should have its own profile, so its work, 👍 and failures are attributed to it, not to "Grok".
@@ -264,8 +293,8 @@ Problems also land in **Needs you**, for whoever triggered the run, the agent's 
 
 | Group | Tools |
 |---|---|
-| Tasks | `list_my_tasks`, `get_task`, `search_tasks`, `create_task`, `update_task`, `complete_task`, `end_run` (`outcome`: `handed_back` / `blocked` / `failed`) |
-| Thread & content | `post_update`, `add_comment`, `ask_question`, `write_note`, `create_checklist`, `add_checklist_item`, `set_checklist_item`, `attach_file`, `get_attachment` |
+| Tasks | `list_my_tasks`, `get_task`, `search_tasks`, `create_task`, `update_task`, `complete_task`, `end_run` (`outcome`: `handed_back` / `blocked` / `failed`), `set_dependency` (`task`, `blocked_by`, `remove`) |
+| Thread & content | `post_update`, `add_comment`, `ask_question`, `write_note`, `create_checklist`, `add_checklist_item`, `set_checklist_item`, `attach_file`, `get_attachment`, `react` (`entry_id`, `emoji`; 👍 = acknowledged) |
 | Feed | `share_update` (`kind`, `task`, `link`, `routine`), `read_feed` |
 | Ideas | `list_ideas` (`stage`: backlog / live / archived), `log_idea` (`title`, `body`, optional `labels`, `owner`, `source_url`), `list_ideas`, `log_feature_request` (`customer`, `idea_id` or `title`, `note`) |
 | Policies | `list_policies` (`query`), `get_policy` (id, path like `Marketing / Blog SOP`, or title; records that the agent read that version), `create_policy` (`title`, `content`, `folder` path, `summary`), `update_policy` (agents can't change who follows a policy or make it required) |

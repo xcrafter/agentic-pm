@@ -1,3 +1,4 @@
+import { addDependency, dependenciesOf, reactToEntry, removeDependency } from "./links";
 import { Hono } from "hono";
 import { getCookie } from "hono/cookie";
 import {
@@ -335,6 +336,7 @@ api.get("/api/tasks", async (c) => {
     projectId: q.project || undefined,
     memberKind: q.kind === "agent" || q.kind === "human" ? q.kind : undefined,
     query: q.q || undefined,
+    limit: q.limit ? Math.max(1, Math.min(Number(q.limit) || 500, 1000)) : undefined,
   });
   return c.json(await serializeTasks(c.env, ws, tasks));
 });
@@ -349,9 +351,14 @@ api.post("/api/tasks", async (c) => {
     project_id?: string | null;
     due_date?: string | null;
     triage?: boolean;
+    blocked_by?: string[];
+    blocks?: string[];
   }>();
   const ws = c.get("ws");
+  // Resolve "blocks" first so a bad reference fails before anything is created.
+  const blocks = await Promise.all([...new Set(Array.isArray(b.blocks) ? b.blocks : [])].slice(0, 20).map((r) => getTaskByRef(c.env, ws.id, String(r))));
   const task = await createTask(c.env, ws, c.get("actor"), {
+    blockedBy: Array.isArray(b.blocked_by) ? b.blocked_by.map(String) : undefined,
     triage: typeof b.triage === "boolean" ? b.triage : undefined,
     title: b.title,
     description: b.description,
@@ -361,8 +368,37 @@ api.post("/api/tasks", async (c) => {
     projectId: b.project_id,
     dueDate: b.due_date,
   });
+  for (const t of blocks) await addDependency(c.env, ws, c.get("actor"), t, task);
   const [s] = await serializeTasks(c.env, ws, [task]);
   return c.json(s, 201);
+});
+
+// Dependencies: POST {blocked_by: ref} or {blocks: ref}; DELETE the same way.
+api.post("/api/tasks/:ref/dependencies", async (c) => {
+  const ws = c.get("ws");
+  const task = await getTaskByRef(c.env, ws.id, c.req.param("ref"));
+  const b = await c.req.json<{ blocked_by?: string; blocks?: string }>();
+  if (!b.blocked_by === !b.blocks) throw badRequest("Send either blocked_by or blocks");
+  const other = await getTaskByRef(c.env, ws.id, String(b.blocked_by ?? b.blocks));
+  if (b.blocked_by) await addDependency(c.env, ws, c.get("actor"), task, other);
+  else await addDependency(c.env, ws, c.get("actor"), other, task);
+  return c.json(await dependenciesOf(c.env, ws, task.id), 201);
+});
+api.delete("/api/tasks/:ref/dependencies", async (c) => {
+  const ws = c.get("ws");
+  const task = await getTaskByRef(c.env, ws.id, c.req.param("ref"));
+  const blockedBy = c.req.query("blocked_by");
+  const blocks = c.req.query("blocks");
+  if (!blockedBy === !blocks) throw badRequest("Send either blocked_by or blocks");
+  const other = await getTaskByRef(c.env, ws.id, String(blockedBy ?? blocks));
+  if (blockedBy) await removeDependency(c.env, ws, c.get("actor"), task, other);
+  else await removeDependency(c.env, ws, c.get("actor"), other, task);
+  return c.json(await dependenciesOf(c.env, ws, task.id));
+});
+
+api.post("/api/entries/:id/reactions", async (c) => {
+  const b = await c.req.json<{ emoji: string; on?: boolean }>();
+  return c.json(await reactToEntry(c.env, c.get("ws"), c.get("actor"), c.req.param("id"), b.emoji, b.on));
 });
 
 api.get("/api/tasks/:ref", async (c) => {
