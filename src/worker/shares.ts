@@ -204,7 +204,7 @@ export async function renderShareMarkdown(env: AppEnv, share: ShareRow, task: Ta
   return out.join("\n");
 }
 
-function esc(s: string) {
+export function esc(s: string) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
@@ -261,7 +261,7 @@ document.getElementById('copy').onclick=async function(){try{await navigator.cli
 
 // ---------- Public routes (no sign-in) ----------
 
-const PREVIEW_BOTS = /Slackbot|facebookexternalhit|Facebot|Twitterbot|WhatsApp|LinkedInBot|Discordbot|TelegramBot|SkypeUriPreview|Applebot|redditbot|Embedly|Iframely|vkShare|Pinterest|Google-PageRenderer|bingbot.*preview|MicrosoftPreview|Mattermost|Zulip/i;
+export const PREVIEW_BOTS = /Slackbot|facebookexternalhit|Facebot|Twitterbot|WhatsApp|LinkedInBot|Discordbot|TelegramBot|SkypeUriPreview|Applebot|redditbot|Embedly|Iframely|vkShare|Pinterest|Google-PageRenderer|bingbot.*preview|MicrosoftPreview|Mattermost|Zulip/i;
 
 export const sharePublicRoutes = new Hono<{ Bindings: AppEnv }>();
 

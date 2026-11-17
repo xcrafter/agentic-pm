@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Bot, Globe, ImageUp, Settings, ShieldCheck, Trash2, Wand2, Webhook, X, Zap } from "lucide-react";
+import { Bot, Globe, ImageUp, Link2, Settings, ShieldCheck, Trash2, Wand2, Webhook, X, Zap } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { type Member, type WorkspaceInfo, api } from "../api";
@@ -170,6 +170,8 @@ export function SettingsPage() {
             </Section>
 
             <AgentDispatch ws={ws} isAdmin={isAdmin} onSaved={setWs} />
+
+            <LinkPreviews ws={ws} isAdmin={isAdmin} onSaved={setWs} />
 
             <Section
               icon={<ShieldCheck size={15} />}
@@ -406,6 +408,52 @@ function AgentDispatch({ ws, isAdmin, onSaved }: { ws: WorkspaceInfo; isAdmin: b
           </>
         )}
         {error && <p className="text-[13px] text-danger">{(error as Error).message}</p>}
+      </div>
+    </Section>
+  );
+}
+
+const PREVIEW_OPTIONS = [
+  { value: "off", label: "Off", hint: "Previews show “Agentic PM”. Task details stay behind sign-in." },
+  { value: "title", label: "Task title", hint: "Previews show the key and title, e.g. “IMP-30: Launch post”, with its status." },
+  { value: "full", label: "Title and description", hint: "Also shows the first couple of lines of the description." },
+] as const;
+
+function LinkPreviews({ ws, isAdmin, onSaved }: { ws: WorkspaceInfo; isAdmin: boolean; onSaved: (w: WorkspaceInfo) => void }) {
+  const save = useMutation({
+    mutationFn: (link_previews: WorkspaceInfo["link_previews"]) => api.patch<WorkspaceInfo>("/api/workspace", { link_previews }),
+    onSuccess: onSaved,
+  });
+  return (
+    <Section
+      icon={<Link2 size={15} />}
+      title="Link previews"
+      description="What WhatsApp, Slack, iMessage and similar apps show when someone pastes a task link (like /t/IMP-30). Share links always show the task."
+    >
+      <div className="max-w-lg space-y-2">
+        {PREVIEW_OPTIONS.map((o) => (
+          <label key={o.value} className={cx("flex items-start gap-2.5 text-[13px]", !isAdmin && "opacity-70")}>
+            <input
+              type="radio"
+              name="link_previews"
+              className="mt-0.5"
+              checked={ws.link_previews === o.value}
+              disabled={!isAdmin || save.isPending}
+              onChange={() => save.mutate(o.value)}
+            />
+            <span>
+              <span className="font-medium">{o.label}</span>
+              <span className="block text-ink-3">{o.hint}</span>
+            </span>
+          </label>
+        ))}
+        {ws.link_previews !== "off" && (
+          <p className="rounded-lg border border-line bg-panel px-3 py-2 text-[12px] leading-relaxed text-ink-2">
+            Preview apps aren't signed in, so while this is on, anyone who guesses a task link can read{" "}
+            {ws.link_previews === "full" ? "its title and the start of its description" : "its title"}. Nothing else on the task is shown.
+          </p>
+        )}
+        {save.error && <p className="text-[12px] text-danger">{errorText(save.error)}</p>}
       </div>
     </Section>
   );

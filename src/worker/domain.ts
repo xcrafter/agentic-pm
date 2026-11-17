@@ -46,6 +46,7 @@ export interface WorkspaceRow {
   allowed_domains: string | null;
   pm_agent_id: string | null;
   pm_triage: number;
+  link_previews: "off" | "title" | "full";
 }
 
 export const TASK_STATUSES = ["backlog", "todo", "in_progress", "waiting_on_human", "done", "canceled"] as const;
@@ -132,6 +133,7 @@ export async function ensureWorkspace(env: AppEnv): Promise<WorkspaceRow> {
     logo_updated_at: null,
     allowed_domains: null,
     pm_agent_id: null,
+    link_previews: "off",
     pm_triage: 0, // opt-in: the PM stays idle unless an agent is assigned or @mentioned
   };
   await env.DB.prepare("INSERT INTO workspaces (id, name, key_prefix, next_task_number, created_at, pm_triage) VALUES (?,?,?,?,?,0)")

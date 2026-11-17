@@ -24,6 +24,7 @@ export function workspaceInfo(env: AppEnv, ws: WorkspaceRow) {
     allowed_domains_source: custom ? ("workspace" as const) : ("default" as const),
     pm_agent_id: ws.pm_agent_id,
     pm_triage: !!ws.pm_triage,
+    link_previews: ws.link_previews ?? "off",
   };
 }
 
@@ -181,6 +182,7 @@ workspaceRoutes.patch("/api/workspace", async (c) => {
     allowed_domains?: string[] | string | null;
     pm_agent_id?: string | null;
     pm_triage?: boolean;
+    link_previews?: string;
   }>();
   const sets: string[] = [];
   const binds: unknown[] = [];
@@ -229,6 +231,10 @@ workspaceRoutes.patch("/api/workspace", async (c) => {
     set("pm_agent_id", body.pm_agent_id || null);
   }
   if (body.pm_triage !== undefined) set("pm_triage", body.pm_triage ? 1 : 0);
+  if (body.link_previews !== undefined) {
+    if (!["off", "title", "full"].includes(body.link_previews)) throw badRequest("link_previews must be off, title or full");
+    set("link_previews", body.link_previews);
+  }
   if (sets.length) {
     await c.env.DB.prepare(`UPDATE workspaces SET ${sets.join(", ")} WHERE id = ?`).bind(...binds, ws.id).run();
     await logActivity(c.env, ws.id, { member: me, via: "web" }, "workspace", ws.id, "updated", before, after);

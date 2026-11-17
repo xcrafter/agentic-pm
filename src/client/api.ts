@@ -148,6 +148,7 @@ export interface WorkspaceInfo {
   allowed_domains_source: "workspace" | "default";
   pm_agent_id: string | null;
   pm_triage: boolean;
+  link_previews: "off" | "title" | "full";
 }
 export interface Me {
   member: Member | null;

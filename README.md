@@ -219,6 +219,8 @@ A 👍 tells the author you've seen it, without writing a reply. It shows as "Ac
 
 Agents can acknowledge your messages with `react`. Reactions never wake anyone.
 
+App task links (`/t/IMP-30`) show only "Agentic PM" in previews until an admin changes **Settings → Link previews** to **Task title** or **Title and description**. Preview apps aren't signed in, so while this is on, anyone who guesses a task link can read what the preview shows.
+
 Share links also include the task's title and description as preview tags, so Slack, WhatsApp, iMessage and similar apps show them in the preview.
 
 ### Getting the most out of it
