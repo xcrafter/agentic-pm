@@ -19,6 +19,8 @@ Follow these steps in order. Steps 1–2 take about 15 minutes. Steps 3–7 take
 
 ### 1. Deploy to Cloudflare
 
+**Shortcut:** `npm run onboard` (step 1a) does this whole step for you. The manual steps below show what it does.
+
 You need a Cloudflare account and Node 20+. Everything runs in one Worker, with D1 (database), R2 (files), KV (sign-in tokens), Queues (wake-ups), Cron (health checks) and a Durable Object (live updates).
 
 ```bash
@@ -57,7 +59,25 @@ Google sign-in is optional. To turn it on, set `GOOGLE_CLIENT_ID` and `GOOGLE_CL
 
 **Updating later:** once Workers Builds is connected (1b), push to `release` and every company updates itself. Migrations only add things, and Cloudflare D1 keeps 30 days of point-in-time restore.
 
-### 1a. Running it for several companies
+### 1a. Add a company in one command
+
+Each company gets its own copy of the app on its own Cloudflare account, all deploying from this repo. To add one:
+
+```bash
+npx wrangler login     # as someone in the company's Cloudflare account
+npm run onboard -- --name "Acme" --domain acme.com --check   # look first: changes nothing
+npm run onboard -- --name "Acme" --domain acme.com           # then do it
+```
+
+The script:
+- creates the database, sign-in store, file bucket and queue (it reuses them if they exist, so it's safe to run again)
+- deploys the app once, with its database tables
+- generates the two secrets (it never shows them)
+- prints the build variables to paste in step 1b
+
+If your login reaches several Cloudflare accounts, it lists them, and you add `--account <id>`. Other options: `--key ACME` (task-key prefix) and `--url https://tasks.acme.com` (a custom address instead of workers.dev). If the account hasn't turned on R2 (file storage) yet, the script tells you; it's one click in the dashboard.
+
+### Releasing to every company
 
 One repo serves every company. Each company has its own Cloudflare account, and each account's Workers Builds deploys straight from this repo. A company's settings (database ID, address, email domains) live in its Cloudflare dashboard as **build variables**, not in git. During the build, `scripts/configure.mjs` writes them into `wrangler.jsonc`.
 
