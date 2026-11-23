@@ -106,7 +106,7 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
   const GATED = new Set([
     "create_task", "update_task", "post_update", "add_comment", "write_note", "create_checklist",
     "set_checklist_item", "add_checklist_item", "attach_file", "complete_task", "share_update",
-    "create_project", "update_project", "convert_idea", "create_share_link", "update_note",
+    "create_project", "update_project", "convert_idea", "create_share_link", "update_note", "duplicate_task",
   ]);
   {
     const registerGated = server.registerTool.bind(server) as (...args: any[]) => unknown;
@@ -1067,6 +1067,36 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
       (a) => guard(async () => callAs("POST", `/api/runs/${encodeURIComponent(a.run_id)}/dismiss`, {})),
     );
   }
+
+  server.registerTool(
+    "duplicate_task",
+    {
+      description:
+        "Create a copy of a task: same description, priority, project, assignee and due date unless you override them, plus its " +
+        "checklists (unchecked), notes and blockers. A done/canceled original starts the copy at todo. The thread isn't copied. " +
+        "Assigning follows the same wake rules as create_task.",
+      inputSchema: {
+        task: z.string().describe("Task key like IMP-12"),
+        title: z.string().max(300).optional().describe("Defaults to '<title> (copy)'"),
+        status: z.enum(TASK_STATUSES).optional(),
+        priority: z.enum(PRIORITIES).optional(),
+        assignee: z.string().nullable().optional().describe("Handle or member id; null for unassigned. Defaults to the original's"),
+        project: z.string().nullable().optional().describe("Project id or exact name; null for none"),
+        copy_details: z.boolean().optional().describe("false to skip checklists, notes and blockers"),
+      },
+    },
+    (a) =>
+      guard(async () =>
+        callAs("POST", `/api/tasks/${encodeURIComponent(a.task)}/duplicate`, {
+          title: a.title,
+          status: a.status,
+          priority: a.priority,
+          assignee_id: await memberId(a.assignee),
+          project_id: a.project === undefined ? undefined : a.project === null ? null : await projectId(a.project),
+          copy_details: a.copy_details,
+        }),
+      ),
+  );
 
   server.registerTool(
     "get_overview",

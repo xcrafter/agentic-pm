@@ -1128,6 +1128,57 @@ export async function updateProject(
   return { ...p, ...next, tasks_changed };
 }
 
+export interface DuplicateOptions {
+  title?: string;
+  description?: string;
+  status?: TaskStatus;
+  priority?: Priority;
+  assigneeId?: string | null;
+  projectId?: string | null;
+  dueDate?: string | null;
+  /** Copy checklists (unchecked), notes, and what the original is blocked by. Default true. */
+  copyDetails?: boolean;
+}
+
+/**
+ * A new task like `src`: same description, priority, project, assignee and due date unless overridden.
+ * A finished original starts the copy at To do. The thread, runs, files and share links aren't copied.
+ */
+export async function duplicateTask(env: AppEnv, ws: WorkspaceRow, actor: Actor, src: TaskRow, o: DuplicateOptions = {}) {
+  const projectId = o.projectId !== undefined ? o.projectId : src.archived_at ? null : src.project_id;
+  const blockers = o.copyDetails === false
+    ? []
+    : (await env.DB.prepare("SELECT depends_on_id FROM task_dependencies WHERE task_id = ?").bind(src.id).all<{ depends_on_id: string }>()).results.map((r) => r.depends_on_id);
+  const task = await createTask(env, ws, actor, {
+    title: o.title?.trim() || `${src.title} (copy)`,
+    description: o.description ?? src.description,
+    status: o.status ?? (src.status === "done" || src.status === "canceled" ? "todo" : src.status),
+    priority: o.priority ?? src.priority,
+    assigneeId: o.assigneeId !== undefined ? o.assigneeId : src.assignee_id,
+    projectId,
+    dueDate: o.dueDate !== undefined ? o.dueDate : src.due_date,
+    triage: false,
+    blockedBy: blockers,
+  });
+  if (o.copyDetails !== false) {
+    const lists = await env.DB.prepare("SELECT id, title FROM checklists WHERE task_id = ? ORDER BY created_at").bind(src.id).all<{ id: string; title: string }>();
+    for (const l of lists.results) {
+      const items = await env.DB.prepare("SELECT text FROM checklist_items WHERE checklist_id = ? ORDER BY position").bind(l.id).all<{ text: string }>();
+      await createChecklist(env, ws, actor, task, l.title, items.results.map((i) => i.text));
+    }
+    const notes = await env.DB.prepare("SELECT title, content FROM notes WHERE task_id = ? ORDER BY created_at").bind(src.id).all<{ title: string; content: string }>();
+    const now = nowIso();
+    for (const n of notes.results) {
+      await env.DB.prepare("INSERT INTO notes (id, task_id, title, content, created_by, updated_by, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)")
+        .bind(newId(), task.id, n.title, n.content, actor.member.id, actor.member.id, now, now)
+        .run();
+    }
+  }
+  await addSystemEntry(env, task, actor.member, "duplicated_from", { key: taskKey(ws, src), title: src.title });
+  await logActivity(env, ws.id, actor, "task", task.id, "duplicated", null, { from: src.id });
+  return task;
+}
+
 export async function listProjects(env: AppEnv, workspaceId: string) {
   const r = await env.DB.prepare(
     `SELECT p.*,

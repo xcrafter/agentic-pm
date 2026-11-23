@@ -1099,6 +1099,31 @@ try {
   assert.ok(await tool("get_reports", { days: 7 }));
   pass("MCP covers projects, customers, feature requests, views, inbox, share links, overview and reports");
 
+  step("Duplicate a task");
+  const dupSrc = await alice("POST", "/api/tasks", { title: `Original ${runId}`, description: "Do the thing", priority: "high", status: "done" });
+  await alice("POST", `/api/tasks/${dupSrc.key}/checklists`, { title: "Steps", items: ["one", "two"] });
+  await alice("POST", `/api/tasks/${dupSrc.key}/notes`, { title: "Context", content: "background" });
+  await alice("POST", `/api/tasks/${dupSrc.key}/dependencies`, { blocked_by: k_keyMade.key });
+  const dupCopy = await alice("POST", `/api/tasks/${dupSrc.key}/duplicate`, {});
+  assert.equal(dupCopy.title, `Original ${runId} (copy)`);
+  assert.equal(dupCopy.status, "todo", "a finished original starts the copy at To do");
+  assert.equal(dupCopy.priority, "high");
+  const dupDetail = await alice("GET", `/api/tasks/${dupCopy.key}`);
+  assert.equal(dupDetail.task.description, "Do the thing");
+  assert.equal(dupDetail.checklists[0].items.length, 2);
+  assert.ok(dupDetail.checklists[0].items.every((i) => !i.done));
+  assert.equal(dupDetail.notes[0].title, "Context");
+  assert.equal(dupDetail.dependencies.blocked_by[0].key, k_keyMade.key);
+  assert.ok(dupDetail.entries.some((e) => e.type === "system" && e.data?.event === "duplicated_from"));
+  const dupBare = await alice("POST", `/api/tasks/${dupSrc.key}/duplicate`, { title: "Bare copy", copy_details: false, priority: "low" });
+  const bare = await alice("GET", `/api/tasks/${dupBare.key}`);
+  assert.equal(bare.task.title, "Bare copy");
+  assert.equal(bare.task.priority, "low");
+  assert.equal(bare.checklists.length + bare.notes.length + bare.dependencies.blocked_by.length, 0);
+  const dupMcp = await tool("duplicate_task", { task: dupSrc.key, title: `MCP copy ${runId}` });
+  assert.equal(dupMcp.title, `MCP copy ${runId}`);
+  pass("duplicating copies description, fields, checklists (unchecked), notes and blockers; overrides and MCP work");
+
   step("Unreachable agent → run fails and lands in Needs you");
   await alice("PATCH", `/api/members/${agent.id}`, { webhook_url: `http://localhost:${HOOK_PORT}/missing` });
   const t3 = await alice("POST", "/api/tasks", { title: "Will fail", assignee_id: agent.id });

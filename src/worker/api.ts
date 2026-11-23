@@ -8,6 +8,7 @@ import {
   addAttachment,
   addChecklistItem,
   createChecklist,
+  duplicateTask,
   createProject,
   createTask,
   deleteChecklistItem,
@@ -412,6 +413,27 @@ api.post("/api/tasks", async (c) => {
     dueDate: b.due_date,
   });
   for (const t of blocks) await addDependency(c.env, ws, c.get("actor"), t, task);
+  const [s] = await serializeTasks(c.env, ws, [task]);
+  return c.json(s, 201);
+});
+
+// Duplicate: a new task like this one. Any field can be overridden; copy_details: false skips checklists, notes and blockers.
+api.post("/api/tasks/:ref/duplicate", async (c) => {
+  const ws = c.get("ws");
+  const src = await getTaskByRef(c.env, ws.id, c.req.param("ref"));
+  const b = await c.req
+    .json<{ title?: string; description?: string; status?: any; priority?: any; assignee_id?: string | null; project_id?: string | null; due_date?: string | null; copy_details?: boolean }>()
+    .catch(() => ({}) as Record<string, never>);
+  const task = await duplicateTask(c.env, ws, c.get("actor"), src, {
+    title: b.title,
+    description: typeof b.description === "string" ? b.description : undefined,
+    status: b.status,
+    priority: b.priority,
+    assigneeId: b.assignee_id,
+    projectId: b.project_id,
+    dueDate: b.due_date,
+    copyDetails: b.copy_details,
+  });
   const [s] = await serializeTasks(c.env, ws, [task]);
   return c.json(s, 201);
 });

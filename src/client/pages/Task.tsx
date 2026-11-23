@@ -3,6 +3,7 @@ import {
   Activity,
   Archive,
   Bot,
+  Copy,
   CalendarDays,
   CheckSquare,
   CircleDot,
@@ -72,6 +73,7 @@ import { type EditorHandle, RichEditor } from "../editor";
 import { ProjectDot } from "./Layout";
 import { ShareTaskButton } from "../ShareTask";
 import { DependenciesSection } from "../Dependencies";
+import { CreateTaskModal } from "./CreateTask";
 
 type TabKey = "overview" | "activity" | "files";
 
@@ -82,6 +84,7 @@ export function TaskPage() {
   const members = useMembers();
   const byId = new Map((members.data ?? []).map((m) => [m.id, m]));
   const [replyTo, setReplyTo] = useState<Entry | null>(null);
+  const [duplicating, setDuplicating] = useState(false);
   const [params, setParams] = useSearchParams();
   const tab = (params.get("tab") as TabKey) || "overview";
   const setTab = (t: TabKey) => setParams(t === "overview" ? {} : { tab: t }, { replace: true });
@@ -132,6 +135,9 @@ export function TaskPage() {
         ]}
         actions={
           <>
+          <IconButton label="Duplicate task" onClick={() => setDuplicating(true)}>
+            <Copy size={15} />
+          </IconButton>
           <ShareTaskButton taskKey={task.key} />
           {meMember?.role === "admin" && (
             <DeleteButton
@@ -148,6 +154,22 @@ export function TaskPage() {
           )}
           </>
         }
+      />
+      <CreateTaskModal
+        open={duplicating}
+        onClose={() => setDuplicating(false)}
+        duplicateOf={{
+          key: task.key,
+          title: task.title,
+          description: task.description,
+          hasDetails: checklists.length + notes.length + q.data.dependencies.blocked_by.length > 0,
+        }}
+        defaults={{
+          status: task.status === "done" || task.status === "canceled" ? "todo" : task.status,
+          priority: task.priority,
+          assigneeId: task.assignee?.id ?? null,
+          projectId: task.archived_at ? null : (task.project?.id ?? null),
+        }}
       />
       <div className="flex min-h-0 flex-1 flex-col overflow-auto lg:flex-row lg:overflow-hidden">
         <div className="flex min-w-0 flex-1 flex-col lg:overflow-auto">
@@ -543,6 +565,7 @@ const SYSTEM_TEXT: Record<string, (d: any, byId: Map<string, Member>) => string>
   blocked_by_removed: (d) => `removed the blocker ${d.key} ${d.title}`,
   blocks_added: (d) => `added ${d.key} ${d.title} as waiting on this`,
   blocks_removed: (d) => `removed ${d.key} ${d.title} from waiting on this`,
+  duplicated_from: (d) => `created this as a copy of ${d.key} ${d.title}`,
   unblocked: (d) => `unblocked: ${d.key} ${d.title} is ${d.outcome === "canceled" ? "canceled" : "done"}, nothing else is in the way`,
 };
 

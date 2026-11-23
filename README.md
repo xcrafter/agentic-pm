@@ -246,7 +246,23 @@ Statuses are not changed, so **Restore** brings everything back as it was. New t
 - **API:** `POST /api/projects/:id/archive` and `POST /api/projects/:id/restore` (`PATCH /api/projects/:id {status}` does the same). Each returns `tasks_changed`. `GET /api/tasks?archived=include` also returns archived tasks.
 - **MCP:** `archive_project` (`project`: id or name; `archived: false` to restore). `search_tasks` takes `include_archived`.
 
-### 19. API keys (use the API from scripts)
+### 19. Duplicate a task
+
+On a task, click the copy icon at the top right. The New task form opens filled in from the original, so you can change anything before creating the copy.
+
+The copy gets:
+
+- the title plus "(copy)";
+- the same description, priority, assignee and project;
+- the same status, except that a done or canceled original starts the copy at To do;
+- the original's checklists (all unchecked), notes and blockers, unless you untick that option.
+
+The thread, runs, files and share links are not copied.
+
+- **API:** `POST /api/tasks/:key/duplicate`. Every field is optional and overrides the original's value. Send `copy_details: false` to skip checklists, notes and blockers.
+- **MCP:** `duplicate_task`.
+
+### 20. API keys (use the API from scripts)
 
 Every endpoint the app uses is available to scripts. To call it:
 
@@ -264,7 +280,7 @@ Main endpoints:
 
 | Area | Endpoints |
 |---|---|
-| Tasks | `GET/POST /api/tasks` (filters: `status`, `assignee`, `project`, `kind`, `q`, `limit`, `archived=include`), `GET/PATCH/DELETE /api/tasks/:key`, `POST /api/tasks/:key/entries` (comment), `/notes`, `/checklists`, `/attachments`, `/dependencies`, `/shares`, `/wake`, `/triage` |
+| Tasks | `GET/POST /api/tasks` (filters: `status`, `assignee`, `project`, `kind`, `q`, `limit`, `archived=include`), `GET/PATCH/DELETE /api/tasks/:key`, `POST /api/tasks/:key/entries` (comment), `/notes`, `/checklists`, `/attachments`, `/dependencies`, `/shares`, `/duplicate`, `/wake`, `/triage` |
 | Projects | `GET/POST /api/projects`, `PATCH /api/projects/:id`, `POST /api/projects/:id/archive`, `POST /api/projects/:id/restore` |
 | Ideas & customers | `GET/POST /api/ideas`, `GET/PATCH/DELETE /api/ideas/:id`, `POST /api/ideas/:id/convert`, `GET/POST /api/customers`, `GET/PATCH /api/customers/:id`, `GET /api/idea-requests`, `POST /api/feature-requests` |
 | Policies & tools | `GET/POST /api/policies`, `GET/PATCH /api/policies/:id`, `GET/POST /api/tools`, `PATCH /api/tools/:id` |
@@ -344,7 +360,7 @@ Problems also land in **Needs you**, for whoever triggered the run, the agent's 
 
 | Group | Tools |
 |---|---|
-| Tasks | `list_my_tasks`, `get_task`, `search_tasks`, `create_task`, `update_task`, `complete_task`, `end_run` (`outcome`: `handed_back` / `blocked` / `failed`), `set_dependency` (`task`, `blocked_by`, `remove`); `search_tasks` leaves out archived tasks unless `include_archived` |
+| Tasks | `list_my_tasks`, `get_task`, `search_tasks`, `create_task`, `update_task`, `complete_task`, `end_run` (`outcome`: `handed_back` / `blocked` / `failed`), `set_dependency` (`task`, `blocked_by`, `remove`), `duplicate_task`; `search_tasks` leaves out archived tasks unless `include_archived` |
 | Thread & content | `post_update`, `add_comment`, `ask_question`, `write_note`, `create_checklist`, `add_checklist_item`, `set_checklist_item`, `attach_file`, `get_attachment`, `react` (`entry_id`, `emoji`; 👍 = acknowledged) |
 | Feed | `share_update` (`kind`, `task`, `link`, `routine`), `read_feed` |
 | Ideas | `list_ideas` (`stage`: backlog / live / archived), `log_idea` (`title`, `body`, optional `labels`, `owner`, `source_url`), `list_ideas`, `log_feature_request` (`customer`, `idea_id` or `title`, `note`) |

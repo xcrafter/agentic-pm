@@ -12,6 +12,7 @@ export function CreateTaskModal({
   onClose,
   defaults,
   note,
+  duplicateOf,
 }: {
   open: boolean;
   onClose: () => void;
@@ -19,8 +20,11 @@ export function CreateTaskModal({
   defaults?: TaskDefaults;
   /** Shown under the fields when some values came from somewhere the person didn't pick. */
   note?: string;
+  /** Duplicate this task instead of starting blank (pass its fields as `defaults`). */
+  duplicateOf?: { key: string; title: string; description: string; hasDetails: boolean };
 }) {
   const [title, setTitle] = useState("");
+  const [copyDetails, setCopyDetails] = useState(true);
   const [status, setStatus] = useState<Status>(defaults?.status ?? "todo");
   const [priority, setPriority] = useState<Priority>(defaults?.priority ?? "none");
   const [assignee, setAssignee] = useState<string>(defaults?.assigneeId ?? "none");
@@ -36,7 +40,8 @@ export function CreateTaskModal({
   // Reset only when the form opens, so a page re-render can't wipe what's being typed.
   useEffect(() => {
     if (open) {
-      setTitle("");
+      setTitle(duplicateOf ? `${duplicateOf.title} (copy)` : "");
+      setCopyDetails(true);
       setStatus(defaults?.status ?? "todo");
       setPriority(defaults?.priority ?? "none");
       setAssignee(defaults?.assigneeId ?? "none");
@@ -48,15 +53,25 @@ export function CreateTaskModal({
 
   const create = useMutation({
     mutationFn: () =>
-      api.post<Task>("/api/tasks", {
-        title,
-        description: editor.current?.getMarkdown() ?? "",
-        status,
-        priority,
-        assignee_id: assignee === "none" ? null : assignee,
-        project_id: project === "none" ? null : project,
-        ...(assignee === "none" && pm ? { triage } : {}),
-      }),
+      duplicateOf
+        ? api.post<Task>(`/api/tasks/${duplicateOf.key}/duplicate`, {
+            title,
+            description: editor.current?.getMarkdown() ?? duplicateOf.description,
+            status,
+            priority,
+            assignee_id: assignee === "none" ? null : assignee,
+            project_id: project === "none" ? null : project,
+            copy_details: copyDetails,
+          })
+        : api.post<Task>("/api/tasks", {
+            title,
+            description: editor.current?.getMarkdown() ?? "",
+            status,
+            priority,
+            assignee_id: assignee === "none" ? null : assignee,
+            project_id: project === "none" ? null : project,
+            ...(assignee === "none" && pm ? { triage } : {}),
+          }),
     onSuccess: (t) => {
       qc.invalidateQueries({ queryKey: ["tasks"] });
       onClose();
@@ -76,7 +91,7 @@ export function CreateTaskModal({
         }}
       >
         <div className="px-4 pt-4">
-          <div className="mb-3 text-[12px] font-medium text-ink-3">New task</div>
+          <div className="mb-3 text-[12px] font-medium text-ink-3">{duplicateOf ? `Duplicate ${duplicateOf.key}` : "New task"}</div>
           <input
             autoFocus
             value={title}
@@ -86,7 +101,7 @@ export function CreateTaskModal({
             className="w-full bg-transparent text-[18px] font-semibold tracking-[-0.01em] outline-none placeholder:text-ink-3"
           />
           <div className="mt-2 max-h-[40vh] overflow-auto text-[14px]">
-            <RichEditor ref={editor} placeholder="Add a description… what needs to happen, and what does done look like?" onSubmit={() => title.trim() && create.mutate()} />
+            <RichEditor key={duplicateOf?.key ?? "new"} initial={duplicateOf?.description ?? ""} ref={editor} placeholder="Add a description… what needs to happen, and what does done look like?" onSubmit={() => title.trim() && create.mutate()} />
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2 px-4 py-3">
@@ -138,7 +153,13 @@ export function CreateTaskModal({
           />
         </div>
         {note && <p className="-mt-1 px-4 pb-3 text-[12px] text-ink-3">{note}</p>}
-        {pm && assignee === "none" && (
+        {duplicateOf?.hasDetails && (
+          <label className="mx-4 mb-3 flex w-fit cursor-pointer items-center gap-2 text-[13px] text-ink-2">
+            <input type="checkbox" checked={copyDetails} onChange={(e) => setCopyDetails(e.target.checked)} />
+            Also copy its checklists (unchecked), notes and blockers
+          </label>
+        )}
+        {!duplicateOf && pm && assignee === "none" && (
           <label className="mx-4 mb-3 flex w-fit cursor-pointer items-center gap-2 rounded-lg border border-line px-2.5 py-1.5 text-[13px] hover:bg-hover">
             <input type="checkbox" checked={triage} onChange={(e) => setTriage(e.target.checked)} />
             Ask <span className="font-medium text-agent">{pm.name}</span> to pick an assignee
@@ -149,7 +170,7 @@ export function CreateTaskModal({
           hint={
             selectedMember?.kind === "agent" ? (
               <span className="text-agent">{selectedMember.name} is woken as soon as you create this.</span>
-            ) : pm && assignee === "none" && triage ? (
+            ) : !duplicateOf && pm && assignee === "none" && triage ? (
               <span className="text-agent">{pm.name} is woken to assign this.</span>
             ) : (
               "⌘ Enter to create"
@@ -160,7 +181,7 @@ export function CreateTaskModal({
             Cancel
           </Button>
           <Button type="submit" variant="primary" disabled={!title.trim() || create.isPending}>
-            Create task
+            {duplicateOf ? "Create copy" : "Create task"}
           </Button>
         </ModalFooter>
       </form>
