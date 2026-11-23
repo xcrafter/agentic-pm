@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { CircleDot, FolderKanban, ListTodo, Plus, UserRound } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router";
-import { api } from "../api";
+import { type Project, api } from "../api";
 import { Button, Chip, EmptyState, Field, MemberChip, Menu, Modal, ModalFooter, Tag, TopBar, assigneeOptions, cx, inputClass, textareaClass, useMembers, useProjects, ChevronDown } from "../components";
 import { ProjectDot } from "./Layout";
 
@@ -26,9 +26,14 @@ export function ProjectsPage() {
     },
   });
   const archive = useMutation({
-    mutationFn: ({ id, status }: { id: string; status: "active" | "archived" }) => api.patch(`/api/projects/${id}`, { status }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
+    mutationFn: ({ id, status }: { id: string; status: "active" | "archived" }) => api.post(`/api/projects/${id}/${status === "archived" ? "archive" : "restore"}`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["tasks"] });
+      setConfirming(null);
+    },
   });
+  const [confirming, setConfirming] = useState<Project | null>(null);
   const byId = new Map((members.data ?? []).map((m) => [m.id, m]));
   const cell = "h-11 border-r border-b border-line px-3 text-[13px] whitespace-nowrap";
   const th = "h-9 border-r border-b border-line px-3 text-left text-[12px] font-medium text-ink-3";
@@ -109,7 +114,8 @@ export function ProjectsPage() {
                           className="h-6 opacity-0 group-hover:opacity-100 focus:opacity-100"
                           onClick={(e) => {
                             e.stopPropagation();
-                            archive.mutate({ id: p.id, status: p.status === "active" ? "archived" : "active" });
+                            if (p.status === "active") (archive.reset(), setConfirming(p));
+                            else archive.mutate({ id: p.id, status: "active" });
                           }}
                         >
                           {p.status === "active" ? "Archive" : "Restore"}
@@ -124,6 +130,31 @@ export function ProjectsPage() {
           </table>
         </div>
       )}
+      <Modal open={!!confirming} onClose={() => setConfirming(null)} title={`Archive ${confirming?.name ?? "project"}?`}>
+        {confirming && (
+          <>
+            <div className="space-y-2 p-4 text-[13px] text-ink-2">
+              <p>
+                {confirming.task_count
+                  ? `Its ${confirming.task_count} task${confirming.task_count === 1 ? " is" : "s are"} archived with it${
+                      confirming.open_count ? `, including ${confirming.open_count} not done yet` : ""
+                    }. They leave task lists and search, and agents won't be woken on them.`
+                  : "It has no tasks."}
+              </p>
+              <p className="text-ink-3">Restore the project any time to bring everything back as it was. Nothing is deleted.</p>
+              {archive.error && <p className="text-danger">{(archive.error as Error).message}</p>}
+            </div>
+            <ModalFooter>
+              <Button type="button" variant="ghost" onClick={() => setConfirming(null)}>
+                Cancel
+              </Button>
+              <Button variant="primary" disabled={archive.isPending} onClick={() => archive.mutate({ id: confirming.id, status: "archived" })}>
+                {confirming.task_count ? "Archive project and tasks" : "Archive project"}
+              </Button>
+            </ModalFooter>
+          </>
+        )}
+      </Modal>
       <Modal open={open} onClose={() => setOpen(false)} title="New project">
         <form
           onSubmit={(e) => {

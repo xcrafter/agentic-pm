@@ -314,8 +314,16 @@ api.post("/api/projects", async (c) => {
   });
   return c.json(p, 201);
 });
+// Archive / restore a project. Its tasks are archived (hidden from task lists, agents not woken) or restored with it.
+api.post("/api/projects/:id/archive", async (c) =>
+  c.json(await updateProject(c.env, c.get("ws"), c.get("actor"), c.req.param("id"), { status: "archived" })),
+);
+api.post("/api/projects/:id/restore", async (c) =>
+  c.json(await updateProject(c.env, c.get("ws"), c.get("actor"), c.req.param("id"), { status: "active" })),
+);
 api.patch("/api/projects/:id", async (c) => {
   const b = await c.req.json<{ name?: string; description?: string; lead_member_id?: string | null; status?: "active" | "archived" }>();
+  if (b.status !== undefined && b.status !== "active" && b.status !== "archived") throw badRequest("Status must be active or archived");
   return c.json(
     await updateProject(c.env, c.get("ws"), c.get("actor"), c.req.param("id"), {
       name: b.name,
@@ -337,6 +345,7 @@ api.get("/api/tasks", async (c) => {
     memberKind: q.kind === "agent" || q.kind === "human" ? q.kind : undefined,
     query: q.q || undefined,
     limit: q.limit ? Math.max(1, Math.min(Number(q.limit) || 500, 1000)) : undefined,
+    includeArchived: q.archived === "include",
   });
   return c.json(await serializeTasks(c.env, ws, tasks));
 });

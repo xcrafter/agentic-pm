@@ -223,6 +223,29 @@ App task links (`/t/IMP-30`) show only "Agentic PM" in previews until an admin c
 
 Share links also include the task's title and description as preview tags, so Slack, WhatsApp, iMessage and similar apps show them in the preview.
 
+### 17. New tasks follow your filters
+
+On a task list or board, **New task** (the button, the `C` key or the command palette) starts with what the current view filters on:
+
+- **Single-value filters:** a filter with exactly one status, priority, assignee or project fills in that field.
+- **My tasks** assigns the task to you.
+- **Project pages** set that project.
+
+The form says which fields came from the filters, and you can change any of them before creating.
+
+### 18. Archive a project
+
+**Projects → Archive** archives the project and all of its tasks. Archived tasks:
+
+- disappear from task lists, search and `search_tasks`;
+- are still listed on the project's own page, which shows an archived banner;
+- don't wake agents.
+
+Statuses are not changed, so **Restore** brings everything back as it was. New tasks can't be added to an archived project. Moving a task out of one un-archives that task.
+
+- **API:** `POST /api/projects/:id/archive` and `POST /api/projects/:id/restore` (`PATCH /api/projects/:id {status}` does the same). Each returns `tasks_changed`. `GET /api/tasks?archived=include` also returns archived tasks.
+- **MCP:** `archive_project` (`project`: id or name; `archived: false` to restore). `search_tasks` takes `include_archived`.
+
 ### Getting the most out of it
 
 - **One identity per agent.** Each real agent should have its own profile, so its work, 👍 and failures are attributed to it, not to "Grok".
@@ -295,13 +318,13 @@ Problems also land in **Needs you**, for whoever triggered the run, the agent's 
 
 | Group | Tools |
 |---|---|
-| Tasks | `list_my_tasks`, `get_task`, `search_tasks`, `create_task`, `update_task`, `complete_task`, `end_run` (`outcome`: `handed_back` / `blocked` / `failed`), `set_dependency` (`task`, `blocked_by`, `remove`) |
+| Tasks | `list_my_tasks`, `get_task`, `search_tasks`, `create_task`, `update_task`, `complete_task`, `end_run` (`outcome`: `handed_back` / `blocked` / `failed`), `set_dependency` (`task`, `blocked_by`, `remove`); `search_tasks` leaves out archived tasks unless `include_archived` |
 | Thread & content | `post_update`, `add_comment`, `ask_question`, `write_note`, `create_checklist`, `add_checklist_item`, `set_checklist_item`, `attach_file`, `get_attachment`, `react` (`entry_id`, `emoji`; 👍 = acknowledged) |
 | Feed | `share_update` (`kind`, `task`, `link`, `routine`), `read_feed` |
 | Ideas | `list_ideas` (`stage`: backlog / live / archived), `log_idea` (`title`, `body`, optional `labels`, `owner`, `source_url`), `list_ideas`, `log_feature_request` (`customer`, `idea_id` or `title`, `note`) |
 | Policies | `list_policies` (`query`), `get_policy` (id, path like `Marketing / Blog SOP`, or title; records that the agent read that version), `create_policy` (`title`, `content`, `folder` path, `summary`), `update_policy` (agents can't change who follows a policy or make it required) |
 | Tools directory | `list_tools` (`query`, `tag`, `needs_research`), `get_tool`, `add_tool` (`url`), `update_tool` (`summary`, `tags`, `category`, `pricing`, `notes`) |
-| Profile & team | `update_my_profile`, `register_agent`, `list_my_agents`, `update_agent`, `list_members`, `list_projects` |
+| Profile & team | `update_my_profile`, `register_agent`, `list_my_agents`, `update_agent`, `list_members`, `list_projects`, `archive_project` (`project`, `archived`) |
 
 `register_agent`, `list_my_agents` and `update_agent` are for orchestrators and the PM. For an orchestrator or the PM, every tool also accepts `as_agent`.
 

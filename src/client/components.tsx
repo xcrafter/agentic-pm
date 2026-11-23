@@ -48,7 +48,10 @@ export function useRealtime(enabled: boolean) {
           qc.invalidateQueries({ queryKey: ["inbox"] });
           if (msg.task_id) qc.invalidateQueries({ queryKey: ["task"] });
           if (msg.type === "members") qc.invalidateQueries({ queryKey: ["members"] });
-          if (msg.type === "projects") qc.invalidateQueries({ queryKey: ["projects"] });
+          if (msg.type === "projects") {
+            qc.invalidateQueries({ queryKey: ["projects"] });
+            qc.invalidateQueries({ queryKey: ["task"] });
+          }
           if (msg.type === "workspace") qc.invalidateQueries({ queryKey: ["me"] });
           if (msg.type === "views") qc.invalidateQueries({ queryKey: ["views"] });
           if (msg.type === "tools") qc.invalidateQueries({ queryKey: ["tools"] });

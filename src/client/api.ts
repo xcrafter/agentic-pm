@@ -54,6 +54,8 @@ export interface Task {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  /** Set when the task was archived along with its project. */
+  archived_at: string | null;
   open_questions: number;
   run_status: string | null;
   open_blockers: number;
@@ -137,6 +139,7 @@ export interface Project {
   status: "active" | "archived";
   task_count: number;
   done_count: number;
+  open_count: number;
 }
 export interface WorkspaceInfo {
   id: string;

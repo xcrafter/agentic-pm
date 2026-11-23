@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
+  Archive,
   Bot,
   CalendarDays,
   CheckSquare,
@@ -166,6 +167,22 @@ export function TaskPage() {
                 </div>
               </div>
             </div>
+            {task.archived_at && (
+              <div className="mt-5 flex flex-wrap items-center gap-2 rounded-[10px] border border-line bg-subtle px-3.5 py-2.5 text-[13px] text-ink-2">
+                <Archive size={15} className="shrink-0 text-ink-3" />
+                <span>
+                  Archived with{" "}
+                  {task.project ? (
+                    <Link to={`/projects/${task.project.id}`} className="font-medium text-ink underline-offset-2 hover:underline">
+                      {task.project.name}
+                    </Link>
+                  ) : (
+                    "its project"
+                  )}{" "}
+                  {timeAgo(task.archived_at)}. Agents aren't woken on it. Restore the project, or move this task to another one, to bring it back.
+                </span>
+              </div>
+            )}
             {problems.map((r) => (
               <div
                 key={r.id}

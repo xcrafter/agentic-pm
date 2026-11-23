@@ -21,6 +21,7 @@ import {
   getTaskDetail,
   getWorkspace,
   listProjects,
+  updateProject,
   listTasks,
   logActivity,
   notify,
@@ -224,6 +225,7 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
         status: z.array(z.enum(TASK_STATUSES)).optional(),
         assignee: z.string().optional().describe("Member handle, id, or 'none'"),
         project: z.string().optional().describe("Project id or 'none'"),
+        include_archived: z.boolean().optional().describe("Also return tasks archived with their project (left out by default)"),
         limit: z.number().int().min(1).max(100).optional(),
       },
       annotations: { readOnlyHint: true },
@@ -238,6 +240,7 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
           assigneeId,
           projectId: a.project,
           limit: a.limit ?? 25,
+          includeArchived: a.include_archived,
         });
         return (await serializeTasks(env, w, rows)).map(({ description, ...t }) => t);
       }),
@@ -794,8 +797,36 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
 
   server.registerTool(
     "list_projects",
-    { description: "List projects.", annotations: { readOnlyHint: true } },
+    { description: "List projects (active and archived), with task counts.", annotations: { readOnlyHint: true } },
     () => guard(async () => listProjects(env, props.workspaceId)),
+  );
+
+  server.registerTool(
+    "archive_project",
+    {
+      description:
+        "Archive a project, or restore it with archived: false. Archiving also archives all of its tasks: they drop out of task " +
+        "lists and search, and agents aren't woken on them. Restoring brings the tasks back unchanged. Task statuses are not touched.",
+      inputSchema: {
+        project: z.string().describe("Project id or exact name"),
+        archived: z.boolean().optional().describe("true (default) to archive, false to restore"),
+      },
+      annotations: { destructiveHint: false, idempotentHint: true },
+    },
+    (a) =>
+      guard(async () => {
+        const w = await ws();
+        const all = (await listProjects(env, w.id)) as { id: string; name: string }[];
+        const p =
+          all.find((x) => x.id === a.project) ?? all.filter((x) => x.name.toLowerCase() === a.project.trim().toLowerCase())[0];
+        if (!p) throw new Error(`No project "${a.project}". Use list_projects to see them.`);
+        const r = await updateProject(env, w, actor, p.id, { status: a.archived === false ? "active" : "archived" });
+        return {
+          project: { id: r.id, name: r.name, status: r.status },
+          tasks_changed: r.tasks_changed,
+          note: r.status === "archived" ? `${r.tasks_changed} task(s) archived with it.` : `${r.tasks_changed} task(s) restored.`,
+        };
+      }),
   );
 
   server.registerTool(

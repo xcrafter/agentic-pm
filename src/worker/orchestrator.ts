@@ -60,6 +60,9 @@ export async function onAgentTrigger(
 ): Promise<RunRow | null> {
   const { task, agent } = opts;
   if (agent.kind !== "agent" || !agent.active) return null;
+  // Archived with its project: nobody works on it until the project is restored.
+  const archived = await env.DB.prepare("SELECT archived_at FROM tasks WHERE id = ?").bind(task.id).first<{ archived_at: string | null }>();
+  if (archived?.archived_at) return null;
   if (!(await resolveWake(env, agent))) {
     await addSystemEntry(env, task, agent, "agent_not_configured", { agent_name: agent.name });
     return null;

@@ -23,6 +23,7 @@ import {
   UserRound,
   X,
   Link2,
+  Archive,
 } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
@@ -153,6 +154,10 @@ export function BoardPage({ mine }: { mine?: boolean }) {
   });
 
   const project = projects.data?.find((p) => p.id === projectId);
+  const restore = useMutation({
+    mutationFn: () => api.post(`/api/projects/${projectId}/restore`, {}),
+    onSuccess: () => (qc.invalidateQueries({ queryKey: ["projects"] }), qc.invalidateQueries({ queryKey: ["tasks"] })),
+  });
   const viewName = preset?.name ?? saved?.name;
   const crumbs = mine
     ? [{ label: "My tasks", icon: <UserRound size={15} className="text-ink-3" /> }]
@@ -204,6 +209,15 @@ export function BoardPage({ mine }: { mine?: boolean }) {
         closedHidden={closedHidden}
         canSaveInPlace={!!saved}
       />
+      {project?.status === "archived" && (
+        <div className="flex flex-wrap items-center gap-2 border-b border-line bg-subtle px-3 py-2 text-[13px] text-ink-2 md:px-5">
+          <Archive size={15} className="shrink-0 text-ink-3" />
+          <span className="min-w-0 flex-1">This project is archived, along with its tasks. They're hidden from other task lists and agents aren't woken on them.</span>
+          <Button size="sm" onClick={() => restore.mutate()} disabled={restore.isPending}>
+            Restore project
+          </Button>
+        </div>
+      )}
 
       {tasks.isLoading ? (
         <div className="p-6 text-[13px] text-ink-3">Loading…</div>

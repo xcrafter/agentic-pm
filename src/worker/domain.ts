@@ -70,6 +70,8 @@ export interface TaskRow {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  /** Set when the task's project was archived; such tasks are hidden from task lists. */
+  archived_at: string | null;
 }
 
 export interface ProjectRow {
@@ -239,11 +241,15 @@ export interface TaskFilters {
   memberKind?: MemberKind;
   query?: string;
   limit?: number;
+  /** Archived tasks are left out unless asked for, or when listing one project's tasks. */
+  includeArchived?: boolean;
 }
 
 export async function listTasks(env: AppEnv, workspaceId: string, f: TaskFilters = {}) {
   const where = ["t.workspace_id = ?"];
   const binds: unknown[] = [workspaceId];
+  const oneProject = !!f.projectId && f.projectId !== "none";
+  if (!f.includeArchived && !oneProject) where.push("t.archived_at IS NULL");
   if (f.status?.length) {
     where.push(`t.status IN (${f.status.map(() => "?").join(",")})`);
     binds.push(...f.status);
@@ -330,6 +336,7 @@ export async function serializeTasks(env: AppEnv, ws: WorkspaceRow, tasks: TaskR
       created_at: t.created_at,
       updated_at: t.updated_at,
       completed_at: t.completed_at,
+      archived_at: t.archived_at ?? null,
       open_questions: qByTask.get(t.id) ?? 0,
       run_status: runByTask.get(t.id) ?? null,
       open_blockers: blockedByTask.get(t.id) ?? 0,
@@ -382,6 +389,7 @@ export async function createTask(env: AppEnv, ws: WorkspaceRow, actor: Actor, in
     created_at: now,
     updated_at: now,
     completed_at: null,
+    archived_at: null,
   };
   await env.DB.prepare(
     `INSERT INTO tasks (id, workspace_id, number, title, description, status, priority, assignee_id, project_id, due_date, position, created_by, created_at, updated_at)
@@ -505,6 +513,11 @@ export async function updateTask(
       task.id,
     )
     .run();
+  // Moved out of an archived project (the only way, since archived ones can't be picked): it's live again.
+  if (next.project_id !== task.project_id && task.archived_at) {
+    await env.DB.prepare("UPDATE tasks SET archived_at = NULL WHERE id = ?").bind(task.id).run();
+    next.archived_at = null;
+  }
 
   if (changes.length) {
     await logActivity(env, ws.id, actor, "task", task.id, "updated", task, next);
@@ -575,8 +588,11 @@ async function assertMemberInWorkspace(env: AppEnv, workspaceId: string, memberI
   if (!m) throw badRequest("Unknown assignee");
 }
 async function assertProjectInWorkspace(env: AppEnv, workspaceId: string, projectId: string) {
-  const p = await env.DB.prepare("SELECT id FROM projects WHERE id = ? AND workspace_id = ?").bind(projectId, workspaceId).first();
+  const p = await env.DB.prepare("SELECT id, name, status FROM projects WHERE id = ? AND workspace_id = ?")
+    .bind(projectId, workspaceId)
+    .first<{ id: string; name: string; status: string }>();
   if (!p) throw badRequest("Unknown project");
+  if (p.status === "archived") throw badRequest(`${p.name} is archived. Restore the project first.`);
 }
 
 // ---------- Thread ----------
@@ -1094,15 +1110,30 @@ export async function updateProject(
     .bind(next.name, next.description, next.lead_member_id, next.status, id)
     .run();
   await logActivity(env, ws.id, actor, "project", id, "updated", p, next);
+  // Archiving a project archives its tasks; restoring it brings them back.
+  let tasks_changed = 0;
+  if (next.status !== p.status) {
+    const res =
+      next.status === "archived"
+        ? await env.DB.prepare("UPDATE tasks SET archived_at = ? WHERE project_id = ? AND workspace_id = ? AND archived_at IS NULL")
+            .bind(nowIso(), id, ws.id)
+            .run()
+        : await env.DB.prepare("UPDATE tasks SET archived_at = NULL WHERE project_id = ? AND workspace_id = ? AND archived_at IS NOT NULL")
+            .bind(id, ws.id)
+            .run();
+    tasks_changed = res.meta.changes ?? 0;
+    await logActivity(env, ws.id, actor, "project", id, next.status === "archived" ? "tasks_archived" : "tasks_restored", null, { count: tasks_changed });
+  }
   await notify(env, ws.id, { type: "projects" });
-  return { ...p, ...next };
+  return { ...p, ...next, tasks_changed };
 }
 
 export async function listProjects(env: AppEnv, workspaceId: string) {
   const r = await env.DB.prepare(
     `SELECT p.*,
        (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id) AS task_count,
-       (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.status = 'done') AS done_count
+       (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.status = 'done') AS done_count,
+       (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.status NOT IN ('done','canceled')) AS open_count
      FROM projects p WHERE p.workspace_id = ? ORDER BY p.status, p.created_at DESC`,
   )
     .bind(workspaceId)

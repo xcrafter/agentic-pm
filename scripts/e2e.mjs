@@ -1025,6 +1025,35 @@ try {
   assert.equal((await alice("GET", `/api/tasks/${blocker.key}`)).dependencies.blocking.length, 1, "deleting a task drops its links");
   pass("Slack/WhatsApp-style previews show the task title and description; shared Markdown lists dependencies and acknowledgements");
 
+  step("Archiving a project archives its tasks (API and MCP)");
+  const arch = await alice("POST", "/api/projects", { name: `Archive me ${runId}` });
+  const archA = await alice("POST", "/api/tasks", { title: `Arch A ${runId}`, project_id: arch.id });
+  const archB = await alice("POST", "/api/tasks", { title: `Arch B ${runId}`, project_id: arch.id, status: "done" });
+  const archOut = await alice("POST", `/api/projects/${arch.id}/archive`, {});
+  assert.equal(archOut.status, "archived");
+  assert.equal(archOut.tasks_changed, 2);
+  const archListed = await alice("GET", `/api/tasks?q=${encodeURIComponent(`Arch A ${runId}`)}`);
+  assert.equal(archListed.length, 0, "archived tasks leave task lists and search");
+  assert.equal((await alice("GET", `/api/tasks?q=${encodeURIComponent(`Arch A ${runId}`)}&archived=include`)).length, 1);
+  const inProject = await alice("GET", `/api/tasks?project=${arch.id}`);
+  assert.equal(inProject.length, 2, "the archived project's own page still lists them");
+  assert.ok(inProject.every((t) => t.archived_at));
+  assert.ok((await alice("GET", `/api/tasks/${archA.key}`)).task.archived_at);
+  await assert.rejects(alice("POST", "/api/tasks", { title: "nope", project_id: arch.id }), /archived/);
+  assert.equal((await tool("search_tasks", { query: `Arch A ${runId}` })).length, 0);
+  assert.equal((await tool("search_tasks", { query: `Arch A ${runId}`, include_archived: true })).length, 1);
+  const restored = await tool("archive_project", { project: `Archive me ${runId}`, archived: false });
+  assert.equal(restored.project.status, "active");
+  assert.equal(restored.tasks_changed, 2);
+  assert.equal((await alice("GET", `/api/tasks?q=${encodeURIComponent(`Arch A ${runId}`)}`)).length, 1, "restore brings tasks back");
+  assert.equal((await alice("GET", `/api/tasks/${archB.key}`)).task.status, "done", "status untouched");
+  const archViaMcp = await tool("archive_project", { project: arch.id });
+  assert.equal(archViaMcp.project.status, "archived");
+  await alice("PATCH", `/api/tasks/${archA.key}`, { project_id: null });
+  assert.equal((await alice("GET", `/api/tasks/${archA.key}`)).task.archived_at, null, "moving out of an archived project un-archives");
+  await alice("POST", `/api/projects/${arch.id}/restore`, {});
+  pass("project archive cascades to its tasks, restore brings them back, MCP archive_project works");
+
   step("Unreachable agent → run fails and lands in Needs you");
   await alice("PATCH", `/api/members/${agent.id}`, { webhook_url: `http://localhost:${HOOK_PORT}/missing` });
   const t3 = await alice("POST", "/api/tasks", { title: "Will fail", assignee_id: agent.id });
