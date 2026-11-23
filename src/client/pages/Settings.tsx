@@ -1,9 +1,9 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Bot, Globe, ImageUp, Link2, Settings, ShieldCheck, Trash2, Wand2, Webhook, X, Zap } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Bot, Globe, ImageUp, KeyRound, Link2, Settings, ShieldCheck, Trash2, Wand2, Webhook, X, Zap } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { type Member, type WorkspaceInfo, api } from "../api";
-import { Avatar, Button, Menu, Tag, TopBar, WorkspaceLogo, cx, inputClass, useMe, useMembers, wakeRoute } from "../components";
+import { Avatar, Button, Menu, Tag, TopBar, WorkspaceLogo, cx, inputClass, timeAgo, useMe, useMembers, wakeRoute } from "../components";
 
 function Section({ icon, title, description, children }: { icon: ReactNode; title: string; description: string; children: ReactNode }) {
   return (
@@ -172,6 +172,8 @@ export function SettingsPage() {
             <AgentDispatch ws={ws} isAdmin={isAdmin} onSaved={setWs} />
 
             <LinkPreviews ws={ws} isAdmin={isAdmin} onSaved={setWs} />
+
+            <ApiKeys isAdmin={isAdmin} />
 
             <Section
               icon={<ShieldCheck size={15} />}
@@ -418,6 +420,90 @@ const PREVIEW_OPTIONS = [
   { value: "title", label: "Task title", hint: "Previews show the key and title, e.g. “IMP-30: Launch post”, with its status." },
   { value: "full", label: "Title and description", hint: "Also shows the first couple of lines of the description." },
 ] as const;
+
+type ApiKey = { id: string; name: string; prefix: string; member?: { id: string; name: string }; created_at: string; last_used_at: string | null };
+
+function ApiKeys({ isAdmin }: { isAdmin: boolean }) {
+  const qc = useQueryClient();
+  const me = useMe().data?.member;
+  const keys = useQuery({ queryKey: ["api-keys"], queryFn: () => api.get<ApiKey[]>("/api/keys") });
+  const [name, setName] = useState("");
+  const [created, setCreated] = useState<{ name: string; key: string } | null>(null);
+  const [copied, setCopied] = useState(false);
+  const create = useMutation({
+    mutationFn: () => api.post<ApiKey & { key: string }>("/api/keys", { name }),
+    onSuccess: (k) => {
+      setCreated({ name: k.name, key: k.key });
+      setCopied(false);
+      setName("");
+      qc.invalidateQueries({ queryKey: ["api-keys"] });
+    },
+  });
+  const revoke = useMutation({
+    mutationFn: (id: string) => api.del(`/api/keys/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["api-keys"] }),
+  });
+  return (
+    <Section
+      icon={<KeyRound size={15} />}
+      title="API keys"
+      description={`Call the API from scripts and other tools as yourself: send Authorization: Bearer <key> to any /api endpoint. A key can do what you can do, so keep it secret.${isAdmin ? " As an admin you also see, and can revoke, everyone's keys." : ""}`}
+    >
+      <div className="max-w-xl space-y-3">
+        <form
+          className="flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (name.trim()) create.mutate();
+          }}
+        >
+          <input className={inputClass} placeholder="What will use it, e.g. Zapier or nightly report" value={name} onChange={(e) => setName(e.target.value)} aria-label="Key name" />
+          <Button type="submit" disabled={!name.trim() || create.isPending}>
+            Create key
+          </Button>
+        </form>
+        {create.error && <p className="text-[12px] text-danger">{errorText(create.error)}</p>}
+        {created && (
+          <div className="rounded-lg border border-line bg-panel p-3 text-[13px]">
+            <p className="font-medium">Copy your key for “{created.name}” now. It won't be shown again.</p>
+            <div className="mt-2 flex items-center gap-2">
+              <code className="min-w-0 flex-1 truncate rounded-md border border-line bg-canvas px-2 py-1.5 text-[12px]">{created.key}</code>
+              <Button
+                size="sm"
+                onClick={() => navigator.clipboard.writeText(created.key).then(() => setCopied(true))}
+              >
+                {copied ? "Copied" : "Copy"}
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setCreated(null)}>
+                Done
+              </Button>
+            </div>
+          </div>
+        )}
+        {keys.data && keys.data.length > 0 && (
+          <ul className="divide-y divide-line rounded-lg border border-line">
+            {keys.data.map((k) => (
+              <li key={k.id} className="flex items-center gap-3 px-3 py-2 text-[13px]">
+                <span className="min-w-0 flex-1">
+                  <span className="font-medium">{k.name}</span>{" "}
+                  <code className="text-[12px] text-ink-3">{k.prefix}…</code>
+                  <span className="block text-[12px] text-ink-3">
+                    {k.member && k.member.id !== me?.id ? `${k.member.name}'s key. ` : ""}
+                    Created {timeAgo(k.created_at)}. {k.last_used_at ? `Last used ${timeAgo(k.last_used_at)}.` : "Never used."}
+                  </span>
+                </span>
+                <Button size="sm" variant="ghost" disabled={revoke.isPending} onClick={() => revoke.mutate(k.id)}>
+                  Revoke
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {keys.data?.length === 0 && !created && <p className="text-[12px] text-ink-3">No keys yet.</p>}
+      </div>
+    </Section>
+  );
+}
 
 function LinkPreviews({ ws, isAdmin, onSaved }: { ws: WorkspaceInfo; isAdmin: boolean; onSaved: (w: WorkspaceInfo) => void }) {
   const save = useMutation({

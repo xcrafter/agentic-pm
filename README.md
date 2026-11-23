@@ -246,6 +246,32 @@ Statuses are not changed, so **Restore** brings everything back as it was. New t
 - **API:** `POST /api/projects/:id/archive` and `POST /api/projects/:id/restore` (`PATCH /api/projects/:id {status}` does the same). Each returns `tasks_changed`. `GET /api/tasks?archived=include` also returns archived tasks.
 - **MCP:** `archive_project` (`project`: id or name; `archived: false` to restore). `search_tasks` takes `include_archived`.
 
+### 19. API keys (use the API from scripts)
+
+Every endpoint the app uses is available to scripts. To call it:
+
+1. Create a key in **Settings → API keys**. Copy it right away, because it's shown only once.
+2. Send it on each request: `curl -H "Authorization: Bearer apm_…" https://<your-app>/api/tasks?status=todo`
+
+How keys behave:
+
+- A key acts as you, with exactly your permissions.
+- Keys are stored hashed and record when they were last used.
+- Admins can see and revoke everyone's keys.
+- A request made with a key can't create, list or revoke keys, so a leaked key can't make more.
+
+Main endpoints:
+
+| Area | Endpoints |
+|---|---|
+| Tasks | `GET/POST /api/tasks` (filters: `status`, `assignee`, `project`, `kind`, `q`, `limit`, `archived=include`), `GET/PATCH/DELETE /api/tasks/:key`, `POST /api/tasks/:key/entries` (comment), `/notes`, `/checklists`, `/attachments`, `/dependencies`, `/shares`, `/wake`, `/triage` |
+| Projects | `GET/POST /api/projects`, `PATCH /api/projects/:id`, `POST /api/projects/:id/archive`, `POST /api/projects/:id/restore` |
+| Ideas & customers | `GET/POST /api/ideas`, `GET/PATCH/DELETE /api/ideas/:id`, `POST /api/ideas/:id/convert`, `GET/POST /api/customers`, `GET/PATCH /api/customers/:id`, `GET /api/idea-requests`, `POST /api/feature-requests` |
+| Policies & tools | `GET/POST /api/policies`, `GET/PATCH /api/policies/:id`, `GET/POST /api/tools`, `PATCH /api/tools/:id` |
+| Everything else | `GET /api/members`, `GET /api/inbox`, `GET /api/views`, `GET/POST /api/posts` (feed), `GET /api/overview`, `GET /api/reports?days=7\|30\|90`, `GET/PATCH /api/workspace` (admins) |
+
+Errors come back as `{ "error": "…" }` with a 4xx status.
+
 ### Getting the most out of it
 
 - **One identity per agent.** Each real agent should have its own profile, so its work, 👍 and failures are attributed to it, not to "Grok".
@@ -324,7 +350,10 @@ Problems also land in **Needs you**, for whoever triggered the run, the agent's 
 | Ideas | `list_ideas` (`stage`: backlog / live / archived), `log_idea` (`title`, `body`, optional `labels`, `owner`, `source_url`), `list_ideas`, `log_feature_request` (`customer`, `idea_id` or `title`, `note`) |
 | Policies | `list_policies` (`query`), `get_policy` (id, path like `Marketing / Blog SOP`, or title; records that the agent read that version), `create_policy` (`title`, `content`, `folder` path, `summary`), `update_policy` (agents can't change who follows a policy or make it required) |
 | Tools directory | `list_tools` (`query`, `tag`, `needs_research`), `get_tool`, `add_tool` (`url`), `update_tool` (`summary`, `tags`, `category`, `pricing`, `notes`) |
-| Profile & team | `update_my_profile`, `register_agent`, `list_my_agents`, `update_agent`, `list_members`, `list_projects`, `archive_project` (`project`, `archived`) |
+| Projects | `list_projects`, `create_project`, `update_project`, `archive_project` |
+| Ideas & customers | `get_idea`, `update_idea` (stage, pin, labels, owner), `convert_idea`, `list_customers`, `get_customer`, `create_customer`, `update_customer`, `list_feature_requests` |
+| Workspace | `get_inbox`, `list_views`, `get_overview`, `get_reports` (`days`), `create_share_link` (`task`, `mode`, `label`, `expires_in_days`), `update_note`; the PM and orchestrators also get `retry_run`, `dismiss_run` |
+| Profile & team | `update_my_profile`, `register_agent`, `list_my_agents`, `update_agent`, `list_members` |
 
 `register_agent`, `list_my_agents` and `update_agent` are for orchestrators and the PM. For an orchestrator or the PM, every tool also accepts `as_agent`.
 

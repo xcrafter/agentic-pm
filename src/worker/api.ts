@@ -41,9 +41,10 @@ import { customerRoutes } from "./customers";
 import { shareRoutes } from "./shares";
 import { policyRoutes } from "./policies";
 import { toolRoutes } from "./tools";
+import { apiKeyRoutes, memberFromApiKey } from "./apikeys";
 import { type AppEnv, HttpError, badRequest, encryptSecret, forbidden, newId, notFound, nowIso, verifySignedValue } from "./util";
 
-type Vars = { me: MemberRow; ws: WorkspaceRow; actor: Actor };
+type Vars = { me: MemberRow; ws: WorkspaceRow; actor: Actor; viaKey: boolean };
 export const api = new Hono<{ Bindings: AppEnv; Variables: Vars }>();
 
 api.onError((err, c) => {
@@ -51,6 +52,25 @@ api.onError((err, c) => {
   console.error(err);
   return c.json({ error: "Internal error" }, 500);
 });
+
+const INTERNAL_ACTOR = Symbol("internal-actor");
+
+/**
+ * Call an /api endpoint in-process as `actor` (used by MCP tools), so they share the handlers' validation
+ * and permission checks. Returns the JSON body, or throws HttpError with the endpoint's message.
+ */
+export async function callApi<T = unknown>(env: AppEnv, actor: Actor, method: string, path: string, body?: unknown): Promise<T> {
+  const res = await api.request(
+    path,
+    { method, headers: body === undefined ? {} : { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) },
+    { ...env, [INTERNAL_ACTOR]: actor } as AppEnv,
+    // Tools don't route through endpoints that defer work, but keep waitUntil safe if one does.
+    { waitUntil: (p: Promise<unknown>) => void p.catch((e) => console.error("deferred", e)), passThroughOnException() {}, props: {} } as unknown as ExecutionContext,
+  );
+  const data = (await res.json().catch(() => null)) as { error?: string } | null;
+  if (!res.ok) throw new HttpError(res.status, data?.error ?? `Request failed (${res.status})`);
+  return data as T;
+}
 
 // Public: who am I (null when signed out) + which sign-in methods exist.
 api.get("/api/me", async (c) => {
@@ -99,10 +119,23 @@ async function streamAttachment(env: AppEnv, id: string, workspaceId?: string) {
   });
 }
 
-// Everything below requires a signed-in human.
+// Everything below requires a signed-in human: a browser session, or a personal API key (Bearer apm_…).
 api.use("/api/*", async (c, next) => {
-  const me = await getSessionMember(c.env, getCookie(c, SESSION_COOKIE));
+  // In-process calls from MCP tools (see callApi). Only server code can put this on env.
+  const internal = (c.env as AppEnv & { [INTERNAL_ACTOR]?: Actor })[INTERNAL_ACTOR];
+  if (internal) {
+    c.set("me", internal.member);
+    c.set("ws", await ensureWorkspace(c.env));
+    c.set("actor", internal);
+    c.set("viaKey", true);
+    return next();
+  }
+  const auth = c.req.header("Authorization");
+  const keyMember = auth ? await memberFromApiKey(c.env, auth) : null;
+  if (auth?.startsWith("Bearer ") && !keyMember) return c.json({ error: "Invalid or revoked API key" }, 401);
+  const me = keyMember ?? (await getSessionMember(c.env, getCookie(c, SESSION_COOKIE)));
   if (!me) return c.json({ error: "Not signed in" }, 401);
+  c.set("viaKey", !!keyMember);
   const ws = await ensureWorkspace(c.env);
   c.set("me", me);
   c.set("ws", ws);
@@ -110,6 +143,7 @@ api.use("/api/*", async (c, next) => {
   await next();
 });
 
+api.route("/", apiKeyRoutes);
 api.route("/", workspaceRoutes);
 api.route("/", feedRoutes);
 api.route("/", ideaRoutes);

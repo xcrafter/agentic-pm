@@ -1054,6 +1054,51 @@ try {
   await alice("POST", `/api/projects/${arch.id}/restore`, {});
   pass("project archive cascades to its tasks, restore brings them back, MCP archive_project works");
 
+  step("Personal API keys and wider MCP coverage");
+  const k_keyRes = await alice("POST", "/api/keys", { name: `script ${runId}` });
+  assert.ok(k_keyRes.key.startsWith("apm_") && k_keyRes.prefix === k_keyRes.key.slice(0, 8));
+  const k_viaKey = (method, path, body) =>
+    fetch(`${BASE}${path}`, {
+      method,
+      headers: { Authorization: `Bearer ${k_keyRes.key}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  const k_keyTasks = await k_viaKey("GET", "/api/tasks?limit=1");
+  assert.equal(k_keyTasks.status, 200);
+  const k_keyMade = await (await k_viaKey("POST", "/api/tasks", { title: `Made by key ${runId}` })).json();
+  assert.equal(k_keyMade.created_by, (await alice("GET", "/api/me")).member.id, "a key acts as its owner");
+  assert.equal((await k_viaKey("POST", "/api/keys", { name: "minted" })).status, 403, "a key can't mint keys");
+  assert.equal((await k_viaKey("GET", "/api/keys")).status, 403);
+  assert.equal((await fetch(`${BASE}/api/tasks`, { headers: { Authorization: "Bearer apm_not_a_real_key_xxxxxxxxxxxx" } })).status, 401);
+  const k_myKeys = await alice("GET", "/api/keys");
+  assert.ok(k_myKeys.some((k) => k.id === k_keyRes.id && k.last_used_at), "last use is recorded");
+  assert.ok(!JSON.stringify(k_myKeys).includes(k_keyRes.key), "keys are never listed in full");
+  await assert.rejects(bob2("DELETE", `/api/keys/${k_keyRes.id}`), /403/);
+  await alice("DELETE", `/api/keys/${k_keyRes.id}`);
+  assert.equal((await k_viaKey("GET", "/api/tasks?limit=1")).status, 401, "revoked keys stop working");
+  pass("API keys act as their owner, can't mint keys, record last use, and stop working when revoked");
+
+  const k_mcpProj = await tool("create_project", { name: `MCP project ${runId}`, description: "made over MCP" });
+  assert.equal(k_mcpProj.name, `MCP project ${runId}`);
+  const k_projRenamed = await tool("update_project", { project: `MCP project ${runId}`, name: `MCP renamed ${runId}` });
+  assert.equal(k_projRenamed.name, `MCP renamed ${runId}`);
+  const k_cust = await tool("create_customer", { name: `Cust ${runId}`, plan: "Pro", mrr: 500 });
+  assert.equal(k_cust.name, `Cust ${runId}`);
+  const k_cust2 = await tool("update_customer", { customer: `Cust ${runId}`, plan: "Enterprise" });
+  assert.equal(k_cust2.customer?.plan ?? k_cust2.plan, "Enterprise");
+  assert.ok((await tool("list_customers")).some((c) => c.name === `Cust ${runId}`));
+  assert.ok(Array.isArray(await tool("list_feature_requests", { customer: `Cust ${runId}` })));
+  assert.ok(Array.isArray(await tool("list_views")));
+  const k_inboxMcp = await tool("get_inbox");
+  assert.ok(Array.isArray(k_inboxMcp.questions));
+  const k_shareMcp = await tool("create_share_link", { task: k_keyMade.key, label: "e2e" });
+  assert.ok(k_shareMcp.url.includes("/share/"));
+  const k_overviewMcp = await tool("get_overview");
+  assert.ok(k_overviewMcp && typeof k_overviewMcp === "object");
+  await assert.rejects(tool("get_reports", { days: 12 }), /days|Invalid|expected/i);
+  assert.ok(await tool("get_reports", { days: 7 }));
+  pass("MCP covers projects, customers, feature requests, views, inbox, share links, overview and reports");
+
   step("Unreachable agent → run fails and lands in Needs you");
   await alice("PATCH", `/api/members/${agent.id}`, { webhook_url: `http://localhost:${HOOK_PORT}/missing` });
   const t3 = await alice("POST", "/api/tasks", { title: "Will fail", assignee_id: agent.id });

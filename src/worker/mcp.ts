@@ -38,6 +38,7 @@ import { endRunsFor, failRunsFor, touchRun } from "./orchestrator";
 import { POST_KINDS, createPost, listPosts } from "./feed";
 import { IDEA_LABELS, IDEA_STAGES, IDEA_STATUSES, createIdea, listIdeas } from "./ideas";
 import { logFeatureRequest } from "./customers";
+import { callApi } from "./api";
 import { addTool, getTool, listTools, toolOut, updateTool } from "./tools";
 import { assertPoliciesRead, createPolicy, ensureFolderPath, findPolicy, listPoliciesForAgent, markPolicyRead, policiesFor, policyForAgent, updatePolicy } from "./policies";
 import { agentSummary, applyAgentProfile, canOrchestrate, getActableAgent, getSubAgent, isWorkspacePm, listSubAgents, registerSubAgent } from "./agents";
@@ -105,6 +106,7 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
   const GATED = new Set([
     "create_task", "update_task", "post_update", "add_comment", "write_note", "create_checklist",
     "set_checklist_item", "add_checklist_item", "attach_file", "complete_task", "share_update",
+    "create_project", "update_project", "convert_idea", "create_share_link", "update_note",
   ]);
   {
     const registerGated = server.registerTool.bind(server) as (...args: any[]) => unknown;
@@ -827,6 +829,262 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
           note: r.status === "archived" ? `${r.tasks_changed} task(s) archived with it.` : `${r.tasks_changed} task(s) restored.`,
         };
       }),
+  );
+
+
+  // ---------- Wider coverage: these call the same /api handlers the app uses, as this agent ----------
+  const callAs = <T = any>(method: string, path: string, body?: unknown) => callApi<T>(env, actor, method, path, body);
+  const projectId = async (ref: string) => {
+    const all = (await listProjects(env, props.workspaceId)) as { id: string; name: string }[];
+    const p = all.find((x) => x.id === ref) ?? all.find((x) => x.name.toLowerCase() === ref.trim().toLowerCase());
+    if (!p) throw new Error(`No project "${ref}". Use list_projects to see them.`);
+    return p.id;
+  };
+  const memberId = async (ref: string | null | undefined) =>
+    ref === undefined ? undefined : ref === null || ref === "none" ? null : (await findMemberByRef(env, props.workspaceId, ref)).id;
+  const customerId = async (ref: string) => {
+    const all = await callAs<{ id: string; name: string }[]>("GET", "/api/customers");
+    const c = all.find((x) => x.id === ref) ?? all.find((x) => x.name.toLowerCase() === ref.trim().toLowerCase());
+    if (!c) throw new Error(`No customer "${ref}". Use list_customers to see them.`);
+    return c.id;
+  };
+
+  server.registerTool(
+    "create_project",
+    {
+      description: "Create a project to group related tasks (a campaign, a launch).",
+      inputSchema: {
+        name: z.string().min(1).max(120),
+        description: z.string().max(2000).optional(),
+        lead: z.string().optional().describe("Lead's handle or member id"),
+      },
+    },
+    (a) =>
+      guard(async () =>
+        callAs("POST", "/api/projects", { name: a.name, description: a.description, lead_member_id: (await memberId(a.lead)) ?? null }),
+      ),
+  );
+
+  server.registerTool(
+    "update_project",
+    {
+      description: "Rename a project, change its description or lead. To archive or restore it, use archive_project.",
+      inputSchema: {
+        project: z.string().describe("Project id or exact name"),
+        name: z.string().min(1).max(120).optional(),
+        description: z.string().max(2000).optional(),
+        lead: z.string().nullable().optional().describe("Lead's handle or member id; null to clear"),
+      },
+    },
+    (a) =>
+      guard(async () =>
+        callAs("PATCH", `/api/projects/${await projectId(a.project)}`, {
+          name: a.name,
+          description: a.description,
+          lead_member_id: await memberId(a.lead),
+        }),
+      ),
+  );
+
+  server.registerTool(
+    "get_idea",
+    {
+      description: "Get one product idea with its customer requests.",
+      inputSchema: { id: z.string() },
+      annotations: { readOnlyHint: true },
+    },
+    (a) => guard(async () => callAs("GET", `/api/ideas/${encodeURIComponent(a.id)}`)),
+  );
+
+  server.registerTool(
+    "update_idea",
+    {
+      description:
+        "Edit an idea: title, body, labels, suggested owner, stage (backlog = considering or building, live = shipped, archived = not pursuing; " +
+        "its customer requests follow the stage), or pin it to the top.",
+      inputSchema: {
+        id: z.string(),
+        title: z.string().min(1).max(200).optional(),
+        body: z.string().max(10000).optional(),
+        labels: z.array(z.enum(IDEA_LABELS)).optional(),
+        owner: z.string().nullable().optional().describe("Suggested owner's handle or member id; null to clear"),
+        stage: z.enum(IDEA_STAGES).optional(),
+        pinned: z.boolean().optional(),
+      },
+    },
+    (a) =>
+      guard(async () =>
+        callAs("PATCH", `/api/ideas/${encodeURIComponent(a.id)}`, {
+          title: a.title,
+          body: a.body,
+          labels: a.labels,
+          suggested_owner_id: await memberId(a.owner),
+          stage: a.stage,
+          pinned: a.pinned,
+        }),
+      ),
+  );
+
+  server.registerTool(
+    "convert_idea",
+    {
+      description: "Turn an idea into a task. With assign: true the idea's suggested owner gets the task (and is woken if it's an agent).",
+      inputSchema: {
+        id: z.string(),
+        assign: z.boolean().optional(),
+        project: z.string().optional().describe("Project id or exact name for the new task"),
+      },
+    },
+    (a) =>
+      guard(async () =>
+        callAs("POST", `/api/ideas/${encodeURIComponent(a.id)}/convert`, {
+          assign: !!a.assign,
+          project_id: a.project ? await projectId(a.project) : null,
+        }),
+      ),
+  );
+
+  server.registerTool(
+    "list_customers",
+    { description: "List customers with how many open feature requests each has.", annotations: { readOnlyHint: true } },
+    () => guard(async () => callAs("GET", "/api/customers")),
+  );
+
+  server.registerTool(
+    "get_customer",
+    {
+      description: "Get one customer and everything they've asked for.",
+      inputSchema: { customer: z.string().describe("Customer id or exact name") },
+      annotations: { readOnlyHint: true },
+    },
+    (a) => guard(async () => callAs("GET", `/api/customers/${await customerId(a.customer)}`)),
+  );
+
+  const customerFields = {
+    domain: z.string().nullable().optional(),
+    email: z.string().nullable().optional(),
+    plan: z.string().nullable().optional(),
+    mrr: z.number().nullable().optional().describe("Monthly revenue"),
+    notes: z.string().max(10000).optional(),
+  };
+
+  server.registerTool(
+    "create_customer",
+    { description: "Add a customer.", inputSchema: { name: z.string().min(1).max(120), ...customerFields } },
+    (a) => guard(async () => callAs("POST", "/api/customers", a)),
+  );
+
+  server.registerTool(
+    "update_customer",
+    {
+      description: "Edit a customer's name, domain, email, plan, monthly revenue or notes.",
+      inputSchema: { customer: z.string().describe("Customer id or exact name"), name: z.string().min(1).max(120).optional(), ...customerFields },
+    },
+    (a) =>
+      guard(async () => {
+        const { customer, ...fields } = a;
+        return callAs("PATCH", `/api/customers/${await customerId(customer)}`, fields);
+      }),
+  );
+
+  server.registerTool(
+    "list_feature_requests",
+    {
+      description: "List customer feature requests (who asked for which idea, how often, and whether it's open, live or archived).",
+      inputSchema: {
+        customer: z.string().optional().describe("Customer id or exact name"),
+        idea_id: z.string().optional(),
+        status: z.enum(["open", "live", "archived"]).optional(),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    (a) =>
+      guard(async () => {
+        const cid = a.customer ? await customerId(a.customer) : undefined;
+        const rows = await callAs<{ customer_id: string; idea_id: string; status: string }[]>("GET", "/api/idea-requests");
+        return rows.filter((r) => (!cid || r.customer_id === cid) && (!a.idea_id || r.idea_id === a.idea_id) && (!a.status || r.status === a.status));
+      }),
+  );
+
+  server.registerTool(
+    "list_views",
+    { description: "List the workspace's saved task views (shared filters like 'Needs attention').", annotations: { readOnlyHint: true } },
+    () => guard(async () => callAs("GET", "/api/views")),
+  );
+
+  server.registerTool(
+    "get_inbox",
+    {
+      description: "Your 'Needs you' inbox: open questions, failed or stuck runs, and mentions waiting on you.",
+      annotations: { readOnlyHint: true },
+    },
+    () => guard(async () => callAs("GET", "/api/inbox")),
+  );
+
+  server.registerTool(
+    "create_share_link",
+    {
+      description:
+        "Create a link that lets someone outside the workspace read a task (mode read) or also reply to it (mode reply), with no sign-in. " +
+        "Anyone with the link can use it, so only share it with the intended person.",
+      inputSchema: {
+        task: z.string().describe("Task key like IMP-12"),
+        mode: z.enum(["read", "reply"]).optional(),
+        label: z.string().max(60).optional().describe("Who it's for, e.g. 'Acme design team'"),
+        expires_in_days: z.number().int().min(0).max(365).optional().describe("Default 7; 0 = never expires"),
+      },
+    },
+    (a) =>
+      guard(async () =>
+        callAs("POST", `/api/tasks/${encodeURIComponent(a.task)}/shares`, { mode: a.mode, label: a.label, expires_in_days: a.expires_in_days }),
+      ),
+  );
+
+  server.registerTool(
+    "update_note",
+    {
+      description: "Edit a note on a task (its id is in get_task's notes).",
+      inputSchema: { note_id: z.string(), title: z.string().max(200).optional(), content: z.string().optional() },
+    },
+    (a) => guard(async () => callAs("PATCH", `/api/notes/${encodeURIComponent(a.note_id)}`, { title: a.title, content: a.content })),
+  );
+
+  if (orchestrate || isPm) {
+    server.registerTool(
+      "retry_run",
+      {
+        description: "Retry a failed or stuck agent run (run ids are in get_task's runs and get_inbox).",
+        inputSchema: { run_id: z.string() },
+      },
+      (a) => guard(async () => callAs("POST", `/api/runs/${encodeURIComponent(a.run_id)}/retry`, {})),
+    );
+    server.registerTool(
+      "dismiss_run",
+      {
+        description: "Dismiss a failed or stuck run so it leaves the 'Needs you' inbox, without retrying it.",
+        inputSchema: { run_id: z.string() },
+      },
+      (a) => guard(async () => callAs("POST", `/api/runs/${encodeURIComponent(a.run_id)}/dismiss`, {})),
+    );
+  }
+
+  server.registerTool(
+    "get_overview",
+    {
+      description: "Workspace overview: task counts by status and by member, recent activity, runs and open questions.",
+      annotations: { readOnlyHint: true },
+    },
+    () => guard(async () => callAs("GET", "/api/overview")),
+  );
+
+  server.registerTool(
+    "get_reports",
+    {
+      description: "Reports for the last 7, 30 or 90 days: throughput, agent run success, acknowledgements and routine gaps.",
+      inputSchema: { days: z.union([z.literal(7), z.literal(30), z.literal(90)]).optional() },
+      annotations: { readOnlyHint: true },
+    },
+    (a) => guard(async () => callAs("GET", `/api/reports?days=${a.days ?? 30}`)),
   );
 
   server.registerTool(
