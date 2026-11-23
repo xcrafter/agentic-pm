@@ -24,7 +24,7 @@ import {
   X,
   Link2,
 } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 import { type Priority, type Status, type Task, PRIORITIES, PRIORITY_LABEL, STATUSES, STATUS_LABEL, api } from "../api";
 import {
@@ -69,8 +69,9 @@ import {
   normalizeConfig,
   sameConfig,
   sortTasks,
+  taskDefaultsFrom,
 } from "../taskViews";
-import { ProjectDot } from "./Layout";
+import { ProjectDot, filterNote } from "./Layout";
 
 const BOARD_STATUSES: Status[] = ["backlog", "todo", "in_progress", "waiting_on_human", "done", "canceled"];
 
@@ -166,6 +167,15 @@ export function BoardPage({ mine }: { mine?: boolean }) {
   );
   const filters = activeFilterCount(cfg);
 
+  // New tasks created from here start inside this view: its single-value filters become the form's defaults.
+  const taskDefaults = taskDefaultsFrom(cfg, me.member?.id, { mine, projectId });
+  const defaultsKey = JSON.stringify(taskDefaults);
+  const { setTaskDefaults } = shell;
+  useEffect(() => {
+    setTaskDefaults(JSON.parse(defaultsKey));
+  }, [defaultsKey, setTaskDefaults]);
+  useEffect(() => () => setTaskDefaults(null), [setTaskDefaults]);
+
   return (
     <div className="flex h-full flex-col">
       <TopBar
@@ -229,7 +239,12 @@ export function BoardPage({ mine }: { mine?: boolean }) {
           ))}
         </div>
       )}
-      <CreateTaskModal open={!!creatingIn} onClose={() => setCreatingIn(null)} defaultProjectId={projectId} defaultStatus={creatingIn ?? undefined} />
+      <CreateTaskModal
+        open={!!creatingIn}
+        onClose={() => setCreatingIn(null)}
+        defaults={{ ...taskDefaults, status: creatingIn ?? taskDefaults.status }}
+        note={filterNote({ ...taskDefaults, status: undefined }, projectId)}
+      />
     </div>
   );
 }

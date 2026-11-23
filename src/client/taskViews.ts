@@ -3,6 +3,7 @@
  * saved views are stored in the workspace and shared with everyone.
  */
 import { type Priority, type Status, type Task, PRIORITIES, STATUSES } from "./api";
+import type { TaskDefaults } from "./components";
 
 export type SortKey = "status" | "priority" | "due" | "updated" | "created" | "title";
 export type DueFilter = "any" | "overdue" | "week" | "none";
@@ -71,6 +72,24 @@ export function activeFilterCount(c: ViewConfig) {
     (c.attention ? 1 : 0) +
     (c.q.trim() ? 1 : 0)
   );
+}
+
+/**
+ * What a new task created from this view should start with, so it lands inside the view.
+ * A filter only carries over when it pins exactly one value (two statuses can't both be set).
+ */
+export function taskDefaultsFrom(c: ViewConfig, meId: string | undefined, scope: { mine?: boolean; projectId?: string }): TaskDefaults {
+  const d: TaskDefaults = {};
+  if (c.status.length === 1) d.status = c.status[0];
+  if (c.priorities.length === 1) d.priority = c.priorities[0];
+  if (scope.mine) d.assigneeId = meId ?? null;
+  else if (c.assignees.length === 1) {
+    const a = c.assignees[0];
+    d.assigneeId = a === "none" ? null : a === "me" ? (meId ?? null) : a;
+  }
+  if (scope.projectId) d.projectId = scope.projectId;
+  else if (c.projects.length === 1) d.projectId = c.projects[0] === "none" ? null : c.projects[0];
+  return d;
 }
 
 export const isClosed = (t: Pick<Task, "status">) => t.status === "done" || t.status === "canceled";

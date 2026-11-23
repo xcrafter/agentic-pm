@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { type Priority, type Status, type Task, PRIORITIES, PRIORITY_LABEL, STATUSES, STATUS_LABEL, api } from "../api";
-import { Button, Chip, MemberChip, Menu, Modal, ModalFooter, PriorityIcon, StatusIcon, assigneeOptions, useMe, useMembers, useProjects } from "../components";
+import { type TaskDefaults, Button, Chip, MemberChip, Menu, Modal, ModalFooter, PriorityIcon, StatusIcon, assigneeOptions, useMe, useMembers, useProjects } from "../components";
 import { FolderKanban } from "lucide-react";
 import { ProjectDot } from "./Layout";
 import { type EditorHandle, RichEditor } from "../editor";
@@ -10,19 +10,21 @@ import { type EditorHandle, RichEditor } from "../editor";
 export function CreateTaskModal({
   open,
   onClose,
-  defaultProjectId,
-  defaultStatus,
+  defaults,
+  note,
 }: {
   open: boolean;
   onClose: () => void;
-  defaultProjectId?: string;
-  defaultStatus?: Status;
+  /** Starting values, e.g. from the filters of the list it was opened on. Read when the form opens. */
+  defaults?: TaskDefaults;
+  /** Shown under the fields when some values came from somewhere the person didn't pick. */
+  note?: string;
 }) {
   const [title, setTitle] = useState("");
-  const [status, setStatus] = useState<Status>(defaultStatus ?? "todo");
-  const [priority, setPriority] = useState<Priority>("none");
-  const [assignee, setAssignee] = useState<string>("none");
-  const [project, setProject] = useState<string>(defaultProjectId ?? "none");
+  const [status, setStatus] = useState<Status>(defaults?.status ?? "todo");
+  const [priority, setPriority] = useState<Priority>(defaults?.priority ?? "none");
+  const [assignee, setAssignee] = useState<string>(defaults?.assigneeId ?? "none");
+  const [project, setProject] = useState<string>(defaults?.projectId ?? "none");
   const ws = useMe().data?.workspace;
   const [triage, setTriage] = useState(false);
   const editor = useRef<EditorHandle>(null);
@@ -31,16 +33,18 @@ export function CreateTaskModal({
   const qc = useQueryClient();
   const nav = useNavigate();
 
+  // Reset only when the form opens, so a page re-render can't wipe what's being typed.
   useEffect(() => {
     if (open) {
       setTitle("");
-      setStatus(defaultStatus ?? "todo");
-      setPriority("none");
-      setAssignee("none");
-      setProject(defaultProjectId ?? "none");
+      setStatus(defaults?.status ?? "todo");
+      setPriority(defaults?.priority ?? "none");
+      setAssignee(defaults?.assigneeId ?? "none");
+      setProject(defaults?.projectId ?? "none");
       setTriage(!!ws?.pm_triage);
     }
-  }, [open, defaultProjectId, defaultStatus]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   const create = useMutation({
     mutationFn: () =>
@@ -133,6 +137,7 @@ export function CreateTaskModal({
             ]}
           />
         </div>
+        {note && <p className="-mt-1 px-4 pb-3 text-[12px] text-ink-3">{note}</p>}
         {pm && assignee === "none" && (
           <label className="mx-4 mb-3 flex w-fit cursor-pointer items-center gap-2 rounded-lg border border-line px-2.5 py-1.5 text-[13px] hover:bg-hover">
             <input type="checkbox" checked={triage} onChange={(e) => setTriage(e.target.checked)} />

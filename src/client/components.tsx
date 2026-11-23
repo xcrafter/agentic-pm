@@ -904,6 +904,18 @@ export interface ShellContext {
   openNav: () => void;
   openSearch: () => void;
   createTask: () => void;
+  /** A list page tells the shell what a new task should start with (from its filters). null clears it. */
+  setTaskDefaults: (d: TaskDefaults | null) => void;
+}
+
+/** Starting values for the New task form. Unset fields keep the form's own defaults. */
+export interface TaskDefaults {
+  status?: Status;
+  priority?: Priority;
+  /** member id, or null for unassigned */
+  assigneeId?: string | null;
+  /** project id, or null for no project */
+  projectId?: string | null;
 }
 export const useShell = () => useOutletContext<ShellContext>();
 

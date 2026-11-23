@@ -28,6 +28,7 @@ import {
   Button,
   Kbd,
   type ShellContext,
+  type TaskDefaults,
   StatusIcon,
   cx,
   inputClass,
@@ -41,11 +42,26 @@ import {
 } from "../components";
 import { CreateTaskModal } from "./CreateTask";
 
+/** "Priority and assignee are set from this view's filters." Names only what came from filters, not the page's own project. */
+export function filterNote(d: TaskDefaults, routeProject?: string) {
+  const f = [
+    d.status !== undefined && "Status",
+    d.priority !== undefined && "Priority",
+    d.assigneeId !== undefined && "Assignee",
+    d.projectId !== undefined && d.projectId !== routeProject && "Project",
+  ].filter(Boolean) as string[];
+  if (!f.length) return undefined;
+  const list = f.length === 1 ? f[0] : `${f.slice(0, -1).join(", ")} and ${f[f.length - 1].toLowerCase()}`;
+  return `${list[0]}${list.slice(1).toLowerCase()} ${f.length === 1 ? "is" : "are"} set from this view's filters.`;
+}
+
 export function Layout() {
   const me = useMe();
   const signedIn = !!me.data?.member;
   useRealtime(signedIn);
   const [creating, setCreating] = useState(false);
+  // Set by the list page being viewed, so "New task" (button, C key, palette) inherits its filters.
+  const [taskDefaults, setTaskDefaults] = useState<TaskDefaults | null>(null);
   const [searching, setSearching] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const loc = useLocation();
@@ -77,6 +93,7 @@ export function Layout() {
     openNav: () => setNavOpen(true),
     openSearch: () => setSearching(true),
     createTask: () => setCreating(true),
+    setTaskDefaults,
   };
   return (
     <div className="flex h-full bg-canvas">
@@ -95,7 +112,12 @@ export function Layout() {
         <Outlet context={shell} />
       </main>
       <MobileTabs shell={shell} />
-      <CreateTaskModal open={creating} onClose={() => setCreating(false)} defaultProjectId={projectMatch?.[1]} />
+      <CreateTaskModal
+        open={creating}
+        onClose={() => setCreating(false)}
+        defaults={taskDefaults ?? { projectId: projectMatch?.[1] }}
+        note={taskDefaults ? filterNote(taskDefaults, projectMatch?.[1]) : undefined}
+      />
       {searching && <CommandPalette onClose={() => setSearching(false)} onCreate={() => (setSearching(false), setCreating(true))} />}
     </div>
   );
