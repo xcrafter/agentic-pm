@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
-import { type Member, type MemberRecord, type Task, api } from "../api";
+import { type Member, type MemberRecord, type SidebarProfile, type Task, api } from "../api";
 import {
   AgentBadge,
   AttrRow,
@@ -580,12 +580,46 @@ function PersonAdmin({ member, bare }: { member: Member; bare?: boolean }) {
           {member.active ? "Deactivate" : "Reactivate"}
         </Button>
       </div>
+      <SidebarProfilePicker member={member} />
       {resetLink && (
         <div className="mt-3">
           <CopyField value={resetLink} hint={`Send this to ${member.name}. It works once, expires in 24 hours, and signs them out elsewhere.`} />
         </div>
       )}
     </div>
+  );
+}
+
+function SidebarProfilePicker({ member }: { member: Member }) {
+  const qc = useQueryClient();
+  const profiles = useQuery({
+    queryKey: ["sidebar-profiles"],
+    queryFn: () => api.get<{ profiles: SidebarProfile[] }>("/api/sidebar-profiles"),
+  });
+  const update = useMutation({
+    mutationFn: (id: string | null) => api.patch(`/api/members/${member.id}`, { sidebar_profile_id: id }),
+    onSuccess: () => qc.invalidateQueries(),
+  });
+  const list = profiles.data?.profiles ?? [];
+  if (!list.length) return null;
+  const def = list.find((p) => p.is_default);
+  return (
+    <label className="mt-3 flex items-center gap-2 text-[13px]">
+      <span className="text-ink-3">Sidebar profile</span>
+      <select
+        className={cx(inputClass, "h-8 w-auto py-0")}
+        value={member.sidebar_profile_id ?? ""}
+        disabled={update.isPending}
+        onChange={(e) => update.mutate(e.target.value || null)}
+      >
+        <option value="">{def ? `Default (${def.name})` : "None (full sidebar)"}</option>
+        {list.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.name}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 

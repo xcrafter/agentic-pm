@@ -284,9 +284,20 @@ Main endpoints:
 | Projects | `GET/POST /api/projects`, `PATCH /api/projects/:id`, `POST /api/projects/:id/archive`, `POST /api/projects/:id/restore` |
 | Ideas & customers | `GET/POST /api/ideas`, `GET/PATCH/DELETE /api/ideas/:id`, `POST /api/ideas/:id/convert`, `GET/POST /api/customers`, `GET/PATCH /api/customers/:id`, `GET /api/idea-requests`, `POST /api/feature-requests` |
 | Policies & tools | `GET/POST /api/policies`, `GET/PATCH /api/policies/:id`, `GET/POST /api/tools`, `PATCH /api/tools/:id` |
+| Sidebar | `GET/PUT /api/sidebar` (your own show/hide), `GET/POST /api/sidebar-profiles`, `PATCH/DELETE /api/sidebar-profiles/:id` (admins), `PATCH /api/members/:id {sidebar_profile_id}` (admins) |
 | Everything else | `GET /api/members`, `GET /api/inbox`, `GET /api/views`, `GET/POST /api/posts` (feed), `GET /api/overview`, `GET /api/reports?days=7\|30\|90`, `GET/PATCH /api/workspace` (admins) |
 
 Errors come back as `{ "error": "…" }` with a 4xx status.
+
+### 21. Choose what's in the sidebar
+
+- **For yourself:** open your name at the bottom of the sidebar → **Customize sidebar**, and tick what you want to see. Your choices apply only to you.
+- **For groups of people (admins):** in **Settings → Sidebar profiles**, create a profile such as "Sales" or "Engineering", untick the items it hides, and tick the people who use it. You can also pick a profile on a person's page.
+- **A default:** tick **Use for everyone without a profile** on one profile. It also applies to people who join later.
+
+People's own changes sit on top of their profile. **Reset to profile** removes them. If an admin deletes a profile, its people go back to the default.
+
+Hiding only tidies the sidebar. Hidden pages still open from links and from search (⌘K), so a profile is not a permission.
 
 ### Getting the most out of it
 

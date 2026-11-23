@@ -15,6 +15,7 @@ export interface Member {
   max_runs_per_hour: number;
   created_by: string | null;
   created_at: string;
+  sidebar_profile_id?: string | null;
 }
 export type MemberRef = Pick<Member, "id" | "name" | "handle" | "kind" | "avatar_url">;
 
@@ -158,6 +159,30 @@ export interface Me {
   workspace: WorkspaceInfo | null;
   brand: { name: string; logo_url: string | null };
   auth: { google: boolean; setup: boolean };
+}
+export type SidebarItemKey =
+  | "inbox" | "feed" | "my" | "ideas" | "customers" | "policies" | "all"
+  | "workspace" | "team" | "reports" | "projects" | "tools" | "settings"
+  | "favorite_views" | "project_list";
+export interface SidebarItem {
+  key: SidebarItemKey;
+  label: string;
+  group: "main" | "team" | "sections";
+}
+export interface SidebarInfo {
+  hidden: SidebarItemKey[];
+  profile: { id: string; name: string; hidden: SidebarItemKey[]; source: "assigned" | "default" } | null;
+  personal: { hidden: SidebarItemKey[]; shown: SidebarItemKey[] };
+  items: SidebarItem[];
+}
+export interface SidebarProfile {
+  id: string;
+  name: string;
+  hidden: SidebarItemKey[];
+  member_ids: string[];
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
 }
 export interface Inbox {
   questions: (Entry & { task_key: string; task_title: string })[];

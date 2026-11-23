@@ -32,6 +32,8 @@ export interface MemberRow {
   password_hash: string | null;
   created_by: string | null;
   created_at: string;
+  sidebar_profile_id?: string | null;
+  sidebar_prefs?: string | null;
 }
 
 export interface WorkspaceRow {
@@ -47,6 +49,7 @@ export interface WorkspaceRow {
   pm_agent_id: string | null;
   pm_triage: number;
   link_previews: "off" | "title" | "full";
+  default_sidebar_profile_id?: string | null;
 }
 
 export const TASK_STATUSES = ["backlog", "todo", "in_progress", "waiting_on_human", "done", "canceled"] as const;
@@ -176,6 +179,7 @@ export function publicMember(m: MemberRow) {
     max_runs_per_hour: m.max_runs_per_hour,
     created_by: m.created_by ?? null,
     created_at: m.created_at,
+    sidebar_profile_id: m.sidebar_profile_id ?? null,
   };
 }
 export type PublicMember = ReturnType<typeof publicMember>;

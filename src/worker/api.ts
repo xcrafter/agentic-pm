@@ -43,6 +43,7 @@ import { shareRoutes } from "./shares";
 import { policyRoutes } from "./policies";
 import { toolRoutes } from "./tools";
 import { apiKeyRoutes, memberFromApiKey } from "./apikeys";
+import { assignSidebarProfile, sidebarRoutes } from "./sidebar";
 import { type AppEnv, HttpError, badRequest, encryptSecret, forbidden, newId, notFound, nowIso, verifySignedValue } from "./util";
 
 type Vars = { me: MemberRow; ws: WorkspaceRow; actor: Actor; viaKey: boolean };
@@ -145,6 +146,7 @@ api.use("/api/*", async (c, next) => {
 });
 
 api.route("/", apiKeyRoutes);
+api.route("/", sidebarRoutes);
 api.route("/", workspaceRoutes);
 api.route("/", feedRoutes);
 api.route("/", ideaRoutes);
@@ -229,6 +231,7 @@ api.patch("/api/members/:id", async (c) => {
     max_runs_per_hour?: number;
     role?: "admin" | "member";
     active?: boolean;
+    sidebar_profile_id?: string | null;
   }>();
   const sets: string[] = [];
   const binds: unknown[] = [];
@@ -251,6 +254,11 @@ api.patch("/api/members/:id", async (c) => {
   if (me.role === "admin") {
     if (body.role && target.kind === "human" && target.id !== me.id) set("role", body.role);
     if (body.active !== undefined && target.id !== me.id) set("active", body.active ? 1 : 0);
+  }
+  if (body.sidebar_profile_id !== undefined) {
+    requireAdmin(me);
+    await assignSidebarProfile(c.env, ws, target, body.sidebar_profile_id || null);
+    await notify(c.env, ws.id, { type: "sidebar" });
   }
   if (sets.length) {
     await c.env.DB.prepare(`UPDATE members SET ${sets.join(", ")} WHERE id = ?`).bind(...binds, target.id).run();

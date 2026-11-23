@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Building2,
   ChevronsUpDown,
@@ -19,14 +19,17 @@ import {
   Wrench,
   Building,
   MoreHorizontal,
+  PanelLeft,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router";
-import { type Inbox, type Task, api } from "../api";
+import { type Inbox, type SidebarInfo, type SidebarItem, type SidebarItemKey, type Task, api } from "../api";
 import {
   Avatar,
   Button,
   Kbd,
+  Modal,
+  ModalFooter,
   type ShellContext,
   type TaskDefaults,
   StatusIcon,
@@ -38,6 +41,7 @@ import {
   useProjects,
   useRealtime,
   useSavedViews,
+  useSidebar,
   WorkspaceLogo,
 } from "../components";
 import { CreateTaskModal } from "./CreateTask";
@@ -127,6 +131,7 @@ export function Layout() {
 function MobileTabs({ shell }: { shell: ShellContext }) {
   const inbox = useQuery({ queryKey: ["inbox"], queryFn: () => api.get<Inbox>("/api/inbox") });
   const count = (inbox.data?.questions.length ?? 0) + (inbox.data?.runs.length ?? 0) + (inbox.data?.mentions.length ?? 0);
+  const show = useShowItem();
   const tab = (to: string, label: string, icon: ReactNode, end?: boolean, badge?: number) => (
     <NavLink
       to={to}
@@ -143,14 +148,14 @@ function MobileTabs({ shell }: { shell: ShellContext }) {
   return (
     <nav className="pb-safe fixed inset-x-0 bottom-0 z-30 border-t border-line bg-canvas/95 backdrop-blur md:hidden" aria-label="Main">
       <div className="flex h-14 items-stretch">
-        {tab("/inbox", "Needs you", <InboxIcon size={20} />, false, count)}
-        {tab("/", "Tasks", <ListTodo size={20} />, true)}
+        {show("inbox") && tab("/inbox", "Needs you", <InboxIcon size={20} />, false, count)}
+        {show("all") && tab("/", "Tasks", <ListTodo size={20} />, true)}
         <button onClick={shell.createTask} className="flex flex-1 items-center justify-center" aria-label="New task">
           <span className="flex h-10 w-10 items-center justify-center rounded-full bg-accent text-white shadow-pop">
             <Plus size={20} />
           </span>
         </button>
-        {tab("/ideas", "Ideas", <Lightbulb size={20} />)}
+        {show("ideas") && tab("/ideas", "Ideas", <Lightbulb size={20} />)}
         <button onClick={shell.openNav} className="flex flex-1 flex-col items-center justify-center gap-0.5 text-[11px] font-medium text-ink-3" aria-label="More">
           <MoreHorizontal size={20} />
           More
@@ -189,6 +194,8 @@ function Sidebar({ shell }: { shell: ShellContext }) {
   const qc = useQueryClient();
   const nav = useNavigate();
   const [userMenu, setUserMenu] = useState(false);
+  const [customizing, setCustomizing] = useState(false);
+  const show = useShowItem();
 
   return (
     <aside className="flex h-full w-60 shrink-0 flex-col border-r border-line bg-panel">
@@ -220,52 +227,78 @@ function Sidebar({ shell }: { shell: ShellContext }) {
 
       <div className="mt-3 flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pb-3">
         <nav className="flex flex-col gap-0.5">
-          <NavItem to="/inbox" icon={<InboxIcon size={15} />} badge={inboxCount}>
-            Needs you
-          </NavItem>
-          <NavItem to="/feed" icon={<Megaphone size={15} />}>
-            Feed
-          </NavItem>
-          <NavItem to="/my" icon={<CircleUser size={15} />}>
-            My tasks
-          </NavItem>
-          <NavItem to="/ideas" icon={<Lightbulb size={15} />}>
-            Ideas
-          </NavItem>
-          <NavItem to="/customers" icon={<Building size={15} />}>
-            Customers
-          </NavItem>
-          <NavItem to="/policies" icon={<BookOpen size={15} />}>
-            Policies
-          </NavItem>
-          <NavItem to="/" end icon={<ListTodo size={15} />}>
-            All tasks
-          </NavItem>
+          {show("inbox") && (
+            <NavItem to="/inbox" icon={<InboxIcon size={15} />} badge={inboxCount}>
+              Needs you
+            </NavItem>
+          )}
+          {show("feed") && (
+            <NavItem to="/feed" icon={<Megaphone size={15} />}>
+              Feed
+            </NavItem>
+          )}
+          {show("my") && (
+            <NavItem to="/my" icon={<CircleUser size={15} />}>
+              My tasks
+            </NavItem>
+          )}
+          {show("ideas") && (
+            <NavItem to="/ideas" icon={<Lightbulb size={15} />}>
+              Ideas
+            </NavItem>
+          )}
+          {show("customers") && (
+            <NavItem to="/customers" icon={<Building size={15} />}>
+              Customers
+            </NavItem>
+          )}
+          {show("policies") && (
+            <NavItem to="/policies" icon={<BookOpen size={15} />}>
+              Policies
+            </NavItem>
+          )}
+          {show("all") && (
+            <NavItem to="/" end icon={<ListTodo size={15} />}>
+              All tasks
+            </NavItem>
+          )}
         </nav>
 
-        <div className="mt-5 mb-1 px-2 text-[12px] font-medium text-ink-3">Team</div>
+        {TEAM_ITEMS.some(show) && <div className="mt-5 mb-1 px-2 text-[12px] font-medium text-ink-3">Team</div>}
         <nav className="flex flex-col gap-0.5">
-          <NavItem to="/workspace" icon={<Building2 size={15} />}>
-            Overview
-          </NavItem>
-          <NavItem to="/team" icon={<Users size={15} />}>
-            Members & agents
-          </NavItem>
-          <NavItem to="/reports" icon={<BarChart3 size={15} />}>
-            Reports
-          </NavItem>
-          <NavItem to="/projects" end icon={<FolderKanban size={15} />}>
-            Projects
-          </NavItem>
-          <NavItem to="/tools" icon={<Wrench size={15} />}>
-            Tools
-          </NavItem>
-          <NavItem to="/settings" icon={<Settings size={15} />}>
-            Workspace settings
-          </NavItem>
+          {show("workspace") && (
+            <NavItem to="/workspace" icon={<Building2 size={15} />}>
+              Overview
+            </NavItem>
+          )}
+          {show("team") && (
+            <NavItem to="/team" icon={<Users size={15} />}>
+              Members & agents
+            </NavItem>
+          )}
+          {show("reports") && (
+            <NavItem to="/reports" icon={<BarChart3 size={15} />}>
+              Reports
+            </NavItem>
+          )}
+          {show("projects") && (
+            <NavItem to="/projects" end icon={<FolderKanban size={15} />}>
+              Projects
+            </NavItem>
+          )}
+          {show("tools") && (
+            <NavItem to="/tools" icon={<Wrench size={15} />}>
+              Tools
+            </NavItem>
+          )}
+          {show("settings") && (
+            <NavItem to="/settings" icon={<Settings size={15} />}>
+              Workspace settings
+            </NavItem>
+          )}
         </nav>
 
-        {!!views.data?.some((v) => v.favorite) && (
+        {show("favorite_views") && !!views.data?.some((v) => v.favorite) && (
           <>
             <div className="mt-5 mb-1 px-2 text-[12px] font-medium text-ink-3">Favorite views</div>
             <nav className="flex flex-col gap-0.5">
@@ -292,7 +325,7 @@ function Sidebar({ shell }: { shell: ShellContext }) {
           </>
         )}
 
-        {!!projects.data?.filter((p) => p.status === "active").length && (
+        {show("project_list") && !!projects.data?.filter((p) => p.status === "active").length && (
           <>
             <div className="mt-5 mb-1 px-2 text-[12px] font-medium text-ink-3">Projects</div>
             <nav className="flex flex-col gap-0.5">
@@ -325,6 +358,12 @@ function Sidebar({ shell }: { shell: ShellContext }) {
               <CircleUser size={14} className="text-ink-3" /> My profile
             </button>
             <button
+              onClick={() => (setUserMenu(false), setCustomizing(true))}
+              className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-[13px] hover:bg-hover"
+            >
+              <PanelLeft size={14} className="text-ink-3" /> Customize sidebar
+            </button>
+            <button
               onClick={async () => {
                 await api.post("/auth/logout");
                 qc.invalidateQueries();
@@ -336,7 +375,99 @@ function Sidebar({ shell }: { shell: ShellContext }) {
           </div>
         )}
       </div>
+      {customizing && <CustomizeSidebar onClose={() => setCustomizing(false)} />}
     </aside>
+  );
+}
+
+const TEAM_ITEMS: SidebarItemKey[] = ["workspace", "team", "reports", "projects", "tools", "settings"];
+
+/** show("ideas") → is that sidebar item visible for me? Everything shows while loading. */
+function useShowItem() {
+  const sidebar = useSidebar();
+  const hidden = useMemo(() => new Set(sidebar.data?.hidden ?? []), [sidebar.data]);
+  return (key: SidebarItemKey) => !hidden.has(key);
+}
+
+/** Each person's own show/hide on top of the profile an admin gave them. */
+function CustomizeSidebar({ onClose }: { onClose: () => void }) {
+  const qc = useQueryClient();
+  const sidebar = useSidebar();
+  const [hidden, setHidden] = useState<Set<SidebarItemKey> | null>(null);
+  useEffect(() => {
+    if (sidebar.data && !hidden) setHidden(new Set(sidebar.data.hidden));
+  }, [sidebar.data, hidden]);
+  const save = useMutation({
+    mutationFn: (body: object) => api.put<SidebarInfo>("/api/sidebar", body),
+    onSuccess: (d) => (qc.setQueryData(["sidebar"], d), onClose()),
+  });
+  const d = sidebar.data;
+  const base = new Set(d?.profile?.hidden ?? []);
+  const submit = () => {
+    if (!hidden) return;
+    // Store only the differences from the profile.
+    const keys = d!.items.map((i) => i.key);
+    save.mutate({ hidden: keys.filter((k) => hidden.has(k) && !base.has(k)), shown: keys.filter((k) => !hidden.has(k) && base.has(k)) });
+  };
+  const groups: [SidebarItem["group"], string][] = [
+    ["main", "Pages"],
+    ["team", "Team"],
+    ["sections", "Lists"],
+  ];
+  return (
+    <Modal open onClose={onClose} title="Customize sidebar">
+      <div className="space-y-4 p-4">
+        <p className="text-[13px] text-ink-3">
+          {d?.profile
+            ? `Your sidebar starts from the “${d.profile.name}” profile${d.profile.source === "default" ? ", the workspace default" : ""}. Changes here apply only to you.`
+            : "Choose what appears in your sidebar. Changes apply only to you."}{" "}
+          Hidden pages are still reachable from search (⌘K).
+        </p>
+        {d && hidden && (
+          <div className="grid gap-4 sm:grid-cols-3">
+            {groups.map(([g, title]) => (
+              <div key={g}>
+                <div className="mb-1.5 text-[12px] font-medium text-ink-3">{title}</div>
+                <div className="space-y-1">
+                  {d.items
+                    .filter((i) => i.group === g)
+                    .map((i) => (
+                      <label key={i.key} className="flex items-center gap-2 text-[13px]">
+                        <input
+                          type="checkbox"
+                          checked={!hidden.has(i.key)}
+                          onChange={(e) => {
+                            const next = new Set(hidden);
+                            if (e.target.checked) next.delete(i.key);
+                            else next.add(i.key);
+                            setHidden(next);
+                          }}
+                        />
+                        {i.label}
+                        {base.has(i.key) !== hidden.has(i.key) && <span className="text-[11px] text-ink-3">(changed)</span>}
+                      </label>
+                    ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {save.error && <p className="text-[12px] text-danger">{save.error.message}</p>}
+      </div>
+      <ModalFooter>
+        {!!(d?.personal.hidden.length || d?.personal.shown.length) && (
+          <Button variant="ghost" className="mr-auto" disabled={save.isPending} onClick={() => save.mutate({ reset: true })}>
+            {d?.profile ? "Reset to profile" : "Show everything"}
+          </Button>
+        )}
+        <Button variant="ghost" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button variant="primary" disabled={!hidden || save.isPending} onClick={submit}>
+          Save
+        </Button>
+      </ModalFooter>
+    </Modal>
   );
 }
 

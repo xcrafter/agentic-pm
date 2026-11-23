@@ -11,6 +11,7 @@ import {
   type MemberRef,
   type Priority,
   type Project,
+  type SidebarInfo,
   type Status,
   PRIORITY_LABEL,
   STATUS_LABEL,
@@ -20,6 +21,7 @@ import {
 // ---------- Data hooks ----------
 
 export const useMe = () => useQuery({ queryKey: ["me"], queryFn: () => api.get<Me>("/api/me") });
+export const useSidebar = () => useQuery({ queryKey: ["sidebar"], queryFn: () => api.get<SidebarInfo>("/api/sidebar"), staleTime: 60_000 });
 export const useMembers = () => useQuery({ queryKey: ["members"], queryFn: () => api.get<Member[]>("/api/members") });
 export const useSavedViews = () => useQuery({ queryKey: ["views"], queryFn: () => api.get<SavedView[]>("/api/views") });
 export const useProjects = () => useQuery({ queryKey: ["projects"], queryFn: () => api.get<Project[]>("/api/projects") });
@@ -54,6 +56,11 @@ export function useRealtime(enabled: boolean) {
           }
           if (msg.type === "workspace") qc.invalidateQueries({ queryKey: ["me"] });
           if (msg.type === "views") qc.invalidateQueries({ queryKey: ["views"] });
+          if (msg.type === "sidebar") {
+            qc.invalidateQueries({ queryKey: ["sidebar"] });
+            qc.invalidateQueries({ queryKey: ["sidebar-profiles"] });
+            qc.invalidateQueries({ queryKey: ["members"] });
+          }
           if (msg.type === "tools") qc.invalidateQueries({ queryKey: ["tools"] });
           if (msg.type === "policies") {
             qc.invalidateQueries({ queryKey: ["policies"] });

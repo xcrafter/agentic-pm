@@ -1,9 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bot, Globe, ImageUp, KeyRound, Link2, Settings, ShieldCheck, Trash2, Wand2, Webhook, X, Zap } from "lucide-react";
+import { Bot, Globe, ImageUp, KeyRound, PanelLeft, Link2, Settings, ShieldCheck, Trash2, Wand2, Webhook, X, Zap } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
-import { type Member, type WorkspaceInfo, api } from "../api";
-import { Avatar, Button, Menu, Tag, TopBar, WorkspaceLogo, cx, inputClass, timeAgo, useMe, useMembers, wakeRoute } from "../components";
+import { type Member, type SidebarItem, type SidebarItemKey, type SidebarProfile, type WorkspaceInfo, api } from "../api";
+import { Avatar, Button, Menu, Modal, ModalFooter, Tag, TopBar, WorkspaceLogo, cx, inputClass, timeAgo, useMe, useMembers, wakeRoute } from "../components";
 
 function Section({ icon, title, description, children }: { icon: ReactNode; title: string; description: string; children: ReactNode }) {
   return (
@@ -174,6 +174,8 @@ export function SettingsPage() {
             <LinkPreviews ws={ws} isAdmin={isAdmin} onSaved={setWs} />
 
             <ApiKeys isAdmin={isAdmin} />
+
+            {isAdmin && <SidebarProfiles />}
 
             <Section
               icon={<ShieldCheck size={15} />}
@@ -542,5 +544,169 @@ function LinkPreviews({ ws, isAdmin, onSaved }: { ws: WorkspaceInfo; isAdmin: bo
         {save.error && <p className="text-[12px] text-danger">{errorText(save.error)}</p>}
       </div>
     </Section>
+  );
+}
+
+function SidebarProfiles() {
+  const qc = useQueryClient();
+  const q = useQuery({
+    queryKey: ["sidebar-profiles"],
+    queryFn: () => api.get<{ items: SidebarItem[]; profiles: SidebarProfile[] }>("/api/sidebar-profiles"),
+  });
+  const members = useMembers();
+  const [editing, setEditing] = useState<SidebarProfile | "new" | null>(null);
+  const del = useMutation({
+    mutationFn: (id: string) => api.del(`/api/sidebar-profiles/${id}`),
+    onSuccess: () => (qc.invalidateQueries({ queryKey: ["sidebar-profiles"] }), qc.invalidateQueries({ queryKey: ["sidebar"] })),
+  });
+  const people = (members.data ?? []).filter((m) => m.kind === "human" && m.active);
+  return (
+    <Section
+      icon={<PanelLeft size={15} />}
+      title="Sidebar profiles"
+      description="Group sidebar choices into profiles, like Sales or Engineering, and assign them to people. Everyone can still show or hide items for themselves. Hidden pages stay reachable by link and search, so this tidies the sidebar but doesn't restrict access."
+    >
+      <div className="max-w-xl space-y-3">
+        {q.data && q.data.profiles.length > 0 && (
+          <ul className="divide-y divide-line rounded-lg border border-line">
+            {q.data.profiles.map((p) => {
+              const names = p.member_ids.map((id) => people.find((m) => m.id === id)?.name).filter(Boolean);
+              return (
+                <li key={p.id} className="flex items-center gap-3 px-3 py-2 text-[13px]">
+                  <span className="min-w-0 flex-1">
+                    <span className="font-medium">{p.name}</span> {p.is_default && <Tag tone="blue">Default</Tag>}
+                    <span className="block text-[12px] text-ink-3">
+                      {p.hidden.length ? `Hides ${p.hidden.map((k) => q.data.items.find((i) => i.key === k)?.label).join(", ")}.` : "Shows everything."}{" "}
+                      {names.length ? `Used by ${names.join(", ")}.` : p.is_default ? "Used by everyone without a profile." : "Not assigned to anyone."}
+                    </span>
+                  </span>
+                  <Button size="sm" variant="ghost" onClick={() => setEditing(p)}>
+                    Edit
+                  </Button>
+                  <Button size="sm" variant="ghost" disabled={del.isPending} onClick={() => del.mutate(p.id)} aria-label={`Delete ${p.name}`}>
+                    <Trash2 size={13} />
+                  </Button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        {q.data?.profiles.length === 0 && <p className="text-[12px] text-ink-3">No profiles yet. Everyone sees the full sidebar unless they hide items themselves.</p>}
+        {del.error && <p className="text-[12px] text-danger">{errorText(del.error)}</p>}
+        <Button onClick={() => setEditing("new")}>New profile</Button>
+      </div>
+      {editing && q.data && (
+        <SidebarProfileModal profile={editing === "new" ? null : editing} items={q.data.items} people={people} onClose={() => setEditing(null)} />
+      )}
+    </Section>
+  );
+}
+
+function SidebarProfileModal({
+  profile,
+  items,
+  people,
+  onClose,
+}: {
+  profile: SidebarProfile | null;
+  items: SidebarItem[];
+  people: Member[];
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const [name, setName] = useState(profile?.name ?? "");
+  const [hidden, setHidden] = useState<Set<SidebarItemKey>>(new Set(profile?.hidden ?? []));
+  const [assigned, setAssigned] = useState<Set<string>>(new Set(profile?.member_ids ?? []));
+  const [isDefault, setIsDefault] = useState(profile?.is_default ?? false);
+  const save = useMutation({
+    mutationFn: () => {
+      const body = { name, hidden: [...hidden], member_ids: [...assigned], is_default: isDefault };
+      return profile ? api.patch(`/api/sidebar-profiles/${profile.id}`, body) : api.post("/api/sidebar-profiles", body);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sidebar-profiles"] });
+      qc.invalidateQueries({ queryKey: ["sidebar"] });
+      qc.invalidateQueries({ queryKey: ["members"] });
+      onClose();
+    },
+  });
+  const toggle = <T,>(set: Set<T>, v: T, on: boolean) => {
+    const next = new Set(set);
+    if (on) next.add(v);
+    else next.delete(v);
+    return next;
+  };
+  const groups: [SidebarItem["group"], string][] = [
+    ["main", "Pages"],
+    ["team", "Team"],
+    ["sections", "Lists"],
+  ];
+  return (
+    <Modal open onClose={onClose} title={profile ? `Edit ${profile.name}` : "New sidebar profile"}>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (name.trim()) save.mutate();
+        }}
+      >
+        <div className="space-y-5 p-4">
+          <label className="block text-[13px]">
+            <span className="mb-1 block font-medium">Name</span>
+            <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Sales" maxLength={60} autoFocus required />
+          </label>
+          <div>
+            <div className="mb-1.5 text-[13px] font-medium">Show in the sidebar</div>
+            <div className="grid gap-4 sm:grid-cols-3">
+              {groups.map(([g, title]) => (
+                <div key={g}>
+                  <div className="mb-1 text-[12px] text-ink-3">{title}</div>
+                  {items
+                    .filter((i) => i.group === g)
+                    .map((i) => (
+                      <label key={i.key} className="flex items-center gap-2 py-0.5 text-[13px]">
+                        <input type="checkbox" checked={!hidden.has(i.key)} onChange={(e) => setHidden(toggle(hidden, i.key, !e.target.checked))} />
+                        {i.label}
+                      </label>
+                    ))}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div className="mb-1.5 text-[13px] font-medium">People</div>
+            <div className="grid max-h-48 gap-1 overflow-y-auto sm:grid-cols-2">
+              {people.map((m) => {
+                const elsewhere = m.sidebar_profile_id && m.sidebar_profile_id !== profile?.id && !assigned.has(m.id);
+                return (
+                  <label key={m.id} className="flex items-center gap-2 py-0.5 text-[13px]">
+                    <input type="checkbox" checked={assigned.has(m.id)} onChange={(e) => setAssigned(toggle(assigned, m.id, e.target.checked))} />
+                    <Avatar member={m} size={18} />
+                    <span className="truncate">{m.name}</span>
+                    {elsewhere && <span className="text-[11px] text-ink-3">(has another profile)</span>}
+                  </label>
+                );
+              })}
+            </div>
+            <p className="mt-1 text-[12px] text-ink-3">Ticking someone who has another profile moves them to this one.</p>
+          </div>
+          <label className="flex items-start gap-2.5 text-[13px]">
+            <input type="checkbox" className="mt-0.5" checked={isDefault} onChange={(e) => setIsDefault(e.target.checked)} />
+            <span>
+              Use for everyone without a profile
+              <span className="block text-[12px] text-ink-3">Includes people who join later.</span>
+            </span>
+          </label>
+          {save.error && <p className="text-[12px] text-danger">{errorText(save.error)}</p>}
+        </div>
+        <ModalFooter>
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button type="submit" variant="primary" disabled={!name.trim() || save.isPending}>
+            {profile ? "Save profile" : "Create profile"}
+          </Button>
+        </ModalFooter>
+      </form>
+    </Modal>
   );
 }
