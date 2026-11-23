@@ -55,29 +55,40 @@ npm run deploy
 
 Google sign-in is optional. To turn it on, set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` as secrets and add `https://<your-domain>/auth/google/callback` as a redirect URI in Google Cloud. Without them, people sign in with email and password.
 
-**Updating later:** pull, then run `npm run db:migrate:remote && npm run deploy`. Migrations only add things, and Cloudflare D1 keeps 30 days of point-in-time restore.
+**Updating later:** once Workers Builds is connected (1b), push to `release` and every company updates itself. Migrations only add things, and Cloudflare D1 keeps 30 days of point-in-time restore.
 
 ### 1a. Running it for several companies
 
-Each deployment is one workspace for one company, on that company's own Cloudflare account. The code stays the same; only `wrangler.jsonc` differs.
+One repo serves every company. Each company has its own Cloudflare account, and each account's Workers Builds deploys straight from this repo. A company's settings (database ID, address, email domains) live in its Cloudflare dashboard as **build variables**, not in git. During the build, `scripts/configure.mjs` writes them into `wrangler.jsonc`.
 
-The simplest way to run several:
+Companies deploy from the `release` branch:
 
-1. Keep this repo generic. Don't commit any company's IDs or domains here.
-2. For each company, create a deploy repo (a fork, or a private copy) with one extra commit that fills in its `wrangler.jsonc`.
-3. Connect that deploy repo to the company's Cloudflare account with Workers Builds (below).
-4. To ship an update, merge this repo's `main` into the deploy repo and push. Conflicts only happen if `wrangler.jsonc` changed upstream.
+- Work on `main` as usual.
+- When you're ready to ship to every company, run `git push origin main:release`. Each company's Cloudflare builds and deploys, applying database migrations first.
+- To hold a company back, point its Workers Builds at a different branch.
 
-Secrets (`SESSION_SECRET`, `WEBHOOK_KEY_ENCRYPTION_KEY`, Google sign-in) are set per deployment with `wrangler secret put` and never live in any repo.
+Secrets (`SESSION_SECRET`, `WEBHOOK_KEY_ENCRYPTION_KEY`, Google sign-in) are set per company with `wrangler secret put` and never live in the repo.
 
-### 1b. Turn on automatic deploys (Cloudflare Workers Builds)
+### 1b. Turn on automatic deploys for a company (Cloudflare Workers Builds)
 
-Connect the repo once, and Cloudflare deploys every push to `main`. You don't need an API token.
+Do this once per company, in that company's Cloudflare account, after the first deploy from step 1:
 
-1. Open the Cloudflare dashboard: **Workers & Pages → agentic-pm → Settings → Builds → Connect**. Authorize GitHub for this repo.
-2. Set **Branch** to `main` and **Build command** to `npm run build`.
-3. Set **Deploy command** to `npx wrangler d1 migrations apply DB --remote && npx wrangler deploy`.
-4. If the first build fails on the migration step with a permission error, add **D1 → Edit** to the build token on the same page.
+1. Open **Workers & Pages → agentic-pm → Settings → Builds → Connect** and choose this GitHub repo. Cloudflare's GitHub app needs access to it.
+2. Set **Branch** to `release`.
+3. Set **Build command** to `npm run build`.
+4. Set **Deploy command** to `npm run deploy:ci`, which applies database migrations, then deploys.
+5. Under **Build variables and secrets**, add:
+
+| Variable | Example | Required |
+|---|---|---|
+| `APM_PUBLIC_URL` | `https://tasks.acme.com` | yes |
+| `APM_ALLOWED_EMAIL_DOMAINS` | `acme.com` (comma-separated for several) | yes |
+| `APM_D1_DATABASE_ID` | from `wrangler d1 create agentic-pm` | yes |
+| `APM_KV_NAMESPACE_ID` | from `wrangler kv namespace create OAUTH_KV` | yes |
+| `APM_WORKSPACE_NAME`, `APM_WORKSPACE_KEY` | `Acme`, `ACME` (used only when the workspace is first created) | no |
+| `APM_WORKER_NAME`, `APM_D1_DATABASE_NAME`, `APM_R2_BUCKET`, `APM_QUEUE` | only if you renamed the defaults | no |
+
+If a required variable is missing, the build fails with a message naming it, so a company never gets the placeholder settings. If the first build fails on the migration step with a permission error, add **D1 → Edit** to the build token on the same page.
 
 Build logs are under the Worker's **Deployments** tab.
 

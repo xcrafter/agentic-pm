@@ -1,6 +1,6 @@
 # Checks on every push and pull request: typecheck, build, and the end-to-end test against a
-# throwaway local copy. Deploys are done by Cloudflare Workers Builds (connected to this repo),
-# which applies D1 migrations and deploys on every push to main.
+# throwaway local copy. Deploys are done by each company's Cloudflare Workers Builds, which builds
+# the `release` branch with that company's build variables (scripts/configure.mjs).
 name: Checks
 
 on:
