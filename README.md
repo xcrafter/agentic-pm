@@ -15,108 +15,15 @@ Design notes: [`docs/superpowers/specs/2026-11-15-agentic-pm-design.md`](docs/su
 
 ## Onboarding guide
 
-Follow these steps in order. Steps 1–2 take about 15 minutes. Steps 3–7 take about 30 minutes, most of it writing good agent descriptions.
+Follow these steps in order. Steps 1–2 take about 25 minutes. Steps 3–7 take about 30 minutes, most of it writing good agent descriptions.
 
-### 1. Deploy to Cloudflare
+### 1. Put it online
 
-**Shortcut:** `npm run onboard` (step 1a) does this whole step for you. The manual steps below show what it does.
-
-You need a Cloudflare account and Node 20+. Everything runs in one Worker, with D1 (database), R2 (files), KV (sign-in tokens), Queues (wake-ups), Cron (health checks) and a Durable Object (live updates).
-
-```bash
-git clone git@github.com:xcrafter/agentic-pm.git && cd agentic-pm
-npm install
-npx wrangler login
-
-# Create the resources (once per account)
-npx wrangler d1 create agentic-pm             # copy the database_id
-npx wrangler kv namespace create OAUTH_KV     # copy the id
-npx wrangler r2 bucket create agentic-pm-files
-npx wrangler queues create agentic-pm-dispatch
-```
-
-Then edit `wrangler.jsonc`:
-
-| Field | Set it to |
-|---|---|
-| `account_id` | add it only if your Cloudflare login has several accounts: `"account_id": "<id>"` (see `npx wrangler whoami`) |
-| `d1_databases[0].database_id` | the D1 id from above |
-| `kv_namespaces[0].id` | the KV id from above |
-| `vars.PUBLIC_URL` | the address people will use, e.g. `https://agentic-pm.<your-subdomain>.workers.dev` or your own domain. You can deploy once to learn the workers.dev address, then set it and deploy again |
-| `vars.WORKSPACE_NAME`, `vars.WORKSPACE_KEY` | your team name and task-key prefix (`ACME` gives `ACME-42`) |
-| `vars.ALLOWED_EMAIL_DOMAINS` | your email domain(s), e.g. `acme.com`; you can change this later in the app |
-
-Set the two secrets (random values; never commit them), apply the database schema, and deploy:
-
-```bash
-openssl rand -base64 32 | npx wrangler secret put SESSION_SECRET
-openssl rand -base64 32 | npx wrangler secret put WEBHOOK_KEY_ENCRYPTION_KEY
-npm run db:migrate:remote
-npm run deploy
-```
-
-Google sign-in is optional. To turn it on, set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` as secrets and add `https://<your-domain>/auth/google/callback` as a redirect URI in Google Cloud. Without them, people sign in with email and password.
-
-**Updating later:** once Workers Builds is connected (1b), push to `release` and every company updates itself. Migrations only add things, and Cloudflare D1 keeps 30 days of point-in-time restore.
-
-### 1a. Add a company in one command
-
-Each company gets its own copy of the app on its own Cloudflare account, all deploying from this repo. To add one:
-
-```bash
-npx wrangler login     # as someone in the company's Cloudflare account
-npm run onboard -- --name "Acme" --domain acme.com --check   # look first: changes nothing
-npm run onboard -- --name "Acme" --domain acme.com           # then do it
-```
-
-The script:
-- creates the database, sign-in store, file bucket and queue (it reuses them if they exist, so it's safe to run again)
-- deploys the app once, with its database tables
-- generates the two secrets (it never shows them)
-- prints the build variables to paste in step 1b
-
-If your login reaches several Cloudflare accounts, it lists them, and you add `--account <id>`. Other options: `--key ACME` (task-key prefix) and `--url https://tasks.acme.com` (a custom address instead of workers.dev). If the account hasn't turned on R2 (file storage) yet, the script tells you; it's one click in the dashboard.
-
-### Releasing to every company
-
-One repo serves every company. Each company has its own Cloudflare account, and each account's Workers Builds deploys straight from this repo. A company's settings (database ID, address, email domains) live in its Cloudflare dashboard as **build variables**, not in git. During the build, `scripts/configure.mjs` writes them into `wrangler.jsonc`.
-
-Companies deploy from the `release` branch:
-
-- Work on `main` as usual.
-- When you're ready to ship to every company, run `git push origin main:release`. Each company's Cloudflare builds and deploys, applying database migrations first.
-- To hold a company back, point its Workers Builds at a different branch.
-
-Secrets (`SESSION_SECRET`, `WEBHOOK_KEY_ENCRYPTION_KEY`, Google sign-in) are set per company with `wrangler secret put` and never live in the repo.
-
-### 1b. Turn on automatic deploys for a company (Cloudflare Workers Builds)
-
-Do this once per company, in that company's Cloudflare account, after the first deploy from step 1:
-
-1. Open **Workers & Pages → agentic-pm → Settings → Builds → Connect** and choose this GitHub repo. Cloudflare's GitHub app needs access to it.
-2. Set **Branch** to `release`.
-3. Set **Build command** to `npm run build`.
-4. Set **Deploy command** to `npm run deploy:ci`, which applies database migrations, then deploys.
-5. Under **Build variables and secrets**, add:
-
-| Variable | Example | Required |
-|---|---|---|
-| `APM_PUBLIC_URL` | `https://tasks.acme.com` | yes |
-| `APM_ALLOWED_EMAIL_DOMAINS` | `acme.com` (comma-separated for several) | yes |
-| `APM_D1_DATABASE_ID` | from `wrangler d1 create agentic-pm` | yes |
-| `APM_KV_NAMESPACE_ID` | from `wrangler kv namespace create OAUTH_KV` | yes |
-| `APM_WORKSPACE_NAME`, `APM_WORKSPACE_KEY` | `Acme`, `ACME` (used only when the workspace is first created) | no |
-| `APM_WORKER_NAME`, `APM_D1_DATABASE_NAME`, `APM_R2_BUCKET`, `APM_QUEUE` | only if you renamed the defaults | no |
-
-If a required variable is missing, the build fails with a message naming it, so a company never gets the placeholder settings. If the first build fails on the migration step with a permission error, add **D1 → Edit** to the build token on the same page.
-
-Build logs are under the Worker's **Deployments** tab.
-
-GitHub Actions (`.github/workflows/checks.yml`) runs the checks on every push and pull request: typecheck, build, and the full end-to-end test against a throwaway local copy. Look at its result on the commit or PR. A failing check doesn't block Cloudflare's deploy, so fix it promptly or revert.
+Follow **[docs/SETUP.md](docs/SETUP.md)**. It's a plain-language, 20-minute guide: one setup command, then a few clicks in Cloudflare so new versions install themselves. It doesn't assume you're a developer.
 
 ### 2. Create the admin account and invite your team
 
-1. Open your `PUBLIC_URL`. The first visitor sees **Set up your workspace** and becomes the admin. Do this right after deploying.
+1. Open the app's address. The first visitor sees **Set up your workspace** and becomes the admin. Do this right after deploying.
 2. Go to **Workspace settings**:
    - **Website:** type your domain and save. The logo is picked up from the site automatically, or you can upload one.
    - **Allowed email domains:** only these addresses can be invited or sign in.

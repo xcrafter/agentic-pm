@@ -2,6 +2,8 @@
 /**
  * Set up Agentic PM for a new company on its own Cloudflare account, in one command.
  *
+ * Plain-language guide: docs/SETUP.md
+ *
  *   npx wrangler login                      # as someone in the company's Cloudflare account
  *   npm run onboard -- --name "Acme" --domain acme.com
  *
@@ -24,6 +26,7 @@ import { randomBytes } from "node:crypto";
 import { copyFileSync, renameSync } from "node:fs";
 
 const WORKER = "agentic-pm";
+const WIN = process.platform === "win32"; // npm/npx are .cmd files on Windows
 const NAMES = { d1: WORKER, kv: `${WORKER}-oauth`, r2: `${WORKER}-files`, queue: `${WORKER}-dispatch` };
 
 // ---------- arguments ----------
@@ -45,7 +48,7 @@ if (!domains.every((d) => /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(d))) die(`--domain 
 const key = (args.key && args.key !== true ? String(args.key) : String(args.name).replace(/[^A-Za-z]/g, "").slice(0, 4) || "TASK").toUpperCase();
 
 // ---------- Cloudflare API (with your wrangler login) ----------
-const wrangler = (argv, opts = {}) => execFileSync("npx", ["wrangler", ...argv], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...opts });
+const wrangler = (argv, opts = {}) => execFileSync("npx", ["wrangler", ...argv], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], shell: WIN, ...opts });
 let token;
 try {
   token = wrangler(["auth", "token"]).trim().split("\n").pop().trim();
@@ -198,7 +201,7 @@ else {
   copyFileSync("wrangler.jsonc", "wrangler.jsonc.onboard-backup");
   try {
     const run = (cmd, argv) => {
-      const r = spawnSync(cmd, argv, { stdio: "inherit", env: childEnv });
+      const r = spawnSync(cmd, argv, { stdio: "inherit", env: childEnv, shell: WIN });
       if (r.status !== 0) die(`${cmd} ${argv.join(" ")} failed (see above)`);
     };
     run("npm", ["run", "build"]);
@@ -208,7 +211,7 @@ else {
   } finally {
     renameSync("wrangler.jsonc.onboard-backup", "wrangler.jsonc");
     // Leave dist/ built with the template, so local tools don't point at this company's resources.
-    spawnSync("npm", ["run", "build"], { stdio: "ignore", env: { ...process.env, WORKERS_CI: "" } });
+    spawnSync("npm", ["run", "build"], { stdio: "ignore", env: { ...process.env, WORKERS_CI: "" }, shell: WIN });
   }
 }
 
