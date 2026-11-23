@@ -36,9 +36,9 @@ function normalizeWebsite(raw: string) {
   try {
     u = new URL(s);
   } catch {
-    throw badRequest("Enter a valid website, e.g. impulze.ai");
+    throw badRequest("Enter a valid website, e.g. example.com");
   }
-  if (!/^https?:$/.test(u.protocol) || !u.hostname.includes(".")) throw badRequest("Enter a valid website, e.g. impulze.ai");
+  if (!/^https?:$/.test(u.protocol) || !u.hostname.includes(".")) throw badRequest("Enter a valid website, e.g. example.com");
   return u.origin;
 }
 

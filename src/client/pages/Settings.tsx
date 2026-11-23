@@ -121,7 +121,7 @@ export function SettingsPage() {
                 </label>
                 <label className="block">
                   <span className="mb-1.5 block text-[13px] font-medium">Website</span>
-                  <input className={inputClass} value={website} onChange={(e) => setWebsite(e.target.value)} disabled={!isAdmin} placeholder="impulze.ai" inputMode="url" />
+                  <input className={inputClass} value={website} onChange={(e) => setWebsite(e.target.value)} disabled={!isAdmin} placeholder="example.com" inputMode="url" />
                 </label>
                 {errorText(saveGeneral.error) && <p className="text-[13px] text-[#c4312b]">{errorText(saveGeneral.error)}</p>}
                 {isAdmin && (
@@ -197,7 +197,7 @@ export function SettingsPage() {
                   {isAdmin && (
                     <input
                       className="h-7 min-w-[140px] flex-1 bg-transparent px-1 text-[13px] outline-none placeholder:text-ink-3"
-                      placeholder={domains.length ? "Add another domain" : "e.g. impulze.ai"}
+                      placeholder={domains.length ? "Add another domain" : "e.g. example.com"}
                       value={domainInput}
                       onChange={(e) => setDomainInput(e.target.value)}
                       onKeyDown={(e) => {

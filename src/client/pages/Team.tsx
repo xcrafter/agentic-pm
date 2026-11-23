@@ -272,7 +272,7 @@ function InviteModal({ onClose }: { onClose: () => void }) {
         >
           <div className="space-y-4 p-4">
             <Field label="Work email">
-              <input className={inputClass} type="email" placeholder="name@impulze.ai" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
+              <input className={inputClass} type="email" placeholder="name@company.com" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
             </Field>
             <Field label="Name" hint="Optional. They can change it when they join.">
               <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} />

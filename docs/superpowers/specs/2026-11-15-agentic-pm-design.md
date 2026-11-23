@@ -5,7 +5,7 @@ Status: Draft for review
 
 ## 1. Intent
 
-Impulze's work is done by a mix of people and AI agents (starting with xAI's Grok Bot). Today there is no single place that records what work exists, who (or what) is doing it, what was decided along the way, and what got done.
+The team's work is done by a mix of people and AI agents (starting with xAI's Grok Bot). Today there is no single place that records what work exists, who (or what) is doing it, what was decided along the way, and what got done.
 
 Agentic PM is a lightweight, Linear/Trello-style task tracker where **people and agents are equal members**. It is the **system of record** for jobs to be done and done by the team, and the **orchestrator** that hands work to agents and wakes them when a human responds.
 
@@ -45,8 +45,8 @@ The core idea: **every task is a conversation**. A task's thread holds updates, 
   - Outbound: Grok Bot can add a **custom MCP server** by public HTTPS URL plus sign-in (OAuth).
   - Therefore: our MCP server must be publicly reachable and implement OAuth 2.1 as MCP clients expect (dynamic client registration, PKCE).
 - One Grok Bot = one agent member. Each agent member has its own webhook URL + key.
-- Hosting on Cloudflare (Impulze has an account).
-- Single workspace for Impulze; humans sign in with Google (restricted to allowed domains, e.g. `impulze.ai`).
+- Hosting on Cloudflare.
+- One workspace per deployment; humans sign in with Google (restricted to allowed domains, e.g. `acme.com`).
 
 ## 6. Approaches considered
 
@@ -194,7 +194,7 @@ Look and feel: clean and dense like Linear; keyboard shortcut `C` to create task
 
 ## 12. Success criteria
 
-1. An Impulze admin adds a Grok Bot as an agent member, connects it to the MCP server, and the test ping starts a run.
+1. An admin adds a Grok Bot as an agent member, connects it to the MCP server, and the test ping starts a run.
 2. Assigning a task to the bot results in it reading the task, posting updates, and either completing it or asking a question, all visible live in the thread.
 3. Answering the question wakes the bot, which continues and completes the task.
 4. Any task's full history (who did what, human or agent, and when) can be read from the task page.

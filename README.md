@@ -22,7 +22,7 @@ Follow these steps in order. Steps 1–2 take about 15 minutes. Steps 3–7 take
 You need a Cloudflare account and Node 20+. Everything runs in one Worker, with D1 (database), R2 (files), KV (sign-in tokens), Queues (wake-ups), Cron (health checks) and a Durable Object (live updates).
 
 ```bash
-git clone git@github.com:impulze-ai/agentic-pm.git && cd agentic-pm
+git clone git@github.com:xcrafter/agentic-pm.git && cd agentic-pm
 npm install
 npx wrangler login
 
@@ -37,12 +37,12 @@ Then edit `wrangler.jsonc`:
 
 | Field | Set it to |
 |---|---|
-| `account_id` | your Cloudflare account ID (`npx wrangler whoami`) |
+| `account_id` | add it only if your Cloudflare login has several accounts: `"account_id": "<id>"` (see `npx wrangler whoami`) |
 | `d1_databases[0].database_id` | the D1 id from above |
 | `kv_namespaces[0].id` | the KV id from above |
 | `vars.PUBLIC_URL` | the address people will use, e.g. `https://agentic-pm.<your-subdomain>.workers.dev` or your own domain. You can deploy once to learn the workers.dev address, then set it and deploy again |
-| `vars.WORKSPACE_NAME`, `vars.WORKSPACE_KEY` | your team name and task-key prefix (`IMP` gives `IMP-42`) |
-| `vars.ALLOWED_EMAIL_DOMAINS` | your email domain(s), e.g. `impulze.ai`; you can change this later in the app |
+| `vars.WORKSPACE_NAME`, `vars.WORKSPACE_KEY` | your team name and task-key prefix (`ACME` gives `ACME-42`) |
+| `vars.ALLOWED_EMAIL_DOMAINS` | your email domain(s), e.g. `acme.com`; you can change this later in the app |
 
 Set the two secrets (random values; never commit them), apply the database schema, and deploy:
 
@@ -56,6 +56,19 @@ npm run deploy
 Google sign-in is optional. To turn it on, set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` as secrets and add `https://<your-domain>/auth/google/callback` as a redirect URI in Google Cloud. Without them, people sign in with email and password.
 
 **Updating later:** pull, then run `npm run db:migrate:remote && npm run deploy`. Migrations only add things, and Cloudflare D1 keeps 30 days of point-in-time restore.
+
+### 1a. Running it for several companies
+
+Each deployment is one workspace for one company, on that company's own Cloudflare account. The code stays the same; only `wrangler.jsonc` differs.
+
+The simplest way to run several:
+
+1. Keep this repo generic. Don't commit any company's IDs or domains here.
+2. For each company, create a deploy repo (a fork, or a private copy) with one extra commit that fills in its `wrangler.jsonc`.
+3. Connect that deploy repo to the company's Cloudflare account with Workers Builds (below).
+4. To ship an update, merge this repo's `main` into the deploy repo and push. Conflicts only happen if `wrangler.jsonc` changed upstream.
+
+Secrets (`SESSION_SECRET`, `WEBHOOK_KEY_ENCRYPTION_KEY`, Google sign-in) are set per deployment with `wrangler secret put` and never live in any repo.
 
 ### 1b. Turn on automatic deploys (Cloudflare Workers Builds)
 
@@ -86,7 +99,7 @@ An agent has no password. It gets in through an MCP connection that a signed-in 
 2. On the approval screen, choose **A new agent** and name it, e.g. "Grok PM". Make sure you approve the connection as the **same agent you'll pick as PM in step 4**, because work is recorded under the identity Grok connects as.
 3. In Grok, create a **routine** with a **Webhook** trigger and an instruction like:
 
-   > You work for the Impulze team through Agentic PM. When this webhook fires, follow the `instruction` in the request using the Agentic PM tools. If the request has `as_agent`, pass it on every tool call. Read the task with `get_task` first, post progress with `post_update`, ask with `ask_question` when you need a person, and finish with `complete_task` and a short summary. If you can't continue, call `end_run` with outcome `failed` or `blocked` and say why.
+   > You work for our team through Agentic PM. When this webhook fires, follow the `instruction` in the request using the Agentic PM tools. If the request has `as_agent`, pass it on every tool call. Read the task with `get_task` first, post progress with `post_update`, ask with `ask_question` when you need a person, and finish with `complete_task` and a short summary. If you can't continue, call `end_run` with outcome `failed` or `blocked` and say why.
 
 4. Copy the routine's **webhook URL** and **key**. You'll paste them in step 4.
 
