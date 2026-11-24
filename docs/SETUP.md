@@ -51,7 +51,7 @@ npm run onboard -- --name "Acme" --domain acme.com --check
 > **What `--domain` does:** it restricts sign-ups to that domain. Only people with an `@acme.com` email address can join: admins can't invite anyone else, and with Google sign-in, nobody from outside can create an account. For several domains, separate them with commas: `--domain acme.com,acme.co.uk`. An admin can change the list later in the app (**Settings → Allowed email domains**).
 
 This only looks around; it changes nothing. Read what it says:
-- If it lists several Cloudflare accounts, copy the `--account …` line for the right company and add it to the end of the command.
+- If it lists several Cloudflare accounts, copy the `--account …` line for the right company and add it to the end of the command. The account name works too, for example `--account "Acme Inc"`.
 - If it says **"Before running for real"**, do what it asks first (usually: turn on R2).
 
 **6. Run it for real.** Use the same command without `--check`:

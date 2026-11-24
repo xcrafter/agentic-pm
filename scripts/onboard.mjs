@@ -12,7 +12,7 @@
  *   --domain acme.com        restricts sign-ups to this email domain; comma-separate several (required)
  *   --key ACME               task-key prefix (default: from the name)
  *   --url https://…          address people will use (default: https://agentic-pm.<subdomain>.workers.dev)
- *   --account <id>           which Cloudflare account, if your login has several
+ *   --account <id or name>   which Cloudflare account, if your login has several
  *   --check                  look only: report what exists and what would be done, change nothing
  *
  * What it does (safe to run again; it reuses what already exists):
@@ -71,10 +71,14 @@ async function cf(method, path, body) {
 }
 
 const accounts = await cf("GET", "/accounts?per_page=50");
-let account = args.account && args.account !== true ? accounts.find((a) => a.id === args.account || a.name === args.account) : null;
-if (!account && accounts.length === 1) account = accounts[0];
+const pick = args.account && args.account !== true ? String(args.account) : null;
+let account = pick ? accounts.find((a) => a.id === pick || a.name === pick) : accounts.length === 1 ? accounts[0] : null;
 if (!account) {
-  console.error("\nYour login can reach several Cloudflare accounts. Pick one with --account:\n");
+  console.error(
+    pick
+      ? `\nNo Cloudflare account "${pick}" for this login. These are the ones it can reach:\n`
+      : "\nYour login can reach several Cloudflare accounts. Pick one with --account:\n",
+  );
   for (const a of accounts) console.error(`  --account ${a.id}   (${a.name})`);
   process.exit(1);
 }
