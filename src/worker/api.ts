@@ -44,6 +44,7 @@ import { policyRoutes } from "./policies";
 import { toolRoutes } from "./tools";
 import { apiKeyRoutes, memberFromApiKey } from "./apikeys";
 import { assignSidebarProfile, sidebarRoutes } from "./sidebar";
+import { composeEmail, emailRoutes, queueEmail } from "./email";
 import { type AppEnv, HttpError, badRequest, encryptSecret, forbidden, newId, notFound, nowIso, verifySignedValue } from "./util";
 
 type Vars = { me: MemberRow; ws: WorkspaceRow; actor: Actor; viaKey: boolean };
@@ -147,6 +148,7 @@ api.use("/api/*", async (c, next) => {
 
 api.route("/", apiKeyRoutes);
 api.route("/", sidebarRoutes);
+api.route("/", emailRoutes);
 api.route("/", workspaceRoutes);
 api.route("/", feedRoutes);
 api.route("/", ideaRoutes);
@@ -288,7 +290,16 @@ api.post("/api/invites", async (c) => {
   const body = await c.req.json<{ email: string; name?: string; role?: "admin" | "member" }>();
   const invite = await createInvite(c.env, me, { email: body.email, name: body.name, role: body.role === "admin" ? "admin" : "member" });
   await logActivity(c.env, c.get("ws").id, c.get("actor"), "member", invite.id, "invited", undefined, { email: body.email });
-  return c.json(invite, 201);
+  const ws = c.get("ws");
+  const to = String(body.email).trim().toLowerCase();
+  const mail = composeEmail(c.env, ws, {
+    lines: [`${me.name} invited you to join ${ws.name} on Agentic PM, where your team and its AI agents track work together.`, "The link works once and expires in 7 days."],
+    link: invite.url,
+    linkLabel: "Accept the invite",
+    footer: `You get this because ${me.name} invited ${to}. If you weren't expecting it, you can ignore it.`,
+  });
+  const emailed = await queueEmail(c.env, { workspaceId: ws.id, memberId: null, to, kind: "invite", subject: `${me.name} invited you to ${ws.name}`, ...mail });
+  return c.json({ ...invite, emailed }, 201);
 });
 
 api.delete("/api/invites/:id", async (c) => {
@@ -304,7 +315,15 @@ api.post("/api/members/:id/reset-link", async (c) => {
   if (target.workspace_id !== c.get("ws").id || target.kind !== "human" || !target.email) throw notFound("Person");
   const link = await createInvite(c.env, me, { email: target.email, memberId: target.id });
   await logActivity(c.env, c.get("ws").id, c.get("actor"), "member", target.id, "reset_link_created");
-  return c.json(link, 201);
+  const ws = c.get("ws");
+  const mail = composeEmail(c.env, ws, {
+    lines: [`${me.name} created a link for you to set a new password for ${ws.name} on Agentic PM.`, "The link works once and expires in 24 hours. Setting a new password signs you out everywhere else."],
+    link: link.url,
+    linkLabel: "Set a new password",
+    footer: "If you didn't ask for this, tell your admin. Your current password keeps working until the link is used.",
+  });
+  const emailed = await queueEmail(c.env, { workspaceId: ws.id, memberId: target.id, to: target.email, kind: "reset", subject: `Set a new password for ${ws.name}`, ...mail });
+  return c.json({ ...link, emailed }, 201);
 });
 
 api.post("/api/members/:id/test-ping", async (c) => {

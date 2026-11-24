@@ -235,6 +235,7 @@ Main endpoints:
 | Projects | `GET/POST /api/projects`, `PATCH /api/projects/:id`, `POST /api/projects/:id/archive`, `POST /api/projects/:id/restore` |
 | Ideas & customers | `GET/POST /api/ideas`, `GET/PATCH/DELETE /api/ideas/:id`, `POST /api/ideas/:id/convert`, `GET/POST /api/customers`, `GET/PATCH /api/customers/:id`, `GET /api/idea-requests`, `POST /api/feature-requests` |
 | Policies & tools | `GET/POST /api/policies`, `GET/PATCH /api/policies/:id`, `GET/POST /api/tools`, `PATCH /api/tools/:id` |
+| Email | `GET/PUT /api/email-prefs {off: [...]}` (your own choices), `GET /api/email-log`, `POST /api/email-test` (admins) |
 | Sidebar | `GET/PUT /api/sidebar` (your own show/hide), `GET/POST /api/sidebar-profiles`, `PATCH/DELETE /api/sidebar-profiles/:id` (admins), `PATCH /api/members/:id {sidebar_profile_id}` (admins) |
 | Everything else | `GET /api/members`, `GET /api/inbox`, `GET /api/views`, `GET/POST /api/posts` (feed), `GET /api/overview`, `GET /api/reports?days=7\|30\|90`, `GET/PATCH /api/workspace` (admins) |
 
@@ -249,6 +250,19 @@ Errors come back as `{ "error": "…" }` with a 4xx status.
 People's own changes sit on top of their profile. **Reset to profile** removes them. If an admin deletes a profile, its people go back to the default.
 
 Hiding only tidies the sidebar. Hidden pages still open from links and from search (⌘K), so a profile is not a permission.
+
+### 22. Email notifications
+
+When email is turned on for your company (see "Email notifications" in [docs/SETUP.md](docs/SETUP.md)), people get an email when:
+
+- a task is assigned to them
+- someone @mentions them
+- an agent asks them a question (or, if it isn't addressed to anyone, the person who created the task)
+- an agent they started fails or gets stuck
+
+Nobody is emailed about their own actions. Each person chooses which of these they get from their name at the bottom of the sidebar → **Email notifications**. Invite and password-reset links are emailed automatically too, and the admin still sees the link to send it another way.
+
+Admins see the sender address, a **Send me a test email** button and the last 50 emails, with any errors, in **Settings → Email**. When email is off, everything still shows up in the Inbox as before.
 
 ### Getting the most out of it
 

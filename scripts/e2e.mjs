@@ -1164,6 +1164,45 @@ try {
   assert.deepEqual(sb_list.profiles[0].member_ids, []);
   pass("profiles hide items for their people or as the default; personal changes layer on top; admins only");
 
+  step("Email notifications: who gets what, personal choices, admin log (no real sending locally)");
+  // Locally there's no EMAIL binding, so each email is logged as "skipped": enough to check who'd get what.
+  const em_log = async () => (await alice("GET", "/api/email-log")).items;
+  const em_wait = async (pred, what) => {
+    const until = Date.now() + 20_000;
+    while (Date.now() < until) {
+      const hit = (await em_log()).find(pred);
+      if (hit) return hit;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    assert.fail(`no email logged: ${what}`);
+  };
+  const em_prefs = await bob2("GET", "/api/email-prefs");
+  assert.equal(em_prefs.enabled, true, "EMAIL_FROM is set in .dev.vars for the test");
+  assert.deepEqual(em_prefs.off, []);
+  await assert.rejects(bob2("PUT", "/api/email-prefs", { off: ["nonsense"] }), /Unknown email kind/);
+  await assert.rejects(bob2("GET", "/api/email-log"), /403/);
+  await assert.rejects(bob2("POST", "/api/email-test"), /403/);
+  const em_task = await alice("POST", "/api/tasks", { title: "Email me", assignee_id: bobMember.id });
+  const em_assigned = await em_wait((e) => e.kind === "assigned" && e.to_email === "bob@example.com" && e.subject.includes(em_task.key), "assignment to Bob");
+  assert.equal(em_assigned.status, "skipped");
+  await alice("POST", "/api/tasks", { title: "Mine, no email", assignee_id: (await alice("GET", "/api/me")).member.id });
+  await bob2("PUT", "/api/email-prefs", { off: ["mentioned"] });
+  await alice("POST", `/api/tasks/${em_task.key}/entries`, { type: "comment", body: `quiet please @${bobMember.handle}` });
+  const em_inv = await alice("POST", "/api/invites", { email: "carol@example.com", name: "Carol" });
+  assert.equal(em_inv.emailed, true);
+  await em_wait((e) => e.kind === "invite" && e.to_email === "carol@example.com", "invite to Carol");
+  await new Promise((r) => setTimeout(r, 1500));
+  let em_all = await em_log();
+  assert.ok(!em_all.some((e) => e.kind === "mentioned"), "Bob turned mention emails off");
+  assert.ok(!em_all.some((e) => e.subject.includes("Mine, no email")), "no email for assigning yourself");
+  await bob2("PUT", "/api/email-prefs", { off: [] });
+  await alice("POST", `/api/tasks/${em_task.key}/entries`, { type: "comment", body: `now you hear me @${bobMember.handle}` });
+  await em_wait((e) => e.kind === "mentioned" && e.to_email === "bob@example.com", "mention of Bob");
+  const em_test = await alice("POST", "/api/email-test");
+  assert.equal(em_test.status, "skipped");
+  assert.match(em_test.error, /no EMAIL binding/);
+  pass("assignments, mentions and invites are emailed to the right person; personal opt-outs and self-actions respected; admins only for log and test");
+
   step("Unreachable agent → run fails and lands in Needs you");
   await alice("PATCH", `/api/members/${agent.id}`, { webhook_url: `http://localhost:${HOOK_PORT}/missing` });
   const t3 = await alice("POST", "/api/tasks", { title: "Will fail", assignee_id: agent.id });
@@ -1181,7 +1220,8 @@ try {
   assert.ok(failed, "run marked failed");
   const inbox2 = await alice("GET", "/api/inbox");
   assert.ok(inbox2.runs.some((r) => r.task_key === t3.key));
-  pass("failed run shows in Needs you");
+  await em_wait((e) => e.kind === "run_failed" && e.to_email === "alice@example.com" && e.subject.includes(t3.key), "failed run to Alice");
+  pass("failed run shows in Needs you, and its starter is emailed");
 
   console.log("\n✅ All end-to-end checks passed\n");
 } catch (err) {

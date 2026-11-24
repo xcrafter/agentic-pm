@@ -9,6 +9,7 @@ import { canWake } from "./agents";
 import { postTaskCompleted } from "./feed";
 import { ideasLiveForTask } from "./ideas";
 import { addDependency, dependenciesOf, onBlockerFinished, reactionsFor } from "./links";
+import { notifyMember, taskLabel, taskLink } from "./email";
 
 // ---------- Types ----------
 
@@ -34,6 +35,7 @@ export interface MemberRow {
   created_at: string;
   sidebar_profile_id?: string | null;
   sidebar_prefs?: string | null;
+  email_prefs?: string | null;
 }
 
 export interface WorkspaceRow {
@@ -422,6 +424,7 @@ export async function createTask(env: AppEnv, ws: WorkspaceRow, actor: Actor, in
   if (task.assignee_id) {
     const assignee = await getMember(env, task.assignee_id);
     await addSystemEntry(env, task, actor.member, "assigned", { to: assignee.id, to_name: assignee.name });
+    await emailAssigned(env, ws, actor, task, assignee);
     if (canWake(actor, assignee, ws)) {
       await onAgentTrigger(env, { task, agent: assignee, trigger: "assigned", triggeredBy: actor.member.id });
     }
@@ -558,6 +561,7 @@ export async function updateTask(
     }
     if (assigneeChange.to) {
       const agent = await getMember(env, assigneeChange.to as string);
+      await emailAssigned(env, ws, actor, next, agent);
       if (canWake(actor, agent, ws)) {
         await onAgentTrigger(env, { task: next, agent, trigger: "assigned", triggeredBy: actor.member.id });
       }
@@ -754,9 +758,74 @@ export async function postEntry(
       }
     }
   }
+  await emailAboutEntry(env, ws, actor, task, entry, data);
 
   await notify(env, ws.id, { type: "thread", task_id: task.id });
   return entry;
+}
+
+// ---------- Email notifications ----------
+
+async function emailAssigned(env: AppEnv, ws: WorkspaceRow, actor: Actor, task: TaskRow, assignee: MemberRow) {
+  await notifyMember(env, ws, assignee, "assigned", {
+    actorId: actor.member.id,
+    subject: `[${ws.key_prefix}-${task.number}] Assigned to you: ${task.title}`,
+    lines: [`${actor.member.name} assigned you ${taskLabel(ws, task)}.`],
+    quote: task.description,
+    link: taskLink(env, ws, task),
+    linkLabel: "Open the task",
+  });
+}
+
+/** An agent's question goes to whoever it's addressed to (else the task's creator); @mentions to each person named. */
+async function emailAboutEntry(env: AppEnv, ws: WorkspaceRow, actor: Actor, task: TaskRow, entry: EntryRow, data: Record<string, unknown>) {
+  const subjectFor = (what: string) => `[${ws.key_prefix}-${task.number}] ${what}: ${task.title}`;
+  const link = `${taskLink(env, ws, task)}#${entry.id}`;
+  let asked: string | null = null;
+  if (entry.type === "question") {
+    asked = (data.addressed_to as string | undefined) ?? task.created_by;
+    const target = await env.DB.prepare("SELECT * FROM members WHERE id = ?").bind(asked).first<MemberRow>();
+    await notifyMember(env, ws, target, "question", {
+      actorId: actor.member.id,
+      subject: subjectFor(`${actor.member.name} asked you`),
+      lines: [`${actor.member.name} is waiting for your answer on ${taskLabel(ws, task)}:`],
+      quote: entry.body,
+      link,
+      linkLabel: "Answer",
+    });
+  }
+  const handles = extractMentions(entry.body);
+  if (!handles.length) return;
+  const people = await env.DB.prepare(
+    `SELECT * FROM members WHERE workspace_id = ? AND kind = 'human' AND active = 1 AND handle IN (${handles.map(() => "?").join(",")})`,
+  )
+    .bind(ws.id, ...handles)
+    .all<MemberRow>();
+  for (const person of people.results) {
+    if (person.id === asked) continue; // already emailed about the question
+    await notifyMember(env, ws, person, "mentioned", {
+      actorId: actor.member.id,
+      subject: subjectFor(`${actor.member.name} mentioned you`),
+      lines: [`${actor.member.name} mentioned you on ${taskLabel(ws, task)}:`],
+      quote: entry.body,
+      link,
+      linkLabel: "Open the conversation",
+    });
+  }
+}
+
+/** An agent run failed: tell the person who started it (else the task's creator). */
+export async function emailRunFailed(env: AppEnv, task: TaskRow, agent: MemberRow, triggeredBy: string | null, error: string) {
+  const ws = await getWorkspace(env, task.workspace_id);
+  let to = triggeredBy ? await env.DB.prepare("SELECT * FROM members WHERE id = ?").bind(triggeredBy).first<MemberRow>() : null;
+  if (!to || to.kind !== "human") to = await env.DB.prepare("SELECT * FROM members WHERE id = ?").bind(task.created_by).first<MemberRow>();
+  await notifyMember(env, ws, to, "run_failed", {
+    subject: `[${ws.key_prefix}-${task.number}] ${agent.name} couldn't finish: ${task.title}`,
+    lines: [`${agent.name} stopped working on ${taskLabel(ws, task)}. It's in your Inbox until someone retries or dismisses it.`],
+    quote: error,
+    link: taskLink(env, ws, task),
+    linkLabel: "Open the task",
+  });
 }
 
 export async function editEntry(env: AppEnv, ws: WorkspaceRow, actor: Actor, entryId: string, body: string) {

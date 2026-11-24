@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bot, Globe, ImageUp, KeyRound, PanelLeft, Link2, Settings, ShieldCheck, Trash2, Wand2, Webhook, X, Zap } from "lucide-react";
+import { Bot, Globe, ImageUp, KeyRound, Mail, PanelLeft, Link2, Settings, ShieldCheck, Trash2, Wand2, Webhook, X, Zap } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
-import { type Member, type SidebarItem, type SidebarItemKey, type SidebarProfile, type WorkspaceInfo, api } from "../api";
+import { type EmailLog, type Member, type SidebarItem, type SidebarItemKey, type SidebarProfile, type WorkspaceInfo, api } from "../api";
 import { Avatar, Button, Menu, Modal, ModalFooter, Tag, TopBar, WorkspaceLogo, cx, inputClass, timeAgo, useMe, useMembers, wakeRoute } from "../components";
 
 function Section({ icon, title, description, children }: { icon: ReactNode; title: string; description: string; children: ReactNode }) {
@@ -176,6 +176,8 @@ export function SettingsPage() {
             <ApiKeys isAdmin={isAdmin} />
 
             {isAdmin && <SidebarProfiles />}
+
+            {isAdmin && <EmailSettings />}
 
             <Section
               icon={<ShieldCheck size={15} />}
@@ -708,5 +710,77 @@ function SidebarProfileModal({
         </ModalFooter>
       </form>
     </Modal>
+  );
+}
+
+function EmailSettings() {
+  const log = useQuery({ queryKey: ["email-log"], queryFn: () => api.get<EmailLog>("/api/email-log") });
+  const test = useMutation({
+    mutationFn: () => api.post<{ status: string; error: string | null; to: string }>("/api/email-test"),
+    onSettled: () => log.refetch(),
+  });
+  const d = log.data;
+  return (
+    <Section
+      icon={<Mail size={15} />}
+      title="Email"
+      description="Emails people when a task is assigned to them, they're @mentioned, an agent asks them a question, or an agent they started fails. Each person chooses which they get from their menu. Invites and password resets are emailed too."
+    >
+      <div className="max-w-xl space-y-3 text-[13px]">
+        {d && !d.enabled && (
+          <div className="rounded-lg border border-line bg-panel p-3">
+            <p className="font-medium">Email is off for this workspace.</p>
+            <p className="mt-1 text-ink-3">To turn it on, someone with access to the Cloudflare account:</p>
+            <ol className="mt-1 list-decimal space-y-0.5 pl-5 text-ink-3">
+              <li>Makes sure the account is on the Workers Paid plan.</li>
+              <li>Onboards the company's domain under Email Service → Email Sending (the domain's DNS must be on Cloudflare).</li>
+              <li>
+                Adds the build variable <code>APM_EMAIL_FROM</code>, for example <code>notifications@yourcompany.com</code>, and retries the latest
+                build.
+              </li>
+            </ol>
+            <p className="mt-1 text-ink-3">The setup guide (docs/SETUP.md) has the details.</p>
+          </div>
+        )}
+        {d?.enabled && (
+          <>
+            <p>
+              Sending from <span className="font-medium">{d.from}</span>.
+              {!d.binding && <span className="text-danger"> The email connection is missing from this deployment; retry the latest build.</span>}
+            </p>
+            <div className="flex items-center gap-3">
+              <Button disabled={test.isPending} onClick={() => test.mutate()}>
+                {test.isPending ? "Sending…" : "Send me a test email"}
+              </Button>
+              {test.data && (
+                <span className={test.data.status === "sent" ? "text-ink-3" : "text-danger"}>
+                  {test.data.status === "sent" ? `Sent to ${test.data.to}. Check your inbox (and spam).` : `Not sent: ${test.data.error}`}
+                </span>
+              )}
+              {test.error && <span className="text-danger">{errorText(test.error)}</span>}
+            </div>
+          </>
+        )}
+        {d && d.items.length > 0 && (
+          <div>
+            <div className="mb-1.5 text-[12px] font-medium text-ink-3">Recent emails</div>
+            <ul className="divide-y divide-line rounded-lg border border-line">
+              {d.items.map((e) => (
+                <li key={e.id} className="px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate">{e.subject}</span>
+                    <Tag tone={e.status === "sent" ? "green" : e.status === "failed" ? "red" : "gray"}>{e.status}</Tag>
+                  </div>
+                  <div className="text-[12px] text-ink-3">
+                    To {e.to_email}, {timeAgo(e.created_at)}
+                    {e.error ? `. ${e.error}` : ""}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </Section>
   );
 }

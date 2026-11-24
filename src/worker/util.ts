@@ -5,6 +5,10 @@ export type AppEnv = Env & {
   OAUTH_PROVIDER: OAuthHelpers;
   /** Seconds between webhook retries (×attempt). Default 30; tests set 1 in .dev.vars. */
   WEBHOOK_RETRY_SECONDS?: string;
+  /** Sender for email notifications (an address on a domain onboarded to Email Sending). Unset = no email. */
+  EMAIL_FROM?: string;
+  /** Cloudflare Email Service binding; added by scripts/configure.mjs when APM_EMAIL_FROM is set. */
+  EMAIL?: SendEmail;
 };
 
 export const newId = () => ulid();

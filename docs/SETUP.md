@@ -106,6 +106,24 @@ That's it. The rest of the main README covers connecting AI agents (Grok and oth
 
 ---
 
+## Optional: Email notifications
+
+Without this, the app sends no email: people see what needs them in their Inbox, and admins send invite links themselves. With it, people are emailed when a task is assigned to them, they're @mentioned, an agent asks them something or an agent they started fails, and invite links are emailed automatically. Each person can turn kinds of email off.
+
+You need two things first:
+
+- The Cloudflare account on the **Workers Paid** plan (about $5 a month; includes 3,000 emails a month). The free plan can't email people.
+- The company's domain (for example `acme.com`) **using Cloudflare for its DNS**. Emails come from an address on it, like `notifications@acme.com`.
+
+Then:
+
+1. In the Cloudflare dashboard, open **Email Service → Email Sending**, click **Onboard Domain**, and pick the company's domain. Cloudflare adds the DNS records itself; it usually takes a few minutes.
+2. Open **Workers & Pages → agentic-pm → Settings → Build → Build variables and secrets** and add `APM_EMAIL_FROM` with the sender address, for example `notifications@acme.com`. (Setting up a new company? Add `--email-from notifications@acme.com` to the onboard command and it prints this variable with the others.)
+3. Open **Deployments** and click **Retry build** on the latest one.
+4. In the app, go to **Settings → Email** and click **Send me a test email**. If it doesn't arrive, the list below the button shows the error.
+
+---
+
 ## Optional: "Sign in with Google"
 
 Without this, people sign in with an email and password, which works fine. To add a Google button:
@@ -148,6 +166,7 @@ Without this, people sign in with an email and password, which works fine. To ad
 | `APM_D1_DATABASE_ID` | yes | |
 | `APM_KV_NAMESPACE_ID` | yes | |
 | `APM_WORKSPACE_NAME`, `APM_WORKSPACE_KEY` | no | Used only when the workspace is first created. |
+| `APM_EMAIL_FROM` | no | Turns on email notifications, sent from this address. Its domain must be onboarded to Email Sending (see "Email notifications"). |
 | `APM_WORKER_NAME`, `APM_D1_DATABASE_NAME`, `APM_R2_BUCKET`, `APM_QUEUE` | no | Only if the defaults were renamed. |
 
 **Runtime secrets** (set by `npm run onboard`, or by hand with `wrangler secret put`): `SESSION_SECRET`, `WEBHOOK_KEY_ENCRYPTION_KEY`, and optionally `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. They never live in the repository.

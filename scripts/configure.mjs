@@ -11,6 +11,8 @@
  *     APM_KV_NAMESPACE_ID       from `wrangler kv namespace create OAUTH_KV`
  *   Optional:
  *     APM_WORKSPACE_NAME, APM_WORKSPACE_KEY   only used when the workspace is first created
+ *     APM_EMAIL_FROM            notifications@acme.com: turns on email notifications (the domain must be
+ *                               onboarded to Cloudflare Email Sending, which needs the Workers Paid plan)
  *     APM_WORKER_NAME, APM_D1_DATABASE_NAME, APM_R2_BUCKET, APM_QUEUE   if you changed the defaults
  *
  * With none of these set (local development), the file is left untouched. On Workers Builds
@@ -21,7 +23,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 const env = process.env;
 const v = (k) => (env[k] ?? "").trim();
 const REQUIRED = ["APM_PUBLIC_URL", "APM_ALLOWED_EMAIL_DOMAINS", "APM_D1_DATABASE_ID", "APM_KV_NAMESPACE_ID"];
-const ALL = [...REQUIRED, "APM_WORKSPACE_NAME", "APM_WORKSPACE_KEY", "APM_WORKER_NAME", "APM_D1_DATABASE_NAME", "APM_R2_BUCKET", "APM_QUEUE"];
+const ALL = [...REQUIRED, "APM_WORKSPACE_NAME", "APM_WORKSPACE_KEY", "APM_EMAIL_FROM", "APM_WORKER_NAME", "APM_D1_DATABASE_NAME", "APM_R2_BUCKET", "APM_QUEUE"];
 
 const onCi = env.WORKERS_CI === "1";
 const given = ALL.filter((k) => v(k));
@@ -38,6 +40,11 @@ if (!/^https?:\/\/[^/]+/.test(v("APM_PUBLIC_URL"))) {
   process.exit(1);
 }
 
+if (v("APM_EMAIL_FROM") && !/^[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+$/.test(v("APM_EMAIL_FROM"))) {
+  console.error("configure: APM_EMAIL_FROM must be a plain address like notifications@acme.com");
+  process.exit(1);
+}
+
 const path = new URL("../wrangler.jsonc", import.meta.url);
 // wrangler.jsonc may hold // comments; strip them (outside strings) before parsing.
 const raw = readFileSync(path, "utf8").replace(/("(?:\\.|[^"\\])*")|\/\/[^\n]*|\/\*[\s\S]*?\*\//g, (m, str) => str ?? "");
@@ -47,6 +54,10 @@ cfg.vars = { ...cfg.vars, PUBLIC_URL: v("APM_PUBLIC_URL").replace(/\/$/, ""), AL
 if (v("APM_WORKSPACE_NAME")) cfg.vars.WORKSPACE_NAME = v("APM_WORKSPACE_NAME");
 if (v("APM_WORKSPACE_KEY")) cfg.vars.WORKSPACE_KEY = v("APM_WORKSPACE_KEY").toUpperCase();
 if (v("APM_WORKER_NAME")) cfg.name = v("APM_WORKER_NAME");
+if (v("APM_EMAIL_FROM")) {
+  cfg.vars.EMAIL_FROM = v("APM_EMAIL_FROM").toLowerCase();
+  cfg.send_email = [{ name: "EMAIL" }];
+}
 
 const db = cfg.d1_databases.find((d) => d.binding === "DB");
 db.database_id = v("APM_D1_DATABASE_ID");
@@ -59,4 +70,6 @@ if (v("APM_QUEUE")) {
 }
 
 writeFileSync(path, JSON.stringify(cfg, null, 2) + "\n");
-console.log(`configure: ${cfg.name} → ${cfg.vars.PUBLIC_URL} (domains: ${cfg.vars.ALLOWED_EMAIL_DOMAINS})`);
+console.log(
+  `configure: ${cfg.name} → ${cfg.vars.PUBLIC_URL} (domains: ${cfg.vars.ALLOWED_EMAIL_DOMAINS}; email: ${cfg.vars.EMAIL_FROM ?? "off"})`,
+);

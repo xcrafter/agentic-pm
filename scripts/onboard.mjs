@@ -12,6 +12,7 @@
  *   --domain acme.com        restricts sign-ups to this email domain; comma-separate several (required)
  *   --key ACME               task-key prefix (default: from the name)
  *   --url https://…          address people will use (default: https://agentic-pm.<subdomain>.workers.dev)
+ *   --email-from notifications@acme.com   optional: turns on email notifications (see docs/SETUP.md)
  *   --account <id or name>   which Cloudflare account, if your login has several
  *   --check                  look only: report what exists and what would be done, change nothing
  *
@@ -45,6 +46,8 @@ if (!args.name || args.name === true) die('Pass --name "Company name"');
 if (!args.domain || args.domain === true) die("Pass --domain company.com: sign-ups are restricted to email addresses on this domain");
 const domains = String(args.domain).split(/[\s,]+/).map((d) => d.trim().toLowerCase().replace(/^@/, "")).filter(Boolean);
 if (!domains.every((d) => /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(d))) die(`--domain doesn't look like a domain: ${args.domain}`);
+const emailFrom = args["email-from"] && args["email-from"] !== true ? String(args["email-from"]).trim().toLowerCase() : null;
+if (emailFrom && !/^[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+$/.test(emailFrom)) die(`--email-from must be an address like notifications@acme.com (got ${emailFrom})`);
 const key = (args.key && args.key !== true ? String(args.key) : String(args.name).replace(/[^A-Za-z]/g, "").slice(0, 4) || "TASK").toUpperCase();
 
 // ---------- Cloudflare API (with your wrangler login) ----------
@@ -193,11 +196,15 @@ const buildVars = {
   APM_WORKSPACE_KEY: key,
   ...(r2Name !== NAMES.r2 && { APM_R2_BUCKET: r2Name }),
   ...(queueName !== NAMES.queue && { APM_QUEUE: queueName }),
+  ...(emailFrom && { APM_EMAIL_FROM: emailFrom }),
 };
 
 // ---------- 2. first deploy ----------
 step("First deploy");
-const childEnv = { ...process.env, ...buildVars, CLOUDFLARE_ACCOUNT_ID: account.id, WORKERS_CI: "" };
+// Email is left out of the first deploy so a domain not yet set up for Email Sending can't break it;
+// the repo connection below turns it on.
+const { APM_EMAIL_FROM: _email, ...firstDeployVars } = buildVars;
+const childEnv = { ...process.env, ...firstDeployVars, CLOUDFLARE_ACCOUNT_ID: account.id, WORKERS_CI: "" };
 if (exists) note("✓ The app is already deployed here; skipping. Updates arrive through the repo connection below.");
 else if (check) note(`• would build, create the database tables, and deploy to ${url}`);
 else {
@@ -235,6 +242,13 @@ for (const [name, gen] of Object.entries(wanted)) {
   }
 }
 note("Google sign-in is optional: set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET later if you want it.");
+if (emailFrom) {
+  const emailDomain = emailFrom.split("@")[1];
+  note(`Email from ${emailFrom}: needs the Workers Paid plan, and ${emailDomain} onboarded under Email Service → Email Sending.`);
+  note("Then send yourself a test from the app: Settings → Email.");
+} else {
+  note("Email notifications are optional: see \"Email notifications\" in docs/SETUP.md.");
+}
 
 // ---------- 4. connect the repo ----------
 step("Last step: connect the repo so releases deploy themselves (about 2 minutes)");

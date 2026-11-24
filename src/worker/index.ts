@@ -8,6 +8,9 @@ import { handleAuthorize } from "./authorize";
 import { mcpHandler } from "./mcp";
 import { type DispatchMessage, handleDispatch, sweepStaleRuns } from "./orchestrator";
 import type { AppEnv } from "./util";
+import { type EmailQueueMessage, handleEmailMessage } from "./email";
+
+type QueueMessage = DispatchMessage | EmailQueueMessage;
 
 export { Realtime } from "./realtime";
 
@@ -46,10 +49,11 @@ export default {
   fetch(request: Request, env: AppEnv, ctx: ExecutionContext) {
     return getProvider(env).fetch(request, env, ctx);
   },
-  async queue(batch: MessageBatch<DispatchMessage>, env: AppEnv) {
+  async queue(batch: MessageBatch<QueueMessage>, env: AppEnv) {
     for (const msg of batch.messages) {
       try {
-        await handleDispatch(env, msg);
+        if ("email" in msg.body) await handleEmailMessage(env, msg as Message<EmailQueueMessage>);
+        else await handleDispatch(env, msg as Message<DispatchMessage>);
       } catch (err) {
         console.error("dispatch failed", err);
         msg.retry({ delaySeconds: 60 });
@@ -60,4 +64,4 @@ export default {
     const n = await sweepStaleRuns(env);
     if (n) console.log(`marked ${n} runs stale`);
   },
-} satisfies ExportedHandler<AppEnv, DispatchMessage>;
+} satisfies ExportedHandler<AppEnv, QueueMessage>;

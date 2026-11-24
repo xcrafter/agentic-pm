@@ -247,7 +247,7 @@ function InviteModal({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState("");
   const [role, setRole] = useState<"member" | "admin">("member");
   const create = useMutation({
-    mutationFn: () => api.post<{ url: string }>("/api/invites", { email, name, role }),
+    mutationFn: () => api.post<{ url: string; emailed?: boolean }>("/api/invites", { email, name, role }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["invites"] }),
   });
   return (
@@ -255,7 +255,14 @@ function InviteModal({ onClose }: { onClose: () => void }) {
       {create.data ? (
         <>
           <div className="p-4">
-            <CopyField value={create.data.url} hint={`Send this link to ${email}. They choose their own password. It works once and expires in 7 days.`} />
+            <CopyField
+              value={create.data.url}
+              hint={
+                create.data.emailed
+                  ? `We've emailed this link to ${email}. You can also send it yourself. They choose their own password. It works once and expires in 7 days.`
+                  : `Send this link to ${email}. They choose their own password. It works once and expires in 7 days.`
+              }
+            />
           </div>
           <ModalFooter>
             <Button variant="primary" onClick={onClose}>
@@ -556,13 +563,14 @@ function RunsTable({ runs }: { runs: MemberRecord["runs"] }) {
 function PersonAdmin({ member, bare }: { member: Member; bare?: boolean }) {
   const qc = useQueryClient();
   const [resetLink, setResetLink] = useState<string | null>(null);
+  const [resetEmailed, setResetEmailed] = useState(false);
   const update = useMutation({
     mutationFn: (b: Record<string, unknown>) => api.patch(`/api/members/${member.id}`, b),
     onSuccess: () => qc.invalidateQueries(),
   });
   const reset = useMutation({
-    mutationFn: () => api.post<{ url: string }>(`/api/members/${member.id}/reset-link`),
-    onSuccess: (r) => setResetLink(r.url),
+    mutationFn: () => api.post<{ url: string; emailed?: boolean }>(`/api/members/${member.id}/reset-link`),
+    onSuccess: (r) => (setResetLink(r.url), setResetEmailed(!!r.emailed)),
   });
   return (
     <div className={cx(!bare && "border-t border-line px-4 py-4")}>
@@ -583,7 +591,10 @@ function PersonAdmin({ member, bare }: { member: Member; bare?: boolean }) {
       <SidebarProfilePicker member={member} />
       {resetLink && (
         <div className="mt-3">
-          <CopyField value={resetLink} hint={`Send this to ${member.name}. It works once, expires in 24 hours, and signs them out elsewhere.`} />
+          <CopyField
+            value={resetLink}
+            hint={`${resetEmailed ? `We've emailed this to ${member.name}; you can also send it yourself.` : `Send this to ${member.name}.`} It works once, expires in 24 hours, and signs them out elsewhere.`}
+          />
         </div>
       )}
     </div>

@@ -3,7 +3,7 @@
  * tracks agent runs, and flags runs that fail or go quiet.
  */
 import type { MemberRow, TaskRow } from "./domain";
-import { addSystemEntry, getMember, getWorkspace, notify, taskKey } from "./domain";
+import { addSystemEntry, emailRunFailed, getMember, getWorkspace, notify, taskKey } from "./domain";
 import { policiesFor } from "./policies";
 import { type AppEnv, decryptSecret, newId, nowIso } from "./util";
 
@@ -252,6 +252,7 @@ export async function handleDispatch(env: AppEnv, msg: Message<DispatchMessage>)
       .bind(attempts, error, run.id)
       .run();
     await addSystemEntry(env, task, agent, "run_failed", { run_id: run.id, agent_name: agent.name, error });
+    await emailRunFailed(env, task, agent, run.triggered_by, error);
     await notify(env, ws.id, { type: "thread", task_id: task.id });
     msg.ack();
   } else {
@@ -342,6 +343,7 @@ export async function failRunsFor(env: AppEnv, taskId: string, agentId: string, 
   }
   if (task) {
     await addSystemEntry(env, task, agent, "run_failed", { run_id: runId, agent_name: agent.name, error, reported_by_agent: true });
+    await emailRunFailed(env, task, agent, runs.results[0]?.triggered_by ?? null, error);
     await notify(env, task.workspace_id, { type: "task", task_id: taskId });
   }
 }
@@ -362,11 +364,9 @@ export async function sweepStaleRuns(env: AppEnv) {
     const task = await env.DB.prepare("SELECT * FROM tasks WHERE id = ?").bind(run.task_id).first<TaskRow>();
     const agent = await getMember(env, run.agent_id);
     if (task) {
-      await addSystemEntry(env, task, agent, "run_stale", {
-        run_id: run.id,
-        agent_name: agent.name,
-        reason: run.last_activity_at ? "no activity for 60 minutes" : "agent never started after being woken",
-      });
+      const reason = run.last_activity_at ? "no activity for 60 minutes" : "agent never started after being woken";
+      await addSystemEntry(env, task, agent, "run_stale", { run_id: run.id, agent_name: agent.name, reason });
+      await emailRunFailed(env, task, agent, run.triggered_by, `Stuck: ${reason}.`);
       await notify(env, task.workspace_id, { type: "thread", task_id: task.id });
     }
   }

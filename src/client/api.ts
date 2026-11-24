@@ -395,3 +395,16 @@ export interface ToolEntry {
   created_at: string;
   updated_at: string;
 }
+
+export interface EmailPrefs {
+  enabled: boolean;
+  kinds: { key: string; label: string }[];
+  off: string[];
+  email: string | null;
+}
+export interface EmailLog {
+  enabled: boolean;
+  from: string | null;
+  binding: boolean;
+  items: { id: string; to_email: string; kind: string; subject: string; status: "sent" | "failed" | "skipped"; error: string | null; created_at: string }[];
+}

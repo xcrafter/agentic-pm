@@ -20,10 +20,11 @@ import {
   Building,
   MoreHorizontal,
   PanelLeft,
+  Mail,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router";
-import { type Inbox, type SidebarInfo, type SidebarItem, type SidebarItemKey, type Task, api } from "../api";
+import { type EmailPrefs, type Inbox, type SidebarInfo, type SidebarItem, type SidebarItemKey, type Task, api } from "../api";
 import {
   Avatar,
   Button,
@@ -195,6 +196,7 @@ function Sidebar({ shell }: { shell: ShellContext }) {
   const nav = useNavigate();
   const [userMenu, setUserMenu] = useState(false);
   const [customizing, setCustomizing] = useState(false);
+  const [emailPrefs, setEmailPrefs] = useState(false);
   const show = useShowItem();
 
   return (
@@ -364,6 +366,12 @@ function Sidebar({ shell }: { shell: ShellContext }) {
               <PanelLeft size={14} className="text-ink-3" /> Customize sidebar
             </button>
             <button
+              onClick={() => (setUserMenu(false), setEmailPrefs(true))}
+              className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-[13px] hover:bg-hover"
+            >
+              <Mail size={14} className="text-ink-3" /> Email notifications
+            </button>
+            <button
               onClick={async () => {
                 await api.post("/auth/logout");
                 qc.invalidateQueries();
@@ -376,6 +384,7 @@ function Sidebar({ shell }: { shell: ShellContext }) {
         )}
       </div>
       {customizing && <CustomizeSidebar onClose={() => setCustomizing(false)} />}
+      {emailPrefs && <EmailNotifications onClose={() => setEmailPrefs(false)} />}
     </aside>
   );
 }
@@ -464,6 +473,63 @@ function CustomizeSidebar({ onClose }: { onClose: () => void }) {
           Cancel
         </Button>
         <Button variant="primary" disabled={!hidden || save.isPending} onClick={submit}>
+          Save
+        </Button>
+      </ModalFooter>
+    </Modal>
+  );
+}
+
+/** Which emails I get. Shows how to turn email on when the workspace hasn't. */
+function EmailNotifications({ onClose }: { onClose: () => void }) {
+  const qc = useQueryClient();
+  const prefs = useQuery({ queryKey: ["email-prefs"], queryFn: () => api.get<EmailPrefs>("/api/email-prefs") });
+  const [off, setOff] = useState<Set<string> | null>(null);
+  useEffect(() => {
+    if (prefs.data && !off) setOff(new Set(prefs.data.off));
+  }, [prefs.data, off]);
+  const save = useMutation({
+    mutationFn: () => api.put<EmailPrefs>("/api/email-prefs", { off: [...(off ?? [])] }),
+    onSuccess: (d) => (qc.setQueryData(["email-prefs"], d), onClose()),
+  });
+  const d = prefs.data;
+  return (
+    <Modal open onClose={onClose} title="Email notifications">
+      <div className="space-y-3 p-4 text-[13px]">
+        {d && !d.enabled && (
+          <p className="text-ink-3">
+            This workspace doesn't send email yet, so everything shows up in your Inbox instead. An admin can turn email on; Settings → Email
+            explains how. You can still choose below what you'll get once it's on.
+          </p>
+        )}
+        {d?.enabled && <p className="text-ink-3">Emails go to {d.email}. Everything also shows up in your Inbox.</p>}
+        {d && off && (
+          <div className="space-y-1.5">
+            {d.kinds.map((k) => (
+              <label key={k.key} className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={!off.has(k.key)}
+                  onChange={(e) => {
+                    const next = new Set(off);
+                    if (e.target.checked) next.delete(k.key);
+                    else next.add(k.key);
+                    setOff(next);
+                  }}
+                />
+                {k.label}
+              </label>
+            ))}
+          </div>
+        )}
+        <p className="text-[12px] text-ink-3">Invites and password-reset links are always emailed.</p>
+        {save.error && <p className="text-[12px] text-danger">{save.error.message}</p>}
+      </div>
+      <ModalFooter>
+        <Button variant="ghost" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button variant="primary" disabled={!off || save.isPending} onClick={() => save.mutate()}>
           Save
         </Button>
       </ModalFooter>
