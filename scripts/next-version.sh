@@ -3,7 +3,8 @@
 #   version=v1.2.4
 #   previous=v1.2.3
 # Bumps from the latest vX.Y.Z tag reachable from HEAD, looking at the commit messages since then:
-#   "#major" or "BREAKING CHANGE" → major, "#minor" → minor, anything else → patch.
+#   a line ending in "#major" → major (v1.4.0 → v2.0.0); anything else → minor (v1.4.0 → v1.5.0).
+# The keyword only counts at the end of a line, so mentioning it mid-sentence doesn't bump.
 # Prints nothing if HEAD is already tagged (a re-run), so no version is made twice.
 set -euo pipefail
 
@@ -21,12 +22,10 @@ else
   major=0 minor=0 patch=0
 fi
 
-if grep -qiE '#major|BREAKING CHANGE' <<< "$messages"; then
+if grep -qiE '(^|[[:space:]])#major[[:space:]]*$' <<< "$messages"; then
   major=$((major + 1)); minor=0; patch=0
-elif grep -qiE '#minor' <<< "$messages"; then
-  minor=$((minor + 1)); patch=0
 else
-  patch=$((patch + 1))
+  minor=$((minor + 1)); patch=0
 fi
 
 echo "version=v$major.$minor.$patch"

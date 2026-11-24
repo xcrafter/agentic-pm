@@ -3,8 +3,9 @@
 # the `release` branch with that company's build variables (scripts/configure.mjs).
 #
 # After the checks pass on a push to main, the "version" job tags the next version (v1.2.3) and
-# publishes a GitHub release listing the commits since the last one. Patch by default; put #minor
-# or #major in a commit message (or the PR title, for squash merges) to bump those instead.
+# publishes a GitHub release listing the commits since the last one. Each one is a minor version
+# (v1.4.0 → v1.5.0); end a commit message line (or a squash-merged PR title) with #major for a
+# major version (v2.0.0).
 # Tagging doesn't deploy anything: shipping is still `git push origin main:release`.
 name: Checks
 
