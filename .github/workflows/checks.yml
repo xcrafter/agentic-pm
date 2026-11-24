@@ -1,6 +1,11 @@
 # Checks on every push and pull request: typecheck, build, and the end-to-end test against a
 # throwaway local copy. Deploys are done by each company's Cloudflare Workers Builds, which builds
 # the `release` branch with that company's build variables (scripts/configure.mjs).
+#
+# After the checks pass on a push to main, the "version" job tags the next version (v1.2.3) and
+# publishes a GitHub release listing the commits since the last one. Patch by default; put #minor
+# or #major in a commit message (or the PR title, for squash merges) to bump those instead.
+# Tagging doesn't deploy anything: shipping is still `git push origin main:release`.
 name: Checks
 
 on:
@@ -59,3 +64,35 @@ jobs:
       - name: Server log
         if: failure()
         run: tail -n 200 vite.log
+
+  version:
+    name: Tag the next version
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Work out the next version
+        id: next
+        run: bash scripts/next-version.sh >> "$GITHUB_OUTPUT"
+
+      - name: Tag and publish the release
+        if: steps.next.outputs.version != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.next.outputs.version }}
+          PREVIOUS: ${{ steps.next.outputs.previous }}
+        run: |
+          {
+            echo "## Changes"
+            if [ -n "$PREVIOUS" ]; then git log --no-merges --format='- %s (%h)' "$PREVIOUS..HEAD"
+            else git log --no-merges --format='- %s (%h)' HEAD; fi
+            echo
+            echo "Not deployed yet. To ship it: \`git push origin ${GITHUB_SHA::7}:release\`"
+          } > notes.md
+          gh release create "$VERSION" --target "$GITHUB_SHA" --title "$VERSION" --notes-file notes.md

@@ -133,6 +133,8 @@ Without this, people sign in with an email and password, which works fine. To ad
 
 **One repository serves every company.** Each company's Cloudflare account builds the `release` branch with its own **build variables**. During the build, `scripts/configure.mjs` writes them into `wrangler.jsonc`; the repository itself only contains placeholders. A build on Cloudflare fails with a clear message if a required variable is missing, so no company is ever deployed with the placeholders.
 
+**Versions:** every push to `main` that passes the checks gets the next version tag and a GitHub release listing its commits (`scripts/next-version.sh`). It bumps the patch number by default; write `#minor` or `#major` in a commit message (or a squash-merged PR title) to bump those instead. A version tag doesn't deploy anything.
+
 **Releasing:** work on `main`, then run `git push origin main:release`. Every connected company builds, applies database migrations (`npm run deploy:ci`), and deploys. To hold one company back, point its Build **Branch** at a different branch. Migrations only add things, and D1 keeps 30 days of point-in-time restore.
 
 **Build variables:**
