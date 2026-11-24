@@ -9,7 +9,7 @@
  *
  * Options:
  *   --name "Acme"            workspace name (required)
- *   --domain acme.com        email domain(s) allowed to sign in, comma-separated (required)
+ *   --domain acme.com        restricts sign-ups to this email domain; comma-separate several (required)
  *   --key ACME               task-key prefix (default: from the name)
  *   --url https://…          address people will use (default: https://agentic-pm.<subdomain>.workers.dev)
  *   --account <id>           which Cloudflare account, if your login has several
@@ -42,7 +42,7 @@ for (let i = 2; i < process.argv.length; i++) {
 const check = !!args.check;
 const die = (msg) => (console.error(`\n✖ ${msg}\n`), process.exit(1));
 if (!args.name || args.name === true) die('Pass --name "Company name"');
-if (!args.domain || args.domain === true) die("Pass --domain company.com (the email domain people sign in with)");
+if (!args.domain || args.domain === true) die("Pass --domain company.com: sign-ups are restricted to email addresses on this domain");
 const domains = String(args.domain).split(/[\s,]+/).map((d) => d.trim().toLowerCase().replace(/^@/, "")).filter(Boolean);
 if (!domains.every((d) => /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(d))) die(`--domain doesn't look like a domain: ${args.domain}`);
 const key = (args.key && args.key !== true ? String(args.key) : String(args.name).replace(/[^A-Za-z]/g, "").slice(0, 4) || "TASK").toUpperCase();

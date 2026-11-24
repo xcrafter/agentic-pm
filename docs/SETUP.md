@@ -42,11 +42,13 @@ npm install
 npx wrangler login
 ```
 
-**5. Do a dry run first.** Replace `Acme` with the company's name and `acme.com` with the domain of its email addresses:
+**5. Do a dry run first.** Replace `Acme` with the company's name, and `acme.com` with the company's email domain (the part after the @ in its email addresses):
 
 ```
 npm run onboard -- --name "Acme" --domain acme.com --check
 ```
+
+> **What `--domain` does:** it restricts sign-ups to that domain. Only people with an `@acme.com` email address can join: admins can't invite anyone else, and with Google sign-in, nobody from outside can create an account. For several domains, separate them with commas: `--domain acme.com,acme.co.uk`. An admin can change the list later in the app (**Settings → Allowed email domains**).
 
 This only looks around; it changes nothing. Read what it says:
 - If it lists several Cloudflare accounts, copy the `--account …` line for the right company and add it to the end of the command.
@@ -142,7 +144,7 @@ Without this, people sign in with an email and password, which works fine. To ad
 | Variable | Required | Notes |
 |---|---|---|
 | `APM_PUBLIC_URL` | yes | The address people use. |
-| `APM_ALLOWED_EMAIL_DOMAINS` | yes | Comma-separated. Admins can change this later in the app, and the app's setting wins. |
+| `APM_ALLOWED_EMAIL_DOMAINS` | yes | Restricts sign-ups to these email domains (comma-separated): invites and Google sign-in accept only these addresses. Admins can change it later in the app, and the app's setting wins. |
 | `APM_D1_DATABASE_ID` | yes | |
 | `APM_KV_NAMESPACE_ID` | yes | |
 | `APM_WORKSPACE_NAME`, `APM_WORKSPACE_KEY` | no | Used only when the workspace is first created. |

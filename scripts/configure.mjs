@@ -6,7 +6,7 @@
  *
  *   Required on Workers Builds:
  *     APM_PUBLIC_URL            https://tasks.acme.com
- *     APM_ALLOWED_EMAIL_DOMAINS acme.com (comma-separated for several)
+ *     APM_ALLOWED_EMAIL_DOMAINS acme.com: restricts sign-ups to these email domains (comma-separated)
  *     APM_D1_DATABASE_ID        from `wrangler d1 create agentic-pm`
  *     APM_KV_NAMESPACE_ID       from `wrangler kv namespace create OAUTH_KV`
  *   Optional:

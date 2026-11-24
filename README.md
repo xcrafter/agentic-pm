@@ -26,7 +26,7 @@ Follow **[docs/SETUP.md](docs/SETUP.md)**. It's a plain-language, 20-minute guid
 1. Open the app's address. The first visitor sees **Set up your workspace** and becomes the admin. Do this right after deploying.
 2. Go to **Workspace settings**:
    - **Website:** type your domain and save. The logo is picked up from the site automatically, or you can upload one.
-   - **Allowed email domains:** only these addresses can be invited or sign in.
+   - **Allowed email domains:** restricts sign-ups to these domains. Only these addresses can be invited or sign in (set first by `--domain` during setup).
 3. Go to **Members & agents → Invite person** for each teammate. You get a one-time sign-up link (valid 7 days) to send them. Use **Reset password** on a person's page for a 24-hour reset link.
 
 ### 3. Connect Grok (or any MCP + webhook assistant)
