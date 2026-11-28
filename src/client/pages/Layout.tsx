@@ -597,7 +597,7 @@ function CommandPalette({ onClose, onCreate }: { onClose: () => void; onCreate: 
       .map((p) => ({ id: p.id, label: p.name, hint: "Project", icon: <ProjectDot id={p.id} />, run: go(`/projects/${p.id}`) }));
     const tsk: PaletteItem[] = (tasks.data ?? [])
       .slice(0, 8)
-      .map((t) => ({ id: t.id, label: t.title, hint: t.key, icon: <StatusIcon status={t.status} />, run: go(`/t/${t.key}`) }));
+      .map((t) => ({ id: t.id, label: t.title, hint: t.key, icon: <StatusIcon status={t.status_key ?? t.status} />, run: go(`/t/${t.key}`) }));
     return [...tsk, ...ppl, ...prj, ...pages];
   }, [q, members.data, projects.data, tasks.data]);
   useEffect(() => setSel(0), [q]);

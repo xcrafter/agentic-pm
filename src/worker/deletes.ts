@@ -3,7 +3,7 @@
  * admins can delete anything; anyone can delete what they wrote themselves.
  * Deleting a whole task is admins only. Everything removed is logged in the activity table.
  */
-import type { Actor, MemberRow, TaskRow, WorkspaceRow } from "./domain";
+import type { Actor, MemberRow, ProjectRow, TaskRow, WorkspaceRow } from "./domain";
 import { addSystemEntry, logActivity, notify, taskKey } from "./domain";
 import { type AppEnv, HttpError, forbidden, notFound, nowIso } from "./util";
 
@@ -117,6 +117,7 @@ export async function deleteTask(env: AppEnv, ws: WorkspaceRow, actor: Actor, ta
     env.DB.prepare("DELETE FROM agent_runs WHERE task_id = ?").bind(id),
     env.DB.prepare("DELETE FROM task_shares WHERE task_id = ?").bind(id),
     env.DB.prepare("DELETE FROM task_dependencies WHERE task_id = ? OR depends_on_id = ?").bind(id, id),
+    env.DB.prepare("DELETE FROM task_labels WHERE task_id = ?").bind(id),
     env.DB.prepare("DELETE FROM entry_reactions WHERE entry_id IN (SELECT id FROM thread_entries WHERE task_id = ?)").bind(id),
     env.DB.prepare("UPDATE posts SET task_id = NULL WHERE task_id = ?").bind(id),
     env.DB.prepare("UPDATE ideas SET converted_task_id = NULL WHERE converted_task_id = ?").bind(id),
@@ -136,4 +137,31 @@ export async function deleteTask(env: AppEnv, ws: WorkspaceRow, actor: Actor, ta
     files: files.results.length,
   });
   await notify(env, ws.id, { type: "task", task_id: id, deleted: true });
+}
+
+/**
+ * Delete a project: admins, or whoever created it. By default its tasks stay, with no project (tasks
+ * archived with the project come back into task lists). With deleteTasks, its tasks are deleted too,
+ * which, like deleting any task, only admins can do.
+ */
+export async function deleteProject(env: AppEnv, ws: WorkspaceRow, actor: Actor, projectId: string, opts: { deleteTasks?: boolean } = {}) {
+  const p = await env.DB.prepare("SELECT * FROM projects WHERE id = ? AND workspace_id = ?").bind(projectId, ws.id).first<ProjectRow>();
+  if (!p) throw notFound("Project");
+  requireCanDelete(actor.member, p.created_by, "project");
+  if (opts.deleteTasks && actor.member.role !== "admin") throw forbidden("Only admins can delete a project's tasks along with it");
+  const tasks = (await env.DB.prepare("SELECT * FROM tasks WHERE project_id = ? AND workspace_id = ?").bind(projectId, ws.id).all<TaskRow>()).results;
+  if (opts.deleteTasks) {
+    for (const t of tasks) await deleteTask(env, ws, actor, t);
+  } else if (tasks.length) {
+    await env.DB.prepare("UPDATE tasks SET project_id = NULL, archived_at = NULL WHERE project_id = ? AND workspace_id = ?").bind(projectId, ws.id).run();
+    for (const t of tasks) await addSystemEntry(env, t, actor.member, "project_changed", { to: null, to_name: null, project_deleted: p.name });
+  }
+  await env.DB.prepare("DELETE FROM projects WHERE id = ?").bind(projectId).run();
+  await logActivity(env, ws.id, actor, "project", projectId, "deleted", p, {
+    tasks: tasks.length,
+    tasks_deleted: !!opts.deleteTasks,
+  });
+  await notify(env, ws.id, { type: "projects" });
+  if (tasks.length) await notify(env, ws.id, { type: "task" });
+  return { deleted: true, tasks: tasks.length, tasks_deleted: !!opts.deleteTasks };
 }

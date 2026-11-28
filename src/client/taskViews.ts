@@ -2,7 +2,7 @@
  * Task list views: a view is a set of filters + a sort + a layout. Built-in views ship with the app;
  * saved views are stored in the workspace and shared with everyone.
  */
-import { type Priority, type Status, type Task, PRIORITIES, STATUSES } from "./api";
+import { type Priority, type StatusDef, type Task, DEFAULT_STATUSES, PRIORITIES } from "./api";
 import type { TaskDefaults } from "./components";
 
 export type SortKey = "status" | "priority" | "due" | "updated" | "created" | "title";
@@ -12,7 +12,10 @@ export type Layout = "table" | "board";
 export interface ViewConfig {
   layout: Layout;
   hideDone: boolean;
-  status: Status[];
+  /** Status keys (built-in or custom). */
+  status: string[];
+  /** Label ids; a task matches when it has any of them. */
+  labels: string[];
   /** member ids, plus "none" (unassigned) and "me" */
   assignees: string[];
   kind: "all" | "human" | "agent";
@@ -29,6 +32,7 @@ export const DEFAULT_CONFIG: ViewConfig = {
   layout: "table",
   hideDone: true,
   status: [],
+  labels: [],
   assignees: [],
   kind: "all",
   projects: [],
@@ -46,7 +50,8 @@ export function normalizeConfig(raw: unknown): ViewConfig {
   return {
     layout: c.layout === "board" ? "board" : "table",
     hideDone: typeof c.hideDone === "boolean" ? c.hideDone : DEFAULT_CONFIG.hideDone,
-    status: arr<Status>(c.status, STATUSES),
+    status: arr<string>(c.status),
+    labels: arr<string>(c.labels),
     assignees: arr<string>(c.assignees),
     kind: c.kind === "human" || c.kind === "agent" ? c.kind : "all",
     projects: arr<string>(c.projects),
@@ -64,6 +69,7 @@ export const sameConfig = (a: ViewConfig, b: ViewConfig) => JSON.stringify(norma
 export function activeFilterCount(c: ViewConfig) {
   return (
     (c.status.length ? 1 : 0) +
+    (c.labels.length ? 1 : 0) +
     (c.assignees.length ? 1 : 0) +
     (c.kind !== "all" ? 1 : 0) +
     (c.projects.length ? 1 : 0) +
@@ -103,10 +109,11 @@ export function needsAttention(t: Task) {
 export function applyFilters(tasks: Task[], c: ViewConfig, meId: string | undefined) {
   const q = c.q.trim().toLowerCase();
   // An explicit status filter wins over "hide completed".
-  const hideDone = c.hideDone && !c.status.some((s) => s === "done" || s === "canceled");
+  const hideDone = c.hideDone && !c.status.length;
   return tasks.filter((t) => {
     if (hideDone && isClosed(t)) return false;
-    if (c.status.length && !c.status.includes(t.status)) return false;
+    if (c.status.length && !c.status.includes(t.status_key ?? t.status)) return false;
+    if (c.labels.length && !(t.labels ?? []).some((l) => c.labels.includes(l.id))) return false;
     if (c.assignees.length) {
       const id = t.assignee?.id ?? "none";
       const ok = c.assignees.some((a) => a === id || (a === "me" && id === meId));
@@ -124,14 +131,16 @@ export function applyFilters(tasks: Task[], c: ViewConfig, meId: string | undefi
   });
 }
 
-const STATUS_ORDER = new Map(STATUSES.map((s, i) => [s, i]));
 const PRIORITY_ORDER: Record<Priority, number> = { urgent: 0, high: 1, medium: 2, low: 3, none: 4 };
 
-export function sortTasks(tasks: Task[], sort: SortKey) {
+/** Sorts by `sort`; "status" follows the workspace's status order. */
+export function sortTasks(tasks: Task[], sort: SortKey, statuses: StatusDef[] = DEFAULT_STATUSES) {
+  const order = new Map(statuses.map((s, i) => [s.key, i]));
+  const rank = (t: Task) => order.get(t.status_key ?? t.status) ?? order.get(t.status) ?? 99;
   const byCreated = (a: Task, b: Task) => b.created_at.localeCompare(a.created_at);
   const cmp: Record<SortKey, (a: Task, b: Task) => number> = {
-    status: (a, b) => STATUS_ORDER.get(a.status)! - STATUS_ORDER.get(b.status)! || PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority] || byCreated(a, b),
-    priority: (a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority] || STATUS_ORDER.get(a.status)! - STATUS_ORDER.get(b.status)! || byCreated(a, b),
+    status: (a, b) => rank(a) - rank(b) || PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority] || byCreated(a, b),
+    priority: (a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority] || rank(a) - rank(b) || byCreated(a, b),
     due: (a, b) => (a.due_date ?? "9999") .localeCompare(b.due_date ?? "9999") || PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority],
     updated: (a, b) => b.updated_at.localeCompare(a.updated_at),
     created: byCreated,

@@ -11,7 +11,7 @@
  */
 import { Hono } from "hono";
 import type { Actor, MemberRow, TaskRow, WorkspaceRow } from "./domain";
-import { getTaskByRef, getTaskDetail, getWorkspace, logActivity, notify, postEntry, taskKey } from "./domain";
+import { getTaskByRef, getTaskDetail, getWorkspace, logActivity, notify, postEntry, serializeTasks, taskKey } from "./domain";
 import { type AppEnv, HttpError, badRequest, forbidden, newId, notFound, nowIso, randomToken, signValue } from "./util";
 
 type Vars = { me: MemberRow; ws: WorkspaceRow; actor: Actor };
@@ -116,7 +116,7 @@ export async function renderShareMarkdown(env: AppEnv, share: ShareRow, task: Ta
   const out: string[] = [];
   out.push(`# ${t.key}: ${t.title}`, "");
   const meta = [
-    `**Status:** ${STATUS_LABEL[t.status] ?? t.status}`,
+    `**Status:** ${t.status_name}`,
     t.priority !== "none" ? `**Priority:** ${t.priority}` : "",
     t.assignee ? `**Assignee:** ${t.assignee.name}` : "",
     t.project ? `**Project:** ${t.project.name}` : "",
@@ -311,7 +311,7 @@ sharePublicRoutes.get("/share/:token", async (c) => {
     renderShareHtml(`${taskKey(ws, task)}: ${task.title}`, md, `${shareUrl(c.env, share)}.md`, ws.name, {
       description: previewText(task.description),
       url: shareUrl(c.env, share),
-      status: STATUS_LABEL[task.status] ?? task.status,
+      status: (await serializeTasks(c.env, ws, [task]))[0]?.status_name ?? STATUS_LABEL[task.status] ?? task.status,
     }),
     200,
     headers,

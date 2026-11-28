@@ -21,14 +21,36 @@ export type MemberRef = Pick<Member, "id" | "name" | "handle" | "kind" | "avatar
 
 export const STATUSES = ["backlog", "todo", "in_progress", "waiting_on_human", "done", "canceled"] as const;
 export type Status = (typeof STATUSES)[number];
-export const STATUS_LABEL: Record<Status, string> = {
-  backlog: "Backlog",
-  todo: "Todo",
-  in_progress: "In Progress",
-  waiting_on_human: "Waiting on human",
-  done: "Done",
-  canceled: "Canceled",
-};
+/** A workspace task status. Built-in ones have key === category; custom ones behave like their category. */
+export interface StatusDef {
+  key: string;
+  name: string;
+  color: string;
+  category: Status;
+  builtin: boolean;
+  position: number;
+  task_count?: number;
+}
+export const DEFAULT_STATUSES: StatusDef[] = [
+  { key: "backlog", name: "Backlog", color: "#a3a5ab", category: "backlog", builtin: true, position: 1000 },
+  { key: "todo", name: "Todo", color: "#7c7e85", category: "todo", builtin: true, position: 2000 },
+  { key: "in_progress", name: "In Progress", color: "#2b6feb", category: "in_progress", builtin: true, position: 3000 },
+  { key: "waiting_on_human", name: "Waiting on human", color: "#e5791d", category: "waiting_on_human", builtin: true, position: 4000 },
+  { key: "done", name: "Done", color: "#1f9d5c", category: "done", builtin: true, position: 5000 },
+  { key: "canceled", name: "Canceled", color: "#a3a5ab", category: "canceled", builtin: true, position: 6000 },
+];
+export interface LabelRef {
+  id: string;
+  name: string;
+  color: string;
+}
+export interface Label extends LabelRef {
+  created_by: string | null;
+  created_at: string;
+  task_count: number;
+}
+export const LABEL_COLORS = ["#6b7280", "#2b6feb", "#1f9d5c", "#e5791d", "#d64545", "#8b5cf6", "#d9468f", "#0e9488", "#b7791f"];
+
 export const PRIORITIES = ["none", "urgent", "high", "medium", "low"] as const;
 export type Priority = (typeof PRIORITIES)[number];
 export const PRIORITY_LABEL: Record<Priority, string> = {
@@ -45,7 +67,12 @@ export interface Task {
   number: number;
   title: string;
   description: string;
+  /** Built-in status (for a custom status, the one it behaves like). */
   status: Status;
+  /** The status the task shows: a built-in key or a custom status key. */
+  status_key: string;
+  status_name: string;
+  labels: LabelRef[];
   priority: Priority;
   due_date: string | null;
   position: number;
@@ -79,6 +106,7 @@ export interface DepTask {
   key: string;
   title: string;
   status: Status;
+  status_key: string;
   assignee: { id: string; name: string } | null;
 }
 export interface Note {
@@ -138,6 +166,7 @@ export interface Project {
   description: string;
   lead_member_id: string | null;
   status: "active" | "archived";
+  created_by: string;
   task_count: number;
   done_count: number;
   open_count: number;

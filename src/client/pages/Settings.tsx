@@ -1,9 +1,42 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bot, Globe, ImageUp, KeyRound, Mail, PanelLeft, Link2, Settings, ShieldCheck, Trash2, Wand2, Webhook, X, Zap } from "lucide-react";
+import { ArrowDown, ArrowUp, Bot, CircleDot, Globe, ImageUp, KeyRound, Mail, PanelLeft, Link2, RotateCcw, Settings, ShieldCheck, Tag as TagIcon, Trash2, Wand2, Webhook, X, Zap } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
-import { type EmailLog, type Member, type SidebarItem, type SidebarItemKey, type SidebarProfile, type WorkspaceInfo, api } from "../api";
-import { Avatar, Button, Menu, Modal, ModalFooter, Tag, TopBar, WorkspaceLogo, cx, inputClass, timeAgo, useMe, useMembers, wakeRoute } from "../components";
+import {
+  type EmailLog,
+  type Label,
+  type Member,
+  type SidebarItem,
+  type SidebarItemKey,
+  type SidebarProfile,
+  type Status,
+  type StatusDef,
+  type WorkspaceInfo,
+  DEFAULT_STATUSES,
+  LABEL_COLORS,
+  api,
+} from "../api";
+import {
+  Avatar,
+  Button,
+  DeleteButton,
+  Menu,
+  Modal,
+  ModalFooter,
+  Popover,
+  StatusIcon,
+  Tag,
+  TopBar,
+  WorkspaceLogo,
+  canDelete,
+  cx,
+  inputClass,
+  timeAgo,
+  useLabels,
+  useMe,
+  useMembers,
+  wakeRoute,
+} from "../components";
 
 function Section({ icon, title, description, children }: { icon: ReactNode; title: string; description: string; children: ReactNode }) {
   return (
@@ -168,6 +201,10 @@ export function SettingsPage() {
               </div>
               {logoError && <p className="mt-3 text-[13px] text-[#c4312b]">{logoError}</p>}
             </Section>
+
+            <StatusSettings isAdmin={isAdmin} />
+
+            <LabelSettings />
 
             <AgentDispatch ws={ws} isAdmin={isAdmin} onSaved={setWs} />
 
@@ -780,6 +817,299 @@ function EmailSettings() {
             </ul>
           </div>
         )}
+      </div>
+    </Section>
+  );
+}
+
+// ---------- Task statuses & labels ----------
+
+function ColorPicker({ value, onChange, disabled, label }: { value: string; onChange: (c: string) => void; disabled?: boolean; label: string }) {
+  const swatch = <span className="block h-4 w-4 rounded-full border border-black/10" style={{ background: value }} />;
+  if (disabled) return <span className="flex h-7 w-7 items-center justify-center">{swatch}</span>;
+  return (
+    <Popover label={label} width="w-auto" trigger={<span className="flex h-7 w-7 items-center justify-center rounded-md hover:bg-hover">{swatch}</span>}>
+      {(close) => (
+        <div className="p-1.5">
+          <div className="grid grid-cols-5 gap-1.5">
+            {LABEL_COLORS.map((c) => (
+              <button
+                key={c}
+                type="button"
+                aria-label={`Color ${c}`}
+                onClick={() => (onChange(c), close())}
+                className={cx("h-6 w-6 rounded-full border border-black/10", c === value.toLowerCase() && "ring-2 ring-accent ring-offset-2 ring-offset-canvas")}
+                style={{ background: c }}
+              />
+            ))}
+            <label className="relative h-6 w-6 cursor-pointer overflow-hidden rounded-full border border-dashed border-line-strong" title="Custom color">
+              <input
+                type="color"
+                value={value}
+                onChange={(e) => onChange(e.target.value)}
+                className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                aria-label="Custom color"
+              />
+              <span className="flex h-full w-full items-center justify-center text-[11px] text-ink-3">+</span>
+            </label>
+          </div>
+        </div>
+      )}
+    </Popover>
+  );
+}
+
+/** A name that saves when you leave the field (or press Enter); Escape puts it back. */
+function InlineName({ value, onSave, disabled, label }: { value: string; onSave: (v: string) => void; disabled?: boolean; label: string }) {
+  const [v, setV] = useState(value);
+  useEffect(() => setV(value), [value]);
+  if (disabled) return <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{value}</span>;
+  const commit = () => {
+    const next = v.trim();
+    if (next && next !== value) onSave(next);
+    else setV(value);
+  };
+  return (
+    <input
+      aria-label={label}
+      value={v}
+      maxLength={40}
+      onChange={(e) => setV(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.preventDefault(), (e.target as HTMLInputElement).blur());
+        if (e.key === "Escape") (setV(value), (e.target as HTMLInputElement).blur());
+      }}
+      className="h-7 min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1.5 text-[13px] font-medium outline-none hover:border-line-strong focus:border-accent"
+    />
+  );
+}
+
+const builtinName = (key: Status) => DEFAULT_STATUSES.find((d) => d.key === key)!.name;
+
+function StatusSettings({ isAdmin }: { isAdmin: boolean }) {
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ["statuses"], queryFn: () => api.get<StatusDef[]>("/api/statuses") });
+  const list = q.data ?? DEFAULT_STATUSES;
+  const [name, setName] = useState("");
+  const [category, setCategory] = useState<Status>("in_progress");
+  const [color, setColor] = useState(DEFAULT_STATUSES[2].color);
+  const [notice, setNotice] = useState<string | null>(null);
+  const done = () => {
+    qc.invalidateQueries({ queryKey: ["statuses"] });
+    qc.invalidateQueries({ queryKey: ["tasks"] });
+    qc.invalidateQueries({ queryKey: ["task"] });
+  };
+  const update = useMutation({
+    mutationFn: ({ key, body }: { key: string; body: { name?: string; color?: string } }) => api.patch(`/api/statuses/${key}`, body),
+    onSettled: done,
+  });
+  const reorder = useMutation({
+    mutationFn: (keys: string[]) => api.put("/api/statuses/order", { keys }),
+    onMutate: (keys) => qc.setQueryData<StatusDef[]>(["statuses"], (old) => keys.map((k) => old!.find((s) => s.key === k)!)),
+    onSettled: done,
+  });
+  const create = useMutation({
+    mutationFn: () => api.post<StatusDef>("/api/statuses", { name, category, color }),
+    onSuccess: () => {
+      setName("");
+      done();
+    },
+  });
+  const remove = useMutation({
+    mutationFn: (s: StatusDef) => api.del<{ moved?: number; moved_to?: Status; reset?: boolean }>(`/api/statuses/${s.key}`),
+    onSuccess: (r, s) => {
+      setNotice(
+        r.reset
+          ? `${builtinName(s.key as Status)} is back to its original name and color.`
+          : `Removed ${s.name}.${r.moved ? ` Its ${r.moved} task${r.moved === 1 ? " is" : "s are"} now ${list.find((x) => x.key === r.moved_to)?.name ?? r.moved_to}.` : ""}`,
+      );
+      done();
+    },
+  });
+  const move = (i: number, dir: -1 | 1) => {
+    const keys = list.map((s) => s.key);
+    [keys[i], keys[i + dir]] = [keys[i + dir], keys[i]];
+    reorder.mutate(keys);
+  };
+  const error = errorText(update.error || reorder.error || create.error || remove.error);
+  const builtins = DEFAULT_STATUSES;
+
+  return (
+    <Section
+      icon={<CircleDot size={15} />}
+      title="Task statuses"
+      description="The statuses tasks move through, in board order. Rename or recolor any of them, and add your own. Each custom status behaves like one of the built-in ones: a status that behaves like Done finishes the task, closes agent runs and posts to the feed."
+    >
+      <div className="max-w-xl space-y-3">
+        <ul className="divide-y divide-line rounded-lg border border-line">
+          {list.map((s, i) => {
+            const def = builtins.find((d) => d.key === s.key);
+            const changed = !!def && (def.name !== s.name || def.color !== s.color.toLowerCase());
+            return (
+              <li key={s.key} className="flex items-center gap-1.5 py-1 pr-2 pl-1.5">
+                {isAdmin && (
+                  <span className="flex flex-col">
+                    <button type="button" aria-label={`Move ${s.name} up`} disabled={i === 0 || reorder.isPending} onClick={() => move(i, -1)} className="text-ink-3 hover:text-ink disabled:opacity-25">
+                      <ArrowUp size={12} />
+                    </button>
+                    <button type="button" aria-label={`Move ${s.name} down`} disabled={i === list.length - 1 || reorder.isPending} onClick={() => move(i, 1)} className="text-ink-3 hover:text-ink disabled:opacity-25">
+                      <ArrowDown size={12} />
+                    </button>
+                  </span>
+                )}
+                <ColorPicker label={`Color of ${s.name}`} value={s.color} disabled={!isAdmin} onChange={(c) => update.mutate({ key: s.key, body: { color: c } })} />
+                <StatusIcon status={s.key} />
+                <InlineName label={`Name of ${s.name}`} value={s.name} disabled={!isAdmin} onSave={(n) => update.mutate({ key: s.key, body: { name: n } })} />
+                <span className="hidden shrink-0 text-[12px] text-ink-3 sm:inline">
+                  {s.builtin ? (s.name !== builtinName(s.key as Status) ? `Built in: ${builtinName(s.key as Status)}` : "Built in") : `Behaves like ${list.find((x) => x.key === s.category)?.name ?? s.category}`}
+                </span>
+                <span className="w-14 shrink-0 text-right text-[12px] text-ink-3 tabular-nums" title="Tasks in this status (not counting archived)">
+                  {s.task_count ?? 0} task{s.task_count === 1 ? "" : "s"}
+                </span>
+                {isAdmin &&
+                  (s.builtin ? (
+                    <button
+                      type="button"
+                      aria-label={`Reset ${s.name}`}
+                      title="Back to the original name and color"
+                      disabled={!changed || remove.isPending}
+                      onClick={() => remove.mutate(s)}
+                      className="flex h-7 w-7 items-center justify-center rounded-md text-ink-3 hover:bg-hover hover:text-ink disabled:invisible"
+                    >
+                      <RotateCcw size={13} />
+                    </button>
+                  ) : (
+                    <DeleteButton
+                      icon
+                      what="status"
+                      name={s.name}
+                      detail={
+                        s.task_count
+                          ? `Its ${s.task_count} task${s.task_count === 1 ? " moves" : "s move"} to ${list.find((x) => x.key === s.category)?.name ?? s.category}. Nothing else about them changes.`
+                          : undefined
+                      }
+                      onDelete={() => remove.mutateAsync(s)}
+                      className="h-7 w-7"
+                    />
+                  ))}
+              </li>
+            );
+          })}
+        </ul>
+        {isAdmin ? (
+          <form
+            className="flex flex-wrap items-center gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (name.trim()) create.mutate();
+            }}
+          >
+            <ColorPicker label="Color of the new status" value={color} onChange={setColor} />
+            <input className={cx(inputClass, "w-48 flex-1")} placeholder="New status, e.g. In review" value={name} maxLength={40} onChange={(e) => setName(e.target.value)} aria-label="New status name" />
+            <span className="text-[12px] text-ink-3">behaves like</span>
+            <Menu
+              label="Behaves like"
+              trigger={
+                <span className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-line-strong bg-canvas px-2 text-[13px] shadow-btn hover:bg-hover">
+                  <StatusIcon status={category} /> {list.find((x) => x.key === category)?.name}
+                </span>
+              }
+              value={category}
+              onChange={(c) => {
+                setCategory(c);
+                setColor(list.find((x) => x.key === c)?.color ?? color);
+              }}
+              options={builtins.map((b) => ({ value: b.key as Status, label: list.find((x) => x.key === b.key)?.name ?? b.name, icon: <StatusIcon status={b.key} /> }))}
+            />
+            <Button type="submit" disabled={!name.trim() || create.isPending}>
+              Add status
+            </Button>
+          </form>
+        ) : (
+          <p className="text-[12px] text-ink-3">Only admins can change statuses.</p>
+        )}
+        {notice && <p className="text-[12px] text-ink-2">{notice}</p>}
+        {error && <p className="text-[12px] text-danger">{error}</p>}
+      </div>
+    </Section>
+  );
+}
+
+function LabelSettings() {
+  const qc = useQueryClient();
+  const me = useMe().data?.member;
+  const labels = useLabels();
+  const [name, setName] = useState("");
+  const [color, setColor] = useState(LABEL_COLORS[1]);
+  const done = () => {
+    qc.invalidateQueries({ queryKey: ["labels"] });
+    qc.invalidateQueries({ queryKey: ["tasks"] });
+    qc.invalidateQueries({ queryKey: ["task"] });
+  };
+  const create = useMutation({
+    mutationFn: () => api.post<Label>("/api/labels", { name, color }),
+    onSuccess: () => {
+      setName("");
+      setColor(LABEL_COLORS[Math.floor(Math.random() * LABEL_COLORS.length)]);
+      done();
+    },
+  });
+  const update = useMutation({
+    mutationFn: ({ id, body }: { id: string; body: { name?: string; color?: string } }) => api.patch(`/api/labels/${id}`, body),
+    onSettled: done,
+  });
+  const canEdit = (l: Label) => !!me && (me.role === "admin" || l.created_by === me.id);
+  const error = errorText(create.error || update.error);
+  return (
+    <Section
+      icon={<TagIcon size={15} />}
+      title="Labels"
+      description="Tag tasks by theme, area or anything else, and filter task lists by them. Anyone can add labels, here or straight from a task. Admins, or whoever created a label, can rename or delete it."
+    >
+      <div className="max-w-xl space-y-3">
+        <form
+          className="flex items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (name.trim()) create.mutate();
+          }}
+        >
+          <ColorPicker label="Color of the new label" value={color} onChange={setColor} />
+          <input className={inputClass} placeholder="New label, e.g. Bug or Marketing" value={name} maxLength={40} onChange={(e) => setName(e.target.value)} aria-label="New label name" />
+          <Button type="submit" disabled={!name.trim() || create.isPending}>
+            Add label
+          </Button>
+        </form>
+        {labels.data && labels.data.length > 0 ? (
+          <ul className="divide-y divide-line rounded-lg border border-line">
+            {labels.data.map((l) => (
+              <li key={l.id} className="flex items-center gap-1.5 py-1 pr-2 pl-1.5">
+                <ColorPicker label={`Color of ${l.name}`} value={l.color} disabled={!canEdit(l)} onChange={(c) => update.mutate({ id: l.id, body: { color: c } })} />
+                <InlineName label={`Name of ${l.name}`} value={l.name} disabled={!canEdit(l)} onSave={(n) => update.mutate({ id: l.id, body: { name: n } })} />
+                <span className="shrink-0 text-[12px] text-ink-3 tabular-nums">
+                  {l.task_count} task{l.task_count === 1 ? "" : "s"}
+                </span>
+                {canDelete(me, l.created_by) ? (
+                  <DeleteButton
+                    icon
+                    what="label"
+                    name={l.name}
+                    detail={l.task_count ? `It's removed from ${l.task_count} task${l.task_count === 1 ? "" : "s"}. The tasks themselves stay.` : undefined}
+                    onDelete={() => api.del(`/api/labels/${l.id}`)}
+                    onDone={done}
+                    className="h-7 w-7"
+                  />
+                ) : (
+                  <span className="w-7" />
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-[12px] text-ink-3">No labels yet.</p>
+        )}
+        {error && <p className="text-[12px] text-danger">{error}</p>}
       </div>
     </Section>
   );

@@ -3,8 +3,8 @@ import { Link2, Plus, Search, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router";
-import { type DepTask, type Task, type TaskDetail, STATUS_LABEL, api } from "./api";
-import { SectionTitle, StatusIcon, cx } from "./components";
+import { type DepTask, type Task, type TaskDetail, api } from "./api";
+import { SectionTitle, StatusIcon, cx, findStatus, useStatuses } from "./components";
 
 type Dir = "blocked_by" | "blocks";
 
@@ -13,6 +13,7 @@ const DONE = new Set(["done", "canceled"]);
 /** "Blocked by" / "Blocks" lists on the task page, with search-or-create pickers. */
 export function DependenciesSection({ detail }: { detail: TaskDetail }) {
   const { task, dependencies: deps } = detail;
+  const statuses = useStatuses();
   const qc = useQueryClient();
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ["task"] });
@@ -44,11 +45,11 @@ export function DependenciesSection({ detail }: { detail: TaskDetail }) {
         <ul className="space-y-0.5">
           {rows.map((t) => (
             <li key={t.id} className="group flex min-w-0 items-center gap-2 rounded-md px-1 py-1 hover:bg-hover">
-              <StatusIcon status={t.status} />
+              <StatusIcon status={t.status_key ?? t.status} />
               <Link
                 to={`/t/${t.key}`}
                 className="flex min-w-0 flex-1 items-baseline gap-1.5 text-[13px]"
-                title={`${t.key} ${t.title} · ${STATUS_LABEL[t.status]}`}
+                title={`${t.key} ${t.title} · ${findStatus(statuses, t.status_key ?? t.status).name}`}
               >
                 <span className="shrink-0 text-[12px] tabular-nums text-ink-3">{t.key}</span>
                 <span className={cx("truncate", DONE.has(t.status) && "text-ink-3 line-through")}>{t.title}</span>
@@ -227,7 +228,7 @@ function TaskPicker({
                     i === active && "bg-hover",
                   )}
                 >
-                  <StatusIcon status={t.status} />
+                  <StatusIcon status={t.status_key ?? t.status} />
                   <span className="shrink-0 text-[12px] tabular-nums text-ink-3">{t.key}</span>
                   <span className="truncate">{t.title}</span>
                 </button>

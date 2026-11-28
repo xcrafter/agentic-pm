@@ -19,6 +19,7 @@ export interface DepTask {
   key: string;
   title: string;
   status: string;
+  status_key: string;
   assignee: { id: string; name: string } | null;
 }
 
@@ -28,6 +29,7 @@ async function depRows(env: AppEnv, ws: WorkspaceRow, sql: string, id: string): 
     number: number;
     title: string;
     status: string;
+    status_key: string | null;
     assignee_id: string | null;
     assignee_name: string | null;
   }>();
@@ -36,12 +38,13 @@ async function depRows(env: AppEnv, ws: WorkspaceRow, sql: string, id: string): 
     key: `${ws.key_prefix}-${r.number}`,
     title: r.title,
     status: r.status,
+    status_key: r.status_key ?? r.status,
     assignee: r.assignee_id ? { id: r.assignee_id, name: r.assignee_name ?? "" } : null,
   }));
 }
 
 export async function dependenciesOf(env: AppEnv, ws: WorkspaceRow, taskId: string) {
-  const cols = "t.id, t.number, t.title, t.status, t.assignee_id, m.name AS assignee_name";
+  const cols = "t.id, t.number, t.title, t.status, t.status_key, t.assignee_id, m.name AS assignee_name";
   const [blocked_by, blocking] = await Promise.all([
     depRows(
       env,

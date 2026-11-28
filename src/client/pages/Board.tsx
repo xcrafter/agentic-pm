@@ -24,10 +24,12 @@ import {
   X,
   Link2,
   Archive,
+  Tag as TagIcon,
+  Pencil,
 } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router";
-import { type Priority, type Status, type Task, PRIORITIES, PRIORITY_LABEL, STATUSES, STATUS_LABEL, api } from "../api";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router";
+import { type LabelRef, type Priority, type StatusDef, type Task, PRIORITIES, PRIORITY_LABEL, api } from "../api";
 import {
   Avatar,
   Button,
@@ -54,6 +56,13 @@ import {
   useProjects,
   useShell,
   ChevronDown,
+  canDelete,
+  LabelChip,
+  LabelPicker,
+  findStatus,
+  statusOptions,
+  useLabels,
+  useStatuses,
 } from "../components";
 import { CreateTaskModal } from "./CreateTask";
 import {
@@ -73,8 +82,7 @@ import {
   taskDefaultsFrom,
 } from "../taskViews";
 import { ProjectDot, filterNote } from "./Layout";
-
-const BOARD_STATUSES: Status[] = ["backlog", "todo", "in_progress", "waiting_on_human", "done", "canceled"];
+import { DeleteProjectModal, ProjectFormModal } from "./Projects";
 
 function loadLocal(key: string): ViewConfig | null {
   try {
@@ -104,7 +112,11 @@ export function BoardPage({ mine }: { mine?: boolean }) {
   const shell = useShell();
   const projects = useProjects();
   const views = useSavedViews();
-  const [creatingIn, setCreatingIn] = useState<Status | null>(null);
+  const [creatingIn, setCreatingIn] = useState<string | null>(null);
+  const [editingProject, setEditingProject] = useState(false);
+  const [deletingProject, setDeletingProject] = useState(false);
+  const navigate = useNavigate();
+  const statuses = useStatuses();
   const qc = useQueryClient();
 
   const scope = mine ? "mine" : projectId ? `project:${projectId}` : "all";
@@ -130,15 +142,17 @@ export function BoardPage({ mine }: { mine?: boolean }) {
   if (projectId) params.set("project", projectId);
   const tasks = useQuery({ queryKey: ["tasks", params.toString()], queryFn: () => api.get<Task[]>(`/api/tasks?${params}`) });
   const all = tasks.data ?? [];
-  const list = sortTasks(applyFilters(all, cfg, me.member?.id), cfg.sort);
+  const list = sortTasks(applyFilters(all, cfg, me.member?.id), cfg.sort, statuses);
   const closedHidden = cfg.hideDone ? applyFilters(all, { ...cfg, hideDone: false }, me.member?.id).filter(isClosed).length : 0;
 
   const move = useMutation({
-    mutationFn: ({ key, status }: { key: string; status: Status }) => api.patch(`/api/tasks/${key}`, { status }),
+    mutationFn: ({ key, status }: { key: string; status: StatusDef }) => api.patch(`/api/tasks/${key}`, { status: status.key }),
     onMutate: async ({ key, status }) => {
       const qk = ["tasks", params.toString()];
       await qc.cancelQueries({ queryKey: qk });
-      qc.setQueryData<Task[]>(qk, (old) => old?.map((t) => (t.key === key ? { ...t, status } : t)));
+      qc.setQueryData<Task[]>(qk, (old) =>
+        old?.map((t) => (t.key === key ? { ...t, status: status.category, status_key: status.key, status_name: status.name } : t)),
+      );
     },
     onSettled: () => qc.invalidateQueries({ queryKey: ["tasks"] }),
   });
@@ -167,8 +181,12 @@ export function BoardPage({ mine }: { mine?: boolean }) {
           { label: project.name, icon: <ProjectDot id={project.id} /> },
         ]
       : [{ label: "All tasks", icon: <ListTodo size={15} className="text-ink-3" />, to: viewName ? "/" : undefined }, ...(viewName ? [{ label: viewName }] : [])];
-  const boardStatuses = BOARD_STATUSES.filter((st) =>
-    cfg.status.length ? cfg.status.includes(st) : cfg.hideDone ? !(st === "done" || st === "canceled") : st !== "canceled",
+  const boardStatuses = statuses.filter((st) =>
+    cfg.status.length
+      ? cfg.status.includes(st.key)
+      : cfg.hideDone
+        ? !(st.category === "done" || st.category === "canceled")
+        : st.category !== "canceled" || list.some((t) => t.status_key === st.key),
   );
   const filters = activeFilterCount(cfg);
 
@@ -186,11 +204,31 @@ export function BoardPage({ mine }: { mine?: boolean }) {
       <TopBar
         crumbs={crumbs}
         actions={
-          <Button variant="primary" onClick={shell.createTask} className="hidden md:inline-flex">
-            <Plus size={15} /> New task
-          </Button>
+          <>
+            {project && (
+              <>
+                <IconButton label="Edit project" onClick={() => setEditingProject(true)}>
+                  <Pencil size={14} />
+                </IconButton>
+                {canDelete(me.member, project.created_by) && (
+                  <IconButton label="Delete project" className="hover:text-danger" onClick={() => setDeletingProject(true)}>
+                    <Trash2 size={14} />
+                  </IconButton>
+                )}
+              </>
+            )}
+            <Button variant="primary" onClick={shell.createTask} className="hidden md:inline-flex">
+              <Plus size={15} /> New task
+            </Button>
+          </>
         }
       />
+      {project && (
+        <>
+          <ProjectFormModal open={editingProject} project={project} onClose={() => setEditingProject(false)} />
+          <DeleteProjectModal project={deletingProject ? project : null} onClose={() => setDeletingProject(false)} onDeleted={() => navigate("/projects")} />
+        </>
+      )}
       <Toolbar
         cfg={cfg}
         setCfg={setCfg}
@@ -249,7 +287,13 @@ export function BoardPage({ mine }: { mine?: boolean }) {
       ) : (
         <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto bg-subtle p-3 md:p-4">
           {boardStatuses.map((st) => (
-            <Column key={st} status={st} tasks={list.filter((t) => t.status === st)} onDrop={(key) => move.mutate({ key, status: st })} onAdd={() => setCreatingIn(st)} />
+            <Column
+              key={st.key}
+              status={st}
+              tasks={list.filter((t) => t.status_key === st.key)}
+              onDrop={(key) => move.mutate({ key, status: st })}
+              onAdd={() => setCreatingIn(st.key)}
+            />
           ))}
         </div>
       )}
@@ -287,6 +331,8 @@ function Toolbar(p: {
   const me = useMe().data;
   const members = useMembers();
   const projects = useProjects();
+  const statuses = useStatuses();
+  const labels = useLabels();
   const qc = useQueryClient();
   const [naming, setNaming] = useState<string | null>(null);
   const filters = activeFilterCount(cfg);
@@ -420,13 +466,33 @@ function Toolbar(p: {
           label="Filter by status"
           trigger={
             <Chip active={!!cfg.status.length}>
-              <CircleDot size={13} /> {cfg.status.length ? `Status: ${nameOf(cfg.status, (s) => STATUS_LABEL[s as Status])}` : "Status"} <ChevronDown size={13} />
+              <CircleDot size={13} /> {cfg.status.length ? `Status: ${nameOf(cfg.status, (s) => findStatus(statuses, s).name)}` : "Status"} <ChevronDown size={13} />
             </Chip>
           }
           value={cfg.status}
           onChange={(status) => setCfg({ status })}
-          options={STATUSES.map((st) => ({ value: st, label: STATUS_LABEL[st], icon: <StatusIcon status={st} /> }))}
+          options={statusOptions(statuses)}
         />
+        {(labels.data?.length ?? 0) > 0 && (
+          <MultiSelect
+            searchable
+            label="Filter by label"
+            trigger={
+              <Chip active={!!cfg.labels.length}>
+                <TagIcon size={13} />{" "}
+                {cfg.labels.length ? `Label: ${nameOf(cfg.labels, (id) => labels.data?.find((l) => l.id === id)?.name ?? "Deleted label")}` : "Label"}{" "}
+                <ChevronDown size={13} />
+              </Chip>
+            }
+            value={cfg.labels}
+            onChange={(labels) => setCfg({ labels })}
+            options={(labels.data ?? []).map((l) => ({
+              value: l.id,
+              label: l.name,
+              icon: <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: l.color }} />,
+            }))}
+          />
+        )}
         {!p.hideAssignee && (
           <MultiSelect
             searchable
@@ -660,6 +726,7 @@ const COLS: { key: string; label: string; icon: ReactNode; width: string }[] = [
   { key: "status", label: "Status", icon: <CircleDot size={13} />, width: "w-[170px]" },
   { key: "assignee", label: "Assignee", icon: <UserRound size={13} />, width: "w-[190px]" },
   { key: "project", label: "Project", icon: <FolderKanban size={13} />, width: "w-[170px]" },
+  { key: "labels", label: "Labels", icon: <TagIcon size={13} />, width: "w-[200px]" },
   { key: "priority", label: "Priority", icon: <Signal size={13} />, width: "w-[120px]" },
   { key: "due", label: "Due", icon: <CalendarDays size={13} />, width: "w-[110px]" },
   { key: "updated", label: "Updated", icon: <Clock size={13} />, width: "w-[110px]" },
@@ -670,13 +737,24 @@ export function useTaskPatch() {
   const qc = useQueryClient();
   const members = useMembers();
   const projects = useProjects();
+  const statuses = useStatuses();
+  const labels = useLabels();
   return useMutation({
     mutationFn: ({ task, body }: { task: Task; body: Record<string, unknown> }) => api.patch<Task>(`/api/tasks/${task.key}`, body),
     onMutate: async ({ task, body }) => {
       await qc.cancelQueries({ queryKey: ["tasks"] });
       const prev = qc.getQueriesData<Task[]>({ queryKey: ["tasks"] });
       const next: Partial<Task> = {};
-      if ("status" in body) next.status = body.status as Status;
+      if ("status" in body) {
+        const st = findStatus(statuses, body.status as string);
+        next.status = st.category;
+        next.status_key = st.key;
+        next.status_name = st.name;
+      }
+      if ("labels" in body) {
+        const ids = body.labels as string[];
+        next.labels = ids.map((id) => labels.data?.find((l) => l.id === id)).filter((l): l is NonNullable<typeof l> => !!l);
+      }
       if ("priority" in body) next.priority = body.priority as Priority;
       if ("due_date" in body) next.due_date = body.due_date as string | null;
       if ("assignee_id" in body) {
@@ -708,7 +786,8 @@ export function TaskTable({ tasks, sort, onSort }: { tasks: Task[]; sort?: SortK
   const members = useMembers();
   const projects = useProjects();
   const patch = useTaskPatch();
-  const rows = sort ? tasks : sortTasks(tasks, "status");
+  const statuses = useStatuses();
+  const rows = sort ? tasks : sortTasks(tasks, "status", statuses);
   const cell = "h-10 border-r border-b border-line text-[13px] whitespace-nowrap";
   const edit = (task: Task, body: Record<string, unknown>) => patch.mutate({ task, body });
   return (
@@ -733,7 +812,7 @@ export function TaskTable({ tasks, sort, onSort }: { tasks: Task[]; sort?: SortK
                 )}
               >
                 <div className="flex items-start gap-2">
-                  <StatusIcon status={t.status} />
+                  <StatusIcon status={t.status_key} />
                   <span className="min-w-0 flex-1 text-[15px] leading-snug font-medium">{t.title}</span>
                 </div>
                 <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 pl-6 text-[12px] text-ink-3">
@@ -746,6 +825,7 @@ export function TaskTable({ tasks, sort, onSort }: { tasks: Task[]; sort?: SortK
                   )}
                   {t.due_date && <span className={cx(isOverdue(t) && "font-medium text-danger")}>Due {formatDate(t.due_date)}</span>}
                   {t.project && <span className="truncate">{t.project.name}</span>}
+                  {t.labels?.map((l) => <LabelChip key={l.id} label={l} />)}
                   <RunBadge task={t} compact />
                 </div>
               </Link>
@@ -753,7 +833,7 @@ export function TaskTable({ tasks, sort, onSort }: { tasks: Task[]; sort?: SortK
           );
         })}
       </ul>
-      <table className="hidden w-full min-w-[1100px] border-separate border-spacing-0 md:table">
+      <table className="hidden w-full min-w-[1300px] border-separate border-spacing-0 md:table">
         <thead className="sticky top-0 z-10 bg-canvas">
           <tr>
             {COLS.map((c, i) => (
@@ -814,10 +894,10 @@ export function TaskTable({ tasks, sort, onSort }: { tasks: Task[]; sort?: SortK
                   <Menu
                     label={`Status of ${t.key}`}
                     className={editCell}
-                    trigger={<StatusTag status={t.status} />}
-                    value={t.status}
-                    onChange={(s: Status) => edit(t, { status: s })}
-                    options={STATUSES.map((s) => ({ value: s, label: STATUS_LABEL[s], icon: <StatusIcon status={s} /> }))}
+                    trigger={<StatusTag status={t.status_key} />}
+                    value={t.status_key}
+                    onChange={(s) => edit(t, { status: s })}
+                    options={statusOptions(statuses)}
                   />
                 </td>
                 <td className={cx(cell, "max-w-[190px] p-0 group-hover:bg-hover")}>
@@ -843,6 +923,14 @@ export function TaskTable({ tasks, sort, onSort }: { tasks: Task[]; sort?: SortK
                       { value: "none", label: "No project" },
                       ...(projects.data ?? []).filter((p) => p.status === "active").map((p) => ({ value: p.id, label: p.name, icon: <ProjectDot id={p.id} /> })),
                     ]}
+                  />
+                </td>
+                <td className={cx(cell, "max-w-[200px] p-0 group-hover:bg-hover")}>
+                  <LabelPicker
+                    label={`Labels of ${t.key}`}
+                    value={t.labels ?? []}
+                    onChange={(ids) => edit(t, { labels: ids })}
+                    trigger={<LabelCell labels={t.labels ?? []} />}
                   />
                 </td>
                 <td className={cx(cell, "p-0 group-hover:bg-hover")}>
@@ -872,6 +960,14 @@ export function TaskTable({ tasks, sort, onSort }: { tasks: Task[]; sort?: SortK
         </tbody>
       </table>
     </div>
+  );
+}
+
+function LabelCell({ labels }: { labels: LabelRef[] }) {
+  return (
+    <span className="flex h-10 w-[200px] min-w-0 items-center gap-1 overflow-hidden px-3 hover:bg-active">
+      {labels.length ? labels.map((l) => <LabelChip key={l.id} label={l} />) : <span className="text-ink-3">—</span>}
+    </span>
   );
 }
 
@@ -906,7 +1002,7 @@ export function formatDate(d: string) {
 
 // ---------- Board ----------
 
-function Column({ status, tasks, onDrop, onAdd }: { status: Status; tasks: Task[]; onDrop: (key: string) => void; onAdd: () => void }) {
+function Column({ status, tasks, onDrop, onAdd }: { status: StatusDef; tasks: Task[]; onDrop: (key: string) => void; onAdd: () => void }) {
   const [over, setOver] = useState(false);
   return (
     <div
@@ -921,9 +1017,9 @@ function Column({ status, tasks, onDrop, onAdd }: { status: Status; tasks: Task[
       }}
     >
       <div className="flex h-9 items-center gap-2 px-1.5">
-        <StatusTag status={status} />
+        <StatusTag status={status.key} />
         <span className="text-[12px] text-ink-3 tabular-nums">{tasks.length}</span>
-        <button onClick={onAdd} className="ml-auto flex h-6 w-6 items-center justify-center rounded-md text-ink-3 hover:bg-active hover:text-ink" aria-label={`Add task to ${STATUS_LABEL[status]}`}>
+        <button onClick={onAdd} className="ml-auto flex h-6 w-6 items-center justify-center rounded-md text-ink-3 hover:bg-active hover:text-ink" aria-label={`Add task to ${status.name}`}>
           <Plus size={14} />
         </button>
       </div>
@@ -1012,10 +1108,11 @@ function Card({ task }: { task: Task }) {
           <MemberChip member={task.assignee} size={16} muted />
           <span className="ml-auto shrink-0 text-ink-3 tabular-nums">{task.key}</span>
         </div>
-        {(task.project || task.priority !== "none" || task.run_status || task.open_questions > 0 || task.open_blockers > 0) && (
+        {(task.project || task.priority !== "none" || task.run_status || task.open_questions > 0 || task.open_blockers > 0 || task.labels?.length > 0) && (
           <div className="flex flex-wrap items-center gap-1.5">
             {task.priority !== "none" && <PriorityIcon priority={task.priority} />}
             {task.project && <Tag tone={projectTone(task.project.id)}>{task.project.name}</Tag>}
+            {task.labels?.map((l) => <LabelChip key={l.id} label={l} />)}
             <RunBadge task={task} compact />
           </div>
         )}

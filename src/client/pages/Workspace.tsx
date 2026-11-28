@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { Activity, Building2, Users, Zap } from "lucide-react";
 import { Link } from "react-router";
-import { type Overview, type Status, STATUS_LABEL, api } from "../api";
-import { AgentBadge, EmptyState, MemberChip, SectionTitle, Tag, TopBar, WorkspaceLogo, cx, timeAgo, useMe, useMembers } from "../components";
+import { type Overview, type Status, api } from "../api";
+import { AgentBadge, EmptyState, MemberChip, SectionTitle, Tag, TopBar, WorkspaceLogo, cx, findStatus, timeAgo, useMe, useMembers, useStatuses } from "../components";
 import { FeedList } from "./Feed";
 
 const BAR: { status: Status; color: string }[] = [
@@ -18,6 +18,8 @@ export function WorkspacePage() {
   const q = useQuery({ queryKey: ["overview"], queryFn: () => api.get<Overview>("/api/overview"), refetchInterval: 30_000 });
   const members = useMembers();
   const me = useMe();
+  const statuses = useStatuses();
+  const statusName = (st: Status) => findStatus(statuses, st).name;
   const byId = new Map((members.data ?? []).map((m) => [m.id, m]));
   if (q.isLoading || !q.data) return <div className="p-8 text-[13px] text-ink-3">Loading…</div>;
   const o = q.data;
@@ -60,14 +62,14 @@ export function WorkspacePage() {
               <SectionTitle>Work by status</SectionTitle>
               <div className="flex h-2.5 gap-[2px] overflow-hidden rounded-full">
                 {BAR.filter((b) => o.by_status[b.status]).map((b) => (
-                  <div key={b.status} style={{ flexGrow: o.by_status[b.status], background: b.color }} title={`${STATUS_LABEL[b.status]}: ${o.by_status[b.status]}`} />
+                  <div key={b.status} style={{ flexGrow: o.by_status[b.status], background: b.color }} title={`${statusName(b.status)}: ${o.by_status[b.status]}`} />
                 ))}
               </div>
               <div className="mt-2.5 flex flex-wrap gap-x-5 gap-y-1 text-[12px] text-ink-2">
                 {BAR.map((b) => (
                   <span key={b.status} className="flex items-center gap-1.5">
                     <span className="h-2 w-2 rounded-full" style={{ background: b.color }} />
-                    {STATUS_LABEL[b.status]} <span className="text-ink-3 tabular-nums">{o.by_status[b.status] ?? 0}</span>
+                    {statusName(b.status)} <span className="text-ink-3 tabular-nums">{o.by_status[b.status] ?? 0}</span>
                   </span>
                 ))}
               </div>
