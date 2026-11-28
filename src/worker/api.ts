@@ -34,7 +34,8 @@ import {
 import { onAgentTrigger, retryRun, testPing } from "./orchestrator";
 import { type InviteRow, SESSION_COOKIE, createInvite, getSessionMember, needsSetup, uniqueHandle } from "./auth";
 import { canManageAgent, listSubAgents } from "./agents";
-import { deleteAttachment, deleteChecklist, deleteEntry, deleteNote, deleteTask } from "./deletes";
+import { deleteAttachment, deleteChecklist, deleteEntry, deleteNote, deleteProject, deleteTask } from "./deletes";
+import { taxonomyRoutes } from "./taxonomy";
 import { serveLogo, workspaceInfo, workspaceRoutes } from "./workspace";
 import { feedRoutes } from "./feed";
 import { ideaRoutes } from "./ideas";
@@ -156,6 +157,7 @@ api.route("/", customerRoutes);
 api.route("/", shareRoutes);
 api.route("/", policyRoutes);
 api.route("/", toolRoutes);
+api.route("/", taxonomyRoutes);
 
 const requireAdmin = (me: MemberRow) => {
   if (me.role !== "admin") throw forbidden("Admins only");
@@ -396,12 +398,18 @@ api.patch("/api/projects/:id", async (c) => {
   );
 });
 
+// Delete a project. Its tasks stay (with no project) unless ?tasks=delete, which deletes them too (admins only).
+api.delete("/api/projects/:id", async (c) =>
+  c.json(await deleteProject(c.env, c.get("ws"), c.get("actor"), c.req.param("id"), { deleteTasks: c.req.query("tasks") === "delete" })),
+);
+
 // ----- Tasks -----
 api.get("/api/tasks", async (c) => {
   const q = c.req.query();
   const ws = c.get("ws");
   const tasks = await listTasks(c.env, ws.id, {
     status: q.status ? q.status.split(",") : undefined,
+    labels: q.label ? q.label.split(",") : undefined,
     assigneeId: q.assignee === "me" ? c.get("me").id : q.assignee || undefined,
     projectId: q.project || undefined,
     memberKind: q.kind === "agent" || q.kind === "human" ? q.kind : undefined,
@@ -424,6 +432,7 @@ api.post("/api/tasks", async (c) => {
     triage?: boolean;
     blocked_by?: string[];
     blocks?: string[];
+    labels?: string[];
   }>();
   const ws = c.get("ws");
   // Resolve "blocks" first so a bad reference fails before anything is created.
@@ -438,6 +447,7 @@ api.post("/api/tasks", async (c) => {
     assigneeId: b.assignee_id,
     projectId: b.project_id,
     dueDate: b.due_date,
+    labels: Array.isArray(b.labels) ? b.labels.map(String) : undefined,
   });
   for (const t of blocks) await addDependency(c.env, ws, c.get("actor"), t, task);
   const [s] = await serializeTasks(c.env, ws, [task]);
@@ -514,6 +524,7 @@ api.patch("/api/tasks/:ref", async (c) => {
     projectId: b.project_id,
     dueDate: b.due_date,
     position: b.position,
+    labels: b.labels === undefined ? undefined : Array.isArray(b.labels) ? b.labels.map(String) : (b.labels as never),
   });
   const [s] = await serializeTasks(c.env, ws, [next]);
   return c.json(s);

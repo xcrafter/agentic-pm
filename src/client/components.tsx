@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Marked, type Tokens } from "marked";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { Bot, Check, ChevronDown, Menu as MenuIcon, Search, Trash2, X } from "lucide-react";
+import { Bot, Check, ChevronDown, Menu as MenuIcon, Plus, Search, Trash2, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import type { SavedView } from "./taskViews";
 import { Link, useOutletContext } from "react-router";
@@ -13,8 +13,11 @@ import {
   type Project,
   type SidebarInfo,
   type Status,
+  type StatusDef,
+  type Label,
+  type LabelRef,
+  DEFAULT_STATUSES,
   PRIORITY_LABEL,
-  STATUS_LABEL,
   api,
 } from "./api";
 
@@ -25,6 +28,20 @@ export const useSidebar = () => useQuery({ queryKey: ["sidebar"], queryFn: () =>
 export const useMembers = () => useQuery({ queryKey: ["members"], queryFn: () => api.get<Member[]>("/api/members") });
 export const useSavedViews = () => useQuery({ queryKey: ["views"], queryFn: () => api.get<SavedView[]>("/api/views") });
 export const useProjects = () => useQuery({ queryKey: ["projects"], queryFn: () => api.get<Project[]>("/api/projects") });
+export const useLabels = () => useQuery({ queryKey: ["labels"], queryFn: () => api.get<Label[]>("/api/labels"), staleTime: 60_000 });
+const statusesQuery = { queryKey: ["statuses"], queryFn: () => api.get<StatusDef[]>("/api/statuses"), staleTime: 60_000 };
+/** The workspace's task statuses in board order (the built-in ones until loaded). */
+export function useStatuses(): StatusDef[] {
+  return useQuery(statusesQuery).data ?? DEFAULT_STATUSES;
+}
+/** A status by key, falling back to its built-in category for unknown (e.g. just-deleted) keys. */
+export function findStatus(statuses: StatusDef[], key: string | null | undefined): StatusDef {
+  return statuses.find((s) => s.key === key) ?? DEFAULT_STATUSES.find((s) => s.key === key) ?? { ...DEFAULT_STATUSES[1], key: key ?? "todo", name: key ?? "Todo" };
+}
+/** Options for a status picker. */
+export function statusOptions(statuses: StatusDef[]) {
+  return statuses.map((s) => ({ value: s.key, label: s.name, icon: <StatusIcon status={s.key} /> }));
+}
 
 /** One websocket per tab; server events just invalidate the matching queries. */
 export function useRealtime(enabled: boolean) {
@@ -55,6 +72,8 @@ export function useRealtime(enabled: boolean) {
             qc.invalidateQueries({ queryKey: ["task"] });
           }
           if (msg.type === "workspace") qc.invalidateQueries({ queryKey: ["me"] });
+          if (msg.type === "statuses") qc.invalidateQueries({ queryKey: ["statuses"] });
+          if (msg.type === "labels") qc.invalidateQueries({ queryKey: ["labels"] });
           if (msg.type === "views") qc.invalidateQueries({ queryKey: ["views"] });
           if (msg.type === "sidebar") {
             qc.invalidateQueries({ queryKey: ["sidebar"] });
@@ -205,50 +224,35 @@ export function projectTone(id: string): Tone {
   return tones[id.split("").reduce((a, ch) => a + ch.charCodeAt(0), 0) % tones.length];
 }
 
-export const STATUS_TONE: Record<Status, Tone> = {
-  backlog: "gray",
-  todo: "gray",
-  in_progress: "blue",
-  waiting_on_human: "orange",
-  done: "green",
-  canceled: "gray",
-};
-
-const STATUS_COLOR: Record<Status, string> = {
-  backlog: "#a3a5ab",
-  todo: "#7c7e85",
-  in_progress: "#2b6feb",
-  waiting_on_human: "#e5791d",
-  done: "#1f9d5c",
-  canceled: "#a3a5ab",
-};
-
-export function StatusIcon({ status, size = 14 }: { status: Status; size?: number }) {
-  const c = STATUS_COLOR[status];
+/** A status's icon: the shape of the built-in status it behaves like, in its colour. Takes a status key. */
+export function StatusIcon({ status, size = 14 }: { status: string; size?: number }) {
+  const def = findStatus(useStatuses(), status);
+  const c = def.color;
+  const shape: Status = def.category;
   const r = 6;
   return (
-    <svg width={size} height={size} viewBox="0 0 16 16" aria-label={STATUS_LABEL[status]} className="shrink-0">
-      {status === "backlog" && <circle cx="8" cy="8" r={r} fill="none" stroke={c} strokeWidth="1.6" strokeDasharray="2.2 2" />}
-      {status === "todo" && <circle cx="8" cy="8" r={r} fill="none" stroke={c} strokeWidth="1.6" />}
-      {status === "in_progress" && (
+    <svg width={size} height={size} viewBox="0 0 16 16" aria-label={def.name} className="shrink-0">
+      {shape === "backlog" && <circle cx="8" cy="8" r={r} fill="none" stroke={c} strokeWidth="1.6" strokeDasharray="2.2 2" />}
+      {shape === "todo" && <circle cx="8" cy="8" r={r} fill="none" stroke={c} strokeWidth="1.6" />}
+      {shape === "in_progress" && (
         <>
           <circle cx="8" cy="8" r={r} fill="none" stroke={c} strokeWidth="1.6" />
           <path d={`M8 8 L8 ${8 - 3.6} A3.6 3.6 0 0 1 8 ${8 + 3.6} Z`} fill={c} />
         </>
       )}
-      {status === "waiting_on_human" && (
+      {shape === "waiting_on_human" && (
         <>
           <circle cx="8" cy="8" r={r} fill="none" stroke={c} strokeWidth="1.6" />
           <path d="M8 4.8v3.6M8 10.6v.2" stroke={c} strokeWidth="1.8" strokeLinecap="round" />
         </>
       )}
-      {status === "done" && (
+      {shape === "done" && (
         <>
           <circle cx="8" cy="8" r={r + 0.8} fill={c} />
           <path d="M5.2 8.2l1.9 1.9 3.7-3.9" fill="none" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
         </>
       )}
-      {status === "canceled" && (
+      {shape === "canceled" && (
         <>
           <circle cx="8" cy="8" r={r + 0.8} fill={c} />
           <path d="M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4" stroke="white" strokeWidth="1.6" strokeLinecap="round" />
@@ -258,12 +262,128 @@ export function StatusIcon({ status, size = 14 }: { status: Status; size?: numbe
   );
 }
 
-export function StatusTag({ status }: { status: Status }) {
+/** Tinted background + coloured text from one hex colour; readable in light and dark themes. */
+const tint = (color: string) => ({ color: `color-mix(in srgb, ${color} 78%, var(--c-ink))`, background: `color-mix(in srgb, ${color} 13%, transparent)` });
+
+export function StatusTag({ status }: { status: string }) {
+  const def = findStatus(useStatuses(), status);
   return (
-    <Tag tone={STATUS_TONE[status]}>
+    <span className="inline-flex h-[22px] max-w-full items-center gap-1 rounded-[6px] px-1.5 text-[12px] font-medium whitespace-nowrap" style={tint(def.color)}>
       <StatusIcon status={status} size={12} />
-      {STATUS_LABEL[status]}
-    </Tag>
+      <span className="truncate">{def.name}</span>
+    </span>
+  );
+}
+
+export function LabelChip({ label, onRemove }: { label: LabelRef; onRemove?: () => void }) {
+  return (
+    <span className="inline-flex h-[22px] max-w-full items-center gap-1 rounded-full border border-line-strong bg-canvas pr-2 pl-1.5 text-[12px] font-medium whitespace-nowrap text-ink-2">
+      <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: label.color }} />
+      <span className="truncate">{label.name}</span>
+      {onRemove && (
+        <button
+          type="button"
+          onClick={(e) => (e.preventDefault(), e.stopPropagation(), onRemove())}
+          aria-label={`Remove label ${label.name}`}
+          className="-mr-1 text-ink-3 hover:text-ink"
+        >
+          <X size={11} />
+        </button>
+      )}
+    </span>
+  );
+}
+
+/** Labels on a task: shows them, toggles them, and creates a new one from the search text. */
+export function LabelPicker({
+  value,
+  onChange,
+  trigger,
+  label = "Labels",
+  align,
+}: {
+  value: LabelRef[];
+  onChange: (ids: string[]) => void;
+  trigger: ReactNode;
+  label?: string;
+  align?: "left" | "right";
+}) {
+  const labels = useLabels();
+  const qc = useQueryClient();
+  const [q, setQ] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const ids = value.map((l) => l.id);
+  const all = labels.data ?? [];
+  const term = q.trim();
+  const filtered = all.filter((l) => !term || l.name.toLowerCase().includes(term.toLowerCase()));
+  const exact = all.some((l) => l.name.toLowerCase() === term.toLowerCase());
+  const toggle = (id: string) => onChange(ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]);
+  const create = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const l = await api.post<Label>("/api/labels", { name: term });
+      await qc.invalidateQueries({ queryKey: ["labels"] });
+      onChange([...ids, l.id]);
+      setQ("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Popover trigger={trigger} label={label} width="w-64" align={align}>
+      <div className="mb-1 flex items-center gap-1.5 border-b border-line px-2 pt-1 pb-1.5">
+        <Search size={13} className="text-ink-3" />
+        <input
+          autoFocus
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter") return;
+            e.preventDefault();
+            if (filtered.length === 1 && term) (toggle(filtered[0].id), setQ(""));
+            else if (term && !exact) void create();
+          }}
+          placeholder="Find or create a label…"
+          maxLength={40}
+          className="w-full bg-transparent text-[13px] outline-none"
+        />
+      </div>
+      {filtered.map((l) => {
+        const on = ids.includes(l.id);
+        return (
+          <button
+            key={l.id}
+            type="button"
+            role="menuitemcheckbox"
+            aria-checked={on}
+            onClick={() => toggle(l.id)}
+            className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] hover:bg-hover focus-visible:bg-hover"
+          >
+            <span className={cx("flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border", on ? "border-accent bg-accent text-white" : "border-line-strong bg-canvas")}>
+              {on && <Check size={11} strokeWidth={3} />}
+            </span>
+            <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: l.color }} />
+            <span className="flex-1 truncate">{l.name}</span>
+          </button>
+        );
+      })}
+      {term && !exact && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void create()}
+          className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] text-ink-2 hover:bg-hover focus-visible:bg-hover"
+        >
+          <Plus size={13} /> Create label “{term}”
+        </button>
+      )}
+      {!term && !all.length && <div className="px-2 py-1.5 text-[13px] text-ink-3">No labels yet. Type a name to create one.</div>}
+      {error && <div className="px-2 py-1.5 text-[12px] text-danger">{error}</div>}
+    </Popover>
   );
 }
 
@@ -920,7 +1040,8 @@ export interface ShellContext {
 
 /** Starting values for the New task form. Unset fields keep the form's own defaults. */
 export interface TaskDefaults {
-  status?: Status;
+  /** Status key (built-in or custom). */
+  status?: string;
   priority?: Priority;
   /** member id, or null for unassigned */
   assigneeId?: string | null;

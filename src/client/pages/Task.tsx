@@ -19,6 +19,7 @@ import {
   X,
   Zap,
   TriangleAlert,
+  Tag as TagIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
@@ -29,12 +30,10 @@ import {
   type Note,
   type Priority,
   type Run,
-  type Status,
+  type StatusDef,
   type TaskDetail,
   PRIORITIES,
   PRIORITY_LABEL,
-  STATUSES,
-  STATUS_LABEL,
   api,
 } from "../api";
 import {
@@ -68,6 +67,11 @@ import {
   wakeRoute,
   DeleteButton,
   canDelete,
+  LabelChip,
+  LabelPicker,
+  findStatus,
+  statusOptions,
+  useStatuses,
 } from "../components";
 import { type EditorHandle, RichEditor } from "../editor";
 import { ProjectDot } from "./Layout";
@@ -165,7 +169,7 @@ export function TaskPage() {
           hasDetails: checklists.length + notes.length + q.data.dependencies.blocked_by.length > 0,
         }}
         defaults={{
-          status: task.status === "done" || task.status === "canceled" ? "todo" : task.status,
+          status: task.status === "done" || task.status === "canceled" ? "todo" : task.status_key,
           priority: task.priority,
           assigneeId: task.assignee?.id ?? null,
           projectId: task.archived_at ? null : (task.project?.id ?? null),
@@ -176,7 +180,7 @@ export function TaskPage() {
           <div className="px-4 pt-6 md:px-6">
             <div className="flex items-start gap-3">
               <span className="mt-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-line bg-panel">
-                <StatusIcon status={task.status} size={18} />
+                <StatusIcon status={task.status_key} size={18} />
               </span>
               <div className="min-w-0 flex-1">
                 <TitleEditor value={task.title} onSave={(title) => patch.mutate({ title })} />
@@ -358,6 +362,7 @@ function Details({
 }) {
   const { task } = detail;
   const projects = useProjects();
+  const statuses = useStatuses();
   const qc = useQueryClient();
   const assignee = members.find((m) => m.id === task.assignee?.id);
   const wake = useMutation({
@@ -385,12 +390,12 @@ function Details({
           <Menu
             trigger={
               <span className={attrValue}>
-                <StatusTag status={task.status} />
+                <StatusTag status={task.status_key} />
               </span>
             }
-            value={task.status}
-            onChange={(s: Status) => onPatch({ status: s })}
-            options={STATUSES.map((s) => ({ value: s, label: STATUS_LABEL[s], icon: <StatusIcon status={s} /> }))}
+            value={task.status_key}
+            onChange={(s) => onPatch({ status: s })}
+            options={statusOptions(statuses)}
           />
         </AttrRow>
         <AttrRow icon={<UserRound size={14} />} label="Assignee">
@@ -433,6 +438,17 @@ function Details({
               { value: "none", label: "No project" },
               ...(projects.data ?? []).filter((p) => p.status === "active").map((p) => ({ value: p.id, label: p.name, icon: <ProjectDot id={p.id} /> })),
             ]}
+          />
+        </AttrRow>
+        <AttrRow icon={<TagIcon size={14} />} label="Labels">
+          <LabelPicker
+            value={task.labels}
+            onChange={(ids) => onPatch({ labels: ids })}
+            trigger={
+              <span className={cx(attrValue, "h-auto min-h-8 flex-wrap py-1")}>
+                {task.labels.length ? task.labels.map((l) => <LabelChip key={l.id} label={l} />) : <span className="text-ink-3">Add labels</span>}
+              </span>
+            }
           />
         </AttrRow>
         <AttrRow icon={<CalendarDays size={14} />} label="Due date">
@@ -545,17 +561,22 @@ function RunStatus({ status }: { status: Run["status"] }) {
 
 // ---------- Activity ----------
 
-const SYSTEM_TEXT: Record<string, (d: any, byId: Map<string, Member>) => string> = {
+const SYSTEM_TEXT: Record<string, (d: any, byId: Map<string, Member>, statuses: StatusDef[]) => string> = {
   created: () => "created the task",
   note_deleted: (d) => `deleted the note “${d.title}”`,
   checklist_deleted: (d) => `deleted the checklist “${d.title}”`,
   attachment_deleted: (d) => `deleted the file ${d.filename}`,
   assigned: (d) => `assigned to ${d.to_name ?? "someone"}`,
   unassigned: () => "removed the assignee",
-  status_changed: (d) => `moved from ${STATUS_LABEL[d.from as Status] ?? d.from} to ${STATUS_LABEL[d.to as Status] ?? d.to}`,
+  // Names recorded at the time win (a custom status may since have been renamed or deleted).
+  status_changed: (d, _b, st) => `moved from ${d.from_name ?? findStatus(st, d.from).name} to ${d.to_name ?? findStatus(st, d.to).name}`,
+  labels_changed: (d) =>
+    [d.added?.length ? `added label${d.added.length > 1 ? "s" : ""} ${d.added.join(", ")}` : "", d.removed?.length ? `removed ${d.removed.join(", ")}` : ""]
+      .filter(Boolean)
+      .join(" and ") || "changed labels",
   priority_changed: (d) => `set priority to ${PRIORITY_LABEL[d.to as Priority] ?? d.to}`,
   title_changed: (d) => `renamed to “${d.to}”`,
-  project_changed: (d) => (d.to_name ? `moved to project ${d.to_name}` : "removed from project"),
+  project_changed: (d) => (d.to_name ? `moved to project ${d.to_name}` : d.project_deleted ? `removed from project ${d.project_deleted} (project deleted)` : "removed from project"),
   due_date_changed: (d) => (d.to ? `set due date to ${d.to}` : "cleared the due date"),
   agent_woken: (d) => `was woken (${d.trigger})`,
   agent_not_configured: () => "couldn't be woken: no webhook configured",
@@ -692,6 +713,7 @@ function Thread({
   attachments: TaskDetail["attachments"];
 }) {
   const me = useMe().data?.member;
+  const statuses = useStatuses();
   const qc = useQueryClient();
   const refresh = () => qc.invalidateQueries({ queryKey: ["task"] });
   const entryById = new Map(entries.map((e) => [e.id, e]));
@@ -702,7 +724,7 @@ function Thread({
         const author = byId.get(e.author_id);
         if (e.type === "system" || e.type === "note_created" || e.type === "checklist_created" || e.type === "attachment_added") {
           let text = "";
-          if (e.type === "system") text = (SYSTEM_TEXT[e.data.event] ?? (() => e.data.event))(e.data, byId);
+          if (e.type === "system") text = (SYSTEM_TEXT[e.data.event] ?? (() => e.data.event))(e.data, byId, statuses);
           if (e.type === "note_created") text = `added the note “${e.data.title}”`;
           if (e.type === "checklist_created") text = `added the checklist “${e.data.title}”`;
           const att = e.type === "attachment_added" ? attById.get(e.data.attachment_id) : undefined;

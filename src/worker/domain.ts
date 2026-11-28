@@ -10,6 +10,7 @@ import { postTaskCompleted } from "./feed";
 import { ideasLiveForTask } from "./ideas";
 import { addDependency, dependenciesOf, onBlockerFinished, reactionsFor } from "./links";
 import { notifyMember, taskLabel, taskLink } from "./email";
+import { type LabelRow, labelsByTask, listStatuses, resolveLabels, resolveStatus, setTaskLabels, statusKeyOf } from "./taxonomy";
 
 // ---------- Types ----------
 
@@ -65,7 +66,10 @@ export interface TaskRow {
   number: number;
   title: string;
   description: string;
+  /** Built-in status (for a custom status, the built-in one it behaves like). */
   status: TaskStatus;
+  /** Custom status key, when the task is in one; null for built-in statuses. */
+  status_key: string | null;
   priority: Priority;
   assignee_id: string | null;
   project_id: string | null;
@@ -241,7 +245,10 @@ export async function getTaskByRef(env: AppEnv, workspaceId: string, ref: string
 }
 
 export interface TaskFilters {
+  /** Status keys. A built-in key also matches the custom statuses that behave like it. */
   status?: string[];
+  /** Label ids or names; a task matches when it has any of them. */
+  labels?: string[];
   assigneeId?: string;
   projectId?: string;
   memberKind?: MemberKind;
@@ -257,8 +264,16 @@ export async function listTasks(env: AppEnv, workspaceId: string, f: TaskFilters
   const oneProject = !!f.projectId && f.projectId !== "none";
   if (!f.includeArchived && !oneProject) where.push("t.archived_at IS NULL");
   if (f.status?.length) {
-    where.push(`t.status IN (${f.status.map(() => "?").join(",")})`);
-    binds.push(...f.status);
+    const qs = f.status.map(() => "?").join(",");
+    where.push(`(t.status IN (${qs}) OR t.status_key IN (${qs}))`);
+    binds.push(...f.status, ...f.status);
+  }
+  if (f.labels?.length) {
+    const qs = f.labels.map(() => "?").join(",");
+    where.push(
+      `EXISTS (SELECT 1 FROM task_labels tl JOIN labels l ON l.id = tl.label_id WHERE tl.task_id = t.id AND (l.id IN (${qs}) OR l.name COLLATE NOCASE IN (${qs})))`,
+    );
+    binds.push(...f.labels, ...f.labels);
   }
   if (f.assigneeId === "none") where.push("t.assignee_id IS NULL");
   else if (f.assigneeId) {
@@ -291,7 +306,7 @@ export async function listTasks(env: AppEnv, workspaceId: string, f: TaskFilters
 
 export async function serializeTasks(env: AppEnv, ws: WorkspaceRow, tasks: TaskRow[]) {
   if (!tasks.length) return [];
-  const [members, projects, openQs, runs, blockers] = await Promise.all([
+  const [members, projects, openQs, runs, blockers, statuses, labels] = await Promise.all([
     env.DB.prepare("SELECT * FROM members WHERE workspace_id = ?").bind(ws.id).all<MemberRow>(),
     env.DB.prepare("SELECT id, name FROM projects WHERE workspace_id = ?").bind(ws.id).all<{ id: string; name: string }>(),
     env.DB.prepare(
@@ -312,7 +327,10 @@ export async function serializeTasks(env: AppEnv, ws: WorkspaceRow, tasks: TaskR
     )
       .bind(ws.id)
       .all<{ task_id: string; n: number }>(),
+    listStatuses(env, ws.id),
+    labelsByTask(env, ws.id, tasks.map((t) => t.id)),
   ]);
+  const statusByKey = new Map(statuses.map((s) => [s.key, s]));
   const blockedByTask = new Map(blockers.results.map((b) => [b.task_id, b.n]));
   const mById = new Map(members.results.map((m) => [m.id, m]));
   const pById = new Map(projects.results.map((p) => [p.id, p]));
@@ -333,6 +351,9 @@ export async function serializeTasks(env: AppEnv, ws: WorkspaceRow, tasks: TaskR
       title: t.title,
       description: t.description,
       status: t.status,
+      status_key: statusKeyOf(t),
+      status_name: statusByKey.get(statusKeyOf(t))?.name ?? statusByKey.get(t.status)?.name ?? t.status,
+      labels: labels.get(t.id) ?? [],
       priority: t.priority,
       due_date: t.due_date,
       position: t.position,
@@ -353,7 +374,12 @@ export async function serializeTasks(env: AppEnv, ws: WorkspaceRow, tasks: TaskR
 export interface CreateTaskInput {
   title: string;
   description?: string;
-  status?: TaskStatus;
+  /** Status key or name: a built-in status or one of the workspace's custom ones. */
+  status?: string;
+  /** Label ids or names. */
+  labels?: string[];
+  /** Unknown label names become new labels (MCP) instead of an error. */
+  createMissingLabels?: boolean;
   priority?: Priority;
   assigneeId?: string | null;
   projectId?: string | null;
@@ -367,8 +393,9 @@ export interface CreateTaskInput {
 export async function createTask(env: AppEnv, ws: WorkspaceRow, actor: Actor, input: CreateTaskInput): Promise<TaskRow> {
   const title = input.title?.trim();
   if (!title) throw badRequest("Title is required");
-  if (input.status && !TASK_STATUSES.includes(input.status)) throw badRequest("Invalid status");
+  const status = input.status ? await resolveStatus(env, ws.id, input.status) : null;
   if (input.priority && !PRIORITIES.includes(input.priority)) throw badRequest("Invalid priority");
+  const labels = input.labels?.length ? await resolveLabels(env, ws, actor, input.labels, !!input.createMissingLabels) : [];
   if (input.assigneeId) await assertMemberInWorkspace(env, ws.id, input.assigneeId);
   if (input.projectId) await assertProjectInWorkspace(env, ws.id, input.projectId);
   const blockers = await Promise.all([...new Set(input.blockedBy ?? [])].slice(0, 20).map((r) => getTaskByRef(env, ws.id, r)));
@@ -385,7 +412,8 @@ export async function createTask(env: AppEnv, ws: WorkspaceRow, actor: Actor, in
     number: numRow!.n,
     title,
     description: input.description ?? "",
-    status: input.status ?? "todo",
+    status: status?.category ?? "todo",
+    status_key: status && !status.builtin ? status.key : null,
     priority: input.priority ?? "none",
     assignee_id: input.assigneeId ?? null,
     project_id: input.projectId ?? null,
@@ -394,12 +422,12 @@ export async function createTask(env: AppEnv, ws: WorkspaceRow, actor: Actor, in
     created_by: actor.member.id,
     created_at: now,
     updated_at: now,
-    completed_at: null,
+    completed_at: status?.category === "done" ? now : null,
     archived_at: null,
   };
   await env.DB.prepare(
-    `INSERT INTO tasks (id, workspace_id, number, title, description, status, priority, assignee_id, project_id, due_date, position, created_by, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO tasks (id, workspace_id, number, title, description, status, status_key, priority, assignee_id, project_id, due_date, position, created_by, created_at, updated_at, completed_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   )
     .bind(
       task.id,
@@ -408,6 +436,7 @@ export async function createTask(env: AppEnv, ws: WorkspaceRow, actor: Actor, in
       task.title,
       task.description,
       task.status,
+      task.status_key,
       task.priority,
       task.assignee_id,
       task.project_id,
@@ -416,10 +445,12 @@ export async function createTask(env: AppEnv, ws: WorkspaceRow, actor: Actor, in
       task.created_by,
       now,
       now,
+      task.completed_at,
     )
     .run();
   await logActivity(env, ws.id, actor, "task", task.id, "created", undefined, task);
   await addSystemEntry(env, task, actor.member, "created", {});
+  if (labels.length) await setTaskLabels(env, ws, actor, task, labels);
   for (const b of blockers) await addDependency(env, ws, actor, task, b);
   if (task.assignee_id) {
     const assignee = await getMember(env, task.assignee_id);
@@ -440,7 +471,11 @@ export async function createTask(env: AppEnv, ws: WorkspaceRow, actor: Actor, in
 export interface UpdateTaskInput {
   title?: string;
   description?: string;
-  status?: TaskStatus;
+  /** Status key or name: a built-in status or one of the workspace's custom ones. */
+  status?: string;
+  /** Replaces the task's labels (ids or names). */
+  labels?: string[];
+  createMissingLabels?: boolean;
   priority?: Priority;
   assigneeId?: string | null;
   projectId?: string | null;
@@ -472,11 +507,15 @@ export async function updateTask(
     next.description = patch.description;
     changes.push({ field: "description", from: null, to: null });
   }
-  if (patch.status !== undefined && patch.status !== task.status) {
-    if (!TASK_STATUSES.includes(patch.status)) throw badRequest("Invalid status");
-    next.status = patch.status;
-    next.completed_at = patch.status === "done" ? nowIso() : null;
-    changes.push({ field: "status", from: task.status, to: patch.status });
+  if (patch.status !== undefined && patch.status !== null) {
+    const def = await resolveStatus(env, ws.id, patch.status);
+    if (def.key !== statusKeyOf(task)) {
+      next.status = def.category;
+      next.status_key = def.builtin ? null : def.key;
+      // Moving between two "done" statuses keeps the original completion time.
+      next.completed_at = def.category === "done" ? (task.status === "done" ? task.completed_at : nowIso()) : null;
+      changes.push({ field: "status", from: statusKeyOf(task), to: def.key });
+    }
   }
   if (patch.priority !== undefined && patch.priority !== task.priority) {
     if (!PRIORITIES.includes(patch.priority)) throw badRequest("Invalid priority");
@@ -499,17 +538,24 @@ export async function updateTask(
   }
   const positionChanged = patch.position !== undefined && patch.position !== task.position;
   if (positionChanged) next.position = patch.position!;
+  // Labels are stored separately and record their own thread entry.
+  if (patch.labels !== undefined) {
+    const labels: LabelRow[] = await resolveLabels(env, ws, actor, patch.labels, !!patch.createMissingLabels);
+    const labelsChanged = await setTaskLabels(env, ws, actor, task, labels);
+    if (labelsChanged && !changes.length && actor.member.kind === "agent") await touchRun(env, task.id, actor.member.id);
+  }
 
   if (!changes.length && !positionChanged) return task;
   next.updated_at = nowIso();
 
   await env.DB.prepare(
-    `UPDATE tasks SET title=?, description=?, status=?, priority=?, assignee_id=?, project_id=?, due_date=?, position=?, updated_at=?, completed_at=? WHERE id=?`,
+    `UPDATE tasks SET title=?, description=?, status=?, status_key=?, priority=?, assignee_id=?, project_id=?, due_date=?, position=?, updated_at=?, completed_at=? WHERE id=?`,
   )
     .bind(
       next.title,
       next.description,
       next.status,
+      next.status_key,
       next.priority,
       next.assignee_id,
       next.project_id,
@@ -537,6 +583,10 @@ export async function updateTask(
           to: to?.id ?? null,
           to_name: to?.name ?? null,
         });
+      } else if (c.field === "status") {
+        const statuses = await listStatuses(env, ws.id);
+        const name = (k: unknown) => statuses.find((s) => s.key === k)?.name ?? String(k);
+        await addSystemEntry(env, next, actor.member, "status_changed", { from: c.from, to: c.to, from_name: name(c.from), to_name: name(c.to) });
       } else if (c.field === "project") {
         const p = c.to
           ? await env.DB.prepare("SELECT name FROM projects WHERE id = ?").bind(c.to).first<{ name: string }>()
@@ -568,7 +618,8 @@ export async function updateTask(
     }
   }
   // Finished or canceled (by anyone): close every open agent run so nothing shows as working or gone quiet.
-  const statusChange = changes.find((c) => c.field === "status");
+  // Custom statuses behave like their built-in one; moving between two "done" statuses doesn't count again.
+  const statusChange = changes.find((c) => c.field === "status") && next.status !== task.status ? { to: next.status } : null;
   if (statusChange && (statusChange.to === "done" || statusChange.to === "canceled")) {
     const open = await env.DB.prepare(
       "SELECT DISTINCT agent_id FROM agent_runs WHERE task_id = ? AND status IN ('queued','dispatched','active','stale')",
@@ -695,8 +746,8 @@ export async function postEntry(
   // Status effects
   if (type === "question") {
     if (task.status !== "waiting_on_human") {
-      await env.DB.prepare("UPDATE tasks SET status = 'waiting_on_human' WHERE id = ?").bind(task.id).run();
-      await addSystemEntry(env, task, actor.member, "status_changed", { from: task.status, to: "waiting_on_human" });
+      await env.DB.prepare("UPDATE tasks SET status = 'waiting_on_human', status_key = NULL WHERE id = ?").bind(task.id).run();
+      await addSystemEntry(env, task, actor.member, "status_changed", { from: statusKeyOf(task), to: "waiting_on_human" });
     }
   }
   if (type === "answer" && replyTo) {
@@ -714,7 +765,7 @@ export async function postEntry(
       .first<{ n: number }>();
     const fresh = await env.DB.prepare("SELECT status FROM tasks WHERE id = ?").bind(task.id).first<{ status: TaskStatus }>();
     if (!stillOpen?.n && fresh?.status === "waiting_on_human") {
-      await env.DB.prepare("UPDATE tasks SET status = 'in_progress' WHERE id = ?").bind(task.id).run();
+      await env.DB.prepare("UPDATE tasks SET status = 'in_progress', status_key = NULL WHERE id = ?").bind(task.id).run();
       await addSystemEntry(env, task, actor.member, "status_changed", { from: "waiting_on_human", to: "in_progress" });
     }
   }
@@ -1204,7 +1255,7 @@ export async function updateProject(
 export interface DuplicateOptions {
   title?: string;
   description?: string;
-  status?: TaskStatus;
+  status?: string;
   priority?: Priority;
   assigneeId?: string | null;
   projectId?: string | null;
@@ -1225,13 +1276,17 @@ export async function duplicateTask(env: AppEnv, ws: WorkspaceRow, actor: Actor,
   const task = await createTask(env, ws, actor, {
     title: o.title?.trim() || `${src.title} (copy)`,
     description: o.description ?? src.description,
-    status: o.status ?? (src.status === "done" || src.status === "canceled" ? "todo" : src.status),
+    status: o.status ?? (src.status === "done" || src.status === "canceled" ? "todo" : statusKeyOf(src)),
     priority: o.priority ?? src.priority,
     assigneeId: o.assigneeId !== undefined ? o.assigneeId : src.assignee_id,
     projectId,
     dueDate: o.dueDate !== undefined ? o.dueDate : src.due_date,
     triage: false,
     blockedBy: blockers,
+    labels:
+      o.copyDetails === false
+        ? []
+        : (await env.DB.prepare("SELECT label_id FROM task_labels WHERE task_id = ?").bind(src.id).all<{ label_id: string }>()).results.map((r) => r.label_id),
   });
   if (o.copyDetails !== false) {
     const lists = await env.DB.prepare("SELECT id, title FROM checklists WHERE task_id = ? ORDER BY created_at").bind(src.id).all<{ id: string; title: string }>();

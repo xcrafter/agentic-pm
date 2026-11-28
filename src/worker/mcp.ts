@@ -11,7 +11,6 @@ import {
   type EntryRow,
   type MemberRow,
   PRIORITIES,
-  TASK_STATUSES,
   addAttachment,
   addChecklistItem,
   createChecklist,
@@ -40,10 +39,16 @@ import { IDEA_LABELS, IDEA_STAGES, IDEA_STATUSES, createIdea, listIdeas } from "
 import { logFeatureRequest } from "./customers";
 import { callApi } from "./api";
 import { addTool, getTool, listTools, toolOut, updateTool } from "./tools";
+import { listLabels, listStatuses } from "./taxonomy";
 import { assertPoliciesRead, createPolicy, ensureFolderPath, findPolicy, listPoliciesForAgent, markPolicyRead, policiesFor, policyForAgent, updatePolicy } from "./policies";
 import { agentSummary, applyAgentProfile, canOrchestrate, getActableAgent, getSubAgent, isWorkspacePm, listSubAgents, registerSubAgent } from "./agents";
 import type { McpProps } from "./authorize";
 import { type AppEnv, HttpError, encryptSecret, signValue } from "./util";
+
+const STATUS_HELP =
+  "Status key or name: backlog, todo, in_progress, waiting_on_human, done, canceled, or one of the workspace's custom statuses (see list_statuses)";
+const STATUS = z.string().describe(STATUS_HELP);
+const LABELS = z.array(z.string()).describe("Label names (or ids). Unknown names create new labels.");
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 
@@ -159,7 +164,9 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
     "list_my_tasks",
     {
       description: "List tasks assigned to you. Defaults to tasks that are not done or canceled.",
-      inputSchema: { status: z.array(z.enum(TASK_STATUSES)).optional().describe("Filter by status") },
+      inputSchema: {
+        status: z.array(z.string()).optional().describe("Filter by status keys. A built-in status also matches the custom statuses that behave like it."),
+      },
       annotations: { readOnlyHint: true },
     },
     ({ status }) =>
@@ -224,7 +231,8 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
       description: "Search tasks by text and filters.",
       inputSchema: {
         query: z.string().optional(),
-        status: z.array(z.enum(TASK_STATUSES)).optional(),
+        status: z.array(z.string()).optional().describe("Status keys. A built-in status also matches the custom statuses that behave like it."),
+        labels: z.array(z.string()).optional().describe("Label names or ids; matches tasks with any of them"),
         assignee: z.string().optional().describe("Member handle, id, or 'none'"),
         project: z.string().optional().describe("Project id or 'none'"),
         include_archived: z.boolean().optional().describe("Also return tasks archived with their project (left out by default)"),
@@ -239,6 +247,7 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
         const rows = await listTasks(env, w.id, {
           query: a.query,
           status: a.status,
+          labels: a.labels,
           assigneeId,
           projectId: a.project,
           limit: a.limit ?? 25,
@@ -258,7 +267,8 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
         project: z.string().optional().describe("Project id"),
         assignee: z.string().optional().describe("Member handle or id"),
         priority: z.enum(PRIORITIES).optional(),
-        status: z.enum(TASK_STATUSES).optional(),
+        status: STATUS.optional(),
+        labels: LABELS.optional(),
         blocked_by: z.array(z.string()).optional().describe("Task keys this task depends on (it can't start until they're done)"),
       },
     },
@@ -274,6 +284,8 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
           assigneeId,
           priority: a.priority,
           status: a.status,
+          labels: a.labels,
+          createMissingLabels: true,
         });
         return (await serializeTasks(env, w, [t]))[0];
       }),
@@ -287,7 +299,8 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
         task: z.string(),
         title: z.string().optional(),
         description: z.string().optional().describe("Markdown; replaces the description"),
-        status: z.enum(TASK_STATUSES).optional(),
+        status: STATUS.optional(),
+        labels: LABELS.optional().describe("Replaces the task's labels. Label names (or ids); unknown names create new labels."),
         priority: z.enum(PRIORITIES).optional(),
         assignee: z.string().nullable().optional().describe("Member handle/id, or null to unassign"),
         project: z.string().nullable().optional().describe("Project id, or null"),
@@ -308,6 +321,8 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
           assigneeId,
           projectId: a.project,
           dueDate: a.due_date,
+          labels: a.labels,
+          createMissingLabels: true,
         });
         return (await serializeTasks(env, w, [next]))[0];
       }),
@@ -804,6 +819,23 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
   );
 
   server.registerTool(
+    "list_statuses",
+    {
+      description:
+        "The workspace's task statuses in board order. Custom statuses each have a category: the built-in status they behave like " +
+        "(e.g. a custom 'In review' with category in_progress). Use the key when setting a task's status.",
+      annotations: { readOnlyHint: true },
+    },
+    () => guard(async () => (await listStatuses(env, props.workspaceId)).map(({ position, ...s }) => s)),
+  );
+
+  server.registerTool(
+    "list_labels",
+    { description: "The workspace's task labels, with how many tasks use each.", annotations: { readOnlyHint: true } },
+    () => guard(async () => (await listLabels(env, props.workspaceId)).map(({ id, name, color, task_count }) => ({ id, name, color, task_count }))),
+  );
+
+  server.registerTool(
     "archive_project",
     {
       description:
@@ -1078,7 +1110,7 @@ function buildServer(env: AppEnv, props: McpProps, me: MemberRow, orchestrate: b
       inputSchema: {
         task: z.string().describe("Task key like IMP-12"),
         title: z.string().max(300).optional().describe("Defaults to '<title> (copy)'"),
-        status: z.enum(TASK_STATUSES).optional(),
+        status: STATUS.optional(),
         priority: z.enum(PRIORITIES).optional(),
         assignee: z.string().nullable().optional().describe("Handle or member id; null for unassigned. Defaults to the original's"),
         project: z.string().nullable().optional().describe("Project id or exact name; null for none"),

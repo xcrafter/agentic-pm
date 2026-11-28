@@ -1,9 +1,28 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
-import { type Priority, type Status, type Task, PRIORITIES, PRIORITY_LABEL, STATUSES, STATUS_LABEL, api } from "../api";
-import { type TaskDefaults, Button, Chip, MemberChip, Menu, Modal, ModalFooter, PriorityIcon, StatusIcon, assigneeOptions, useMe, useMembers, useProjects } from "../components";
-import { FolderKanban } from "lucide-react";
+import { type LabelRef, type Priority, type Task, PRIORITIES, PRIORITY_LABEL, api } from "../api";
+import {
+  type TaskDefaults,
+  Button,
+  Chip,
+  LabelPicker,
+  MemberChip,
+  Menu,
+  Modal,
+  ModalFooter,
+  PriorityIcon,
+  StatusIcon,
+  assigneeOptions,
+  findStatus,
+  statusOptions,
+  useLabels,
+  useMe,
+  useMembers,
+  useProjects,
+  useStatuses,
+} from "../components";
+import { FolderKanban, Tag as TagIcon } from "lucide-react";
 import { ProjectDot } from "./Layout";
 import { type EditorHandle, RichEditor } from "../editor";
 
@@ -25,7 +44,11 @@ export function CreateTaskModal({
 }) {
   const [title, setTitle] = useState("");
   const [copyDetails, setCopyDetails] = useState(true);
-  const [status, setStatus] = useState<Status>(defaults?.status ?? "todo");
+  const [status, setStatus] = useState<string>(defaults?.status ?? "todo");
+  const [labelIds, setLabelIds] = useState<string[]>([]);
+  const statuses = useStatuses();
+  const allLabels = useLabels().data ?? [];
+  const pickedLabels: LabelRef[] = labelIds.map((id) => allLabels.find((l) => l.id === id)).filter((l): l is NonNullable<typeof l> => !!l);
   const [priority, setPriority] = useState<Priority>(defaults?.priority ?? "none");
   const [assignee, setAssignee] = useState<string>(defaults?.assigneeId ?? "none");
   const [project, setProject] = useState<string>(defaults?.projectId ?? "none");
@@ -43,6 +66,7 @@ export function CreateTaskModal({
       setTitle(duplicateOf ? `${duplicateOf.title} (copy)` : "");
       setCopyDetails(true);
       setStatus(defaults?.status ?? "todo");
+      setLabelIds([]);
       setPriority(defaults?.priority ?? "none");
       setAssignee(defaults?.assigneeId ?? "none");
       setProject(defaults?.projectId ?? "none");
@@ -70,6 +94,7 @@ export function CreateTaskModal({
             priority,
             assignee_id: assignee === "none" ? null : assignee,
             project_id: project === "none" ? null : project,
+            labels: labelIds,
             ...(assignee === "none" && pm ? { triage } : {}),
           }),
     onSuccess: (t) => {
@@ -108,12 +133,12 @@ export function CreateTaskModal({
           <Menu
             trigger={
               <Chip>
-                <StatusIcon status={status} size={13} /> {STATUS_LABEL[status]}
+                <StatusIcon status={status} size={13} /> {findStatus(statuses, status).name}
               </Chip>
             }
             value={status}
             onChange={setStatus}
-            options={STATUSES.map((s) => ({ value: s, label: STATUS_LABEL[s], icon: <StatusIcon status={s} /> }))}
+            options={statusOptions(statuses)}
           />
           <Menu
             trigger={
@@ -151,6 +176,18 @@ export function CreateTaskModal({
               ...(projects.data ?? []).filter((p) => p.status === "active").map((p) => ({ value: p.id, label: p.name, icon: <ProjectDot id={p.id} /> })),
             ]}
           />
+          {!duplicateOf && (
+            <LabelPicker
+              value={pickedLabels}
+              onChange={setLabelIds}
+              trigger={
+                <Chip>
+                  <TagIcon size={13} />
+                  {pickedLabels.length === 0 ? "Labels" : pickedLabels.length === 1 ? pickedLabels[0].name : `${pickedLabels.length} labels`}
+                </Chip>
+              }
+            />
+          )}
         </div>
         {note && <p className="-mt-1 px-4 pb-3 text-[12px] text-ink-3">{note}</p>}
         {duplicateOf?.hasDetails && (

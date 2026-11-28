@@ -278,9 +278,9 @@ export async function touchRun(env: AppEnv, taskId: string, agentId: string) {
   if (run.status !== "active") {
     const task = await env.DB.prepare("SELECT * FROM tasks WHERE id = ?").bind(taskId).first<TaskRow>();
     if (task && task.assignee_id === agentId && (task.status === "backlog" || task.status === "todo")) {
-      await env.DB.prepare("UPDATE tasks SET status = 'in_progress', updated_at = ? WHERE id = ?").bind(now, taskId).run();
+      await env.DB.prepare("UPDATE tasks SET status = 'in_progress', status_key = NULL, updated_at = ? WHERE id = ?").bind(now, taskId).run();
       const agent = await getMember(env, agentId);
-      await addSystemEntry(env, task, agent, "status_changed", { from: task.status, to: "in_progress" });
+      await addSystemEntry(env, task, agent, "status_changed", { from: task.status_key ?? task.status, to: "in_progress" });
       await notify(env, task.workspace_id, { type: "task", task_id: taskId });
     }
   }
